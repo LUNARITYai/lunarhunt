@@ -16,7 +16,7 @@ roles:
     engine: claude
     model: sonnet
     effort: medium
-    escalate_to: { engine: claude, model: sonnet, effort: high }
+    escalate_to: { engine: claude, model: opus, effort: high }
   reviewer: { engine: claude, model: sonnet, effort: medium, read_only: true }
   sentinel: { engine: claude, model: sonnet, effort: high, read_only: true }
   debugger: { engine: claude, model: sonnet, effort: high, read_only: true }
