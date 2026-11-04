@@ -1,6 +1,7 @@
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { runHook } from "../src/engine.ts";
 import {
   mapPayload,
   normalizeHook,
@@ -9,7 +10,7 @@ import {
 } from "../src/event.ts";
 import { resolveRepoPath } from "../src/paths.ts";
 import { loadTask } from "../src/task.ts";
-import { tempRepo, writeRepoFile } from "./support.ts";
+import { normativeCharter, tempRepo, writeRepoFile } from "./support.ts";
 
 const env = {} as NodeJS.ProcessEnv;
 
@@ -31,6 +32,39 @@ describe("interactive", () => {
   });
 });
 
+const ENGINE_ESCAPE =
+  "Blocked by Warden engine: path escapes the worktree. Label the issue needs:human.";
+
+function claudeFile(root: string, tool: "Edit" | "Write", filePath: string) {
+  return runHook(
+    "claude",
+    "PreToolUse",
+    JSON.stringify({
+      cwd: root,
+      tool_name: tool,
+      tool_input: { file_path: filePath },
+    }),
+    { cwd: () => root, env: {} },
+  );
+}
+
+function expectEditAndWriteDenied(root: string, filePath: string): void {
+  for (const tool of ["Edit", "Write"] as const) {
+    const result = claudeFile(root, tool, filePath);
+    expect(result.exitCode, tool).toBe(0);
+    const body = JSON.parse(result.stdout) as {
+      hookSpecificOutput: {
+        permissionDecision: string;
+        permissionDecisionReason: string;
+      };
+    };
+    expect(body.hookSpecificOutput.permissionDecision, tool).toBe("deny");
+    expect(body.hookSpecificOutput.permissionDecisionReason, tool).toBe(
+      ENGINE_ESCAPE,
+    );
+  }
+}
+
 describe("path resolution", () => {
   it("keeps a missing file inside the worktree and rejects a path outside it", () => {
     const root = tempRepo();
@@ -43,16 +77,72 @@ describe("path resolution", () => {
       ok: true,
       path: "wardens/new-file.ts",
     });
+    expect(
+      resolveRepoPath("wardens/src/brand-new/file.ts", root, root),
+    ).toEqual({
+      ok: true,
+      path: "wardens/src/brand-new/file.ts",
+    });
     expect(resolveRepoPath("apps\\web\\app.tsx", root, root)).toEqual({
       ok: true,
       path: "apps/web/app.tsx",
     });
-    expect(resolveRepoPath("/etc/passwd", root, root).ok).toBe(false);
+    expect(resolveRepoPath("/etc/passwd", root, root)).toEqual({
+      ok: false,
+      reason: "escape",
+    });
     const outside = join(root, "..", "outside.txt");
     writeFileSync(outside, "x");
     mkdirSync(join(root, "apps"), { recursive: true });
     symlinkSync(outside, join(root, "apps", "leak"));
-    expect(resolveRepoPath("apps/leak", root, root).ok).toBe(false);
+    expect(resolveRepoPath("apps/leak", root, root)).toEqual({
+      ok: false,
+      reason: "escape",
+    });
+  });
+
+  it("denies an edit or write through a dangling symlink that points outside", () => {
+    const root = tempRepo();
+    mkdirSync(join(root, "docs"));
+    symlinkSync("/etc/nonexistent", join(root, "docs", "outside"));
+    expect(resolveRepoPath("docs/outside", root, root)).toEqual({
+      ok: false,
+      reason: "unresolvable",
+    });
+    expectEditAndWriteDenied(root, "docs/outside");
+  });
+
+  it("denies a symlink loop instead of allowing it or throwing", () => {
+    const root = tempRepo();
+    mkdirSync(join(root, "docs"));
+    symlinkSync("b", join(root, "docs", "a"));
+    symlinkSync("a", join(root, "docs", "b"));
+    expect(() => resolveRepoPath("docs/a", root, root)).not.toThrow();
+    expect(resolveRepoPath("docs/a", root, root)).toEqual({
+      ok: false,
+      reason: "unresolvable",
+    });
+    expectEditAndWriteDenied(root, "docs/a");
+  });
+
+  it("resolves ..notes.md and allows the edit when that file is in scope", () => {
+    const root = tempRepo();
+    const charter = normativeCharter().replace(
+      '    - "turbo.json"\n',
+      '    - "turbo.json"\n    - "..notes.md"\n',
+    );
+    expect(charter).not.toBe(normativeCharter());
+    writeRepoFile(root, "panopticon.charter.yaml", charter);
+    writeRepoFile(root, "..notes.md", "notes\n");
+    expect(resolveRepoPath("..notes.md", root, root)).toEqual({
+      ok: true,
+      path: "..notes.md",
+    });
+    for (const tool of ["Edit", "Write"] as const) {
+      const result = claudeFile(root, tool, "..notes.md");
+      expect(result.exitCode, tool).toBe(0);
+      expect(result.stdout, tool).toBe("");
+    }
   });
 });
 
