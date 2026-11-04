@@ -1,3 +1,10 @@
 # Wardens
 
-Placeholder for the Wardens engine. The TypeScript CLI (ADR-0005) is not in this package yet. A later issue adds the engine, tests and the `wardens/dist/wardens.mjs` bundle. Until then this directory only reserves the workspace package.
+TypeScript engine for PANOPTICON ring 0. It loads `panopticon.charter.yaml`, checks it against `schema/charter.schema.json`, and exposes `wardens check` and `wardens hook`.
+
+```bash
+pnpm --filter wardens test
+pnpm --filter wardens build
+```
+
+The build writes `dist/wardens.mjs` and is not committed. Hook installation is a later issue (`wardens sync`).

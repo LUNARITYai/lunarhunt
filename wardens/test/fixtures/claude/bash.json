@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "source": "claude-docs",
+    "provisional": true,
+    "tool": "claude",
+    "event": "PreToolUse",
+    "note": "Shape from Claude Code hooks docs (PreToolUse Bash example), 2026-11-04. Command swapped for an allow case.",
+    "expect": {
+      "action": "shell",
+      "path": null,
+      "command": "echo ok | cat",
+      "mcp_server": null,
+      "decision": "allow",
+      "rule": "none"
+    }
+  },
+  "stdin": {
+    "session_id": "abc123",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__WORKTREE__",
+    "permission_mode": "default",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo ok | cat",
+      "description": "Show a pipeline",
+      "timeout": 120000,
+      "run_in_background": false
+    },
+    "tool_use_id": "toolu_01ABC123"
+  }
+}

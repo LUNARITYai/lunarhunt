@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "source": "recorded-cursor-session",
+    "provisional": false,
+    "tool": "cursor",
+    "event": "beforeMCPExecution",
+    "note": "Recorded from cursor-agent on 2026-11-04. Email, home paths and the recording directory were stripped.",
+    "expect": {
+      "action": "mcp",
+      "path": null,
+      "command": null,
+      "mcp_server": "fixture",
+      "decision": "allow",
+      "rule": "none"
+    }
+  },
+  "stdin": {
+    "conversation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "generation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "model": "grok-4.7",
+    "tool_name": "ping",
+    "tool_input": "{}",
+    "tool_use_id": "2c52a03b-3bfb-4070-9de1-73a290352732",
+    "mcp_server_name": "fixture",
+    "command": "/usr/local/n/bin/node __WORKTREE__/.cursor/mcp-server.mjs",
+    "session_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "hook_event_name": "beforeMCPExecution",
+    "cursor_version": "2026.10.22-27dcf5f",
+    "workspace_roots": ["__WORKTREE__"],
+    "user_email": null,
+    "transcript_path": "transcript.jsonl"
+  }
+}

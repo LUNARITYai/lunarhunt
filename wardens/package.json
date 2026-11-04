@@ -3,5 +3,28 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder for the Wardens engine (ADR-0005). The CLI is a later issue."
+  "description": "PANOPTICON Wardens engine: Charter validation and ring-0 guards.",
+  "bin": {
+    "wardens": "./dist/wardens.mjs"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "node --experimental-strip-types src/cli.ts check charter-validate",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "ajv": "catalog:",
+    "commander": "catalog:",
+    "picomatch": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
 }

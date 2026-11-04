@@ -1,0 +1,151 @@
+version: 1
+project: lunarhunt
+
+autonomy:
+  phase: 0
+  kill_switch: false
+
+roles:
+  overseer: { engine: cursor, model: grok-4.7, effort: high }
+  spec-writer:
+    engine: cursor
+    model: grok-4.7
+    effort: high
+    allowed_paths: ["docs/specs/**", "docs/decisions/**"]
+  implementer:
+    engine: cursor
+    model: grok-4.7
+    effort: medium
+    escalate_to: { engine: cursor, model: grok-4.7, effort: high }
+  reviewer: { engine: cursor, model: grok-4.7, effort: medium, read_only: true }
+  sentinel: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
+  debugger: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
+
+paths:
+  allowed_paths:
+    - "apps/**"
+    - "packages/**"
+    - "wardens/**"
+    - "docs/**"
+    - "pnpm-lock.yaml"
+    - "pnpm-workspace.yaml"
+    - "turbo.json"
+  protected:
+    deny:
+      - "panopticon.charter.yaml"
+      - ".env"
+      - ".env.*"
+      - "!*.example"
+      - "secrets/**"
+    ask:
+      - "docs/constitution.md"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - "apps/api/migrations/**"
+      - ".env.example"
+    non_interactive_ask: deny
+  generated:
+    - "packages/api-client/src/**"
+    - "packages/contracts/openapi.json"
+  secrets_deny_read:
+    - ".env"
+    - ".env.*"
+    - "!*.example"
+    - "secrets/**"
+
+commands:
+  deny:
+    - "git push --force*"
+    - "git push -f*"
+    - "git push +*"
+    - "kubectl * --context prod*"
+    - "npm publish*"
+    - "curl * | sh"
+    - "curl * | bash"
+    - "curl * | zsh"
+    - "curl * | sudo sh"
+    - "curl * | sudo bash"
+    - "curl * | sudo zsh"
+    - "wget * | sh"
+    - "wget * | bash"
+    - "wget * | zsh"
+    - "wget * | sudo sh"
+    - "wget * | sudo bash"
+    - "wget * | sudo zsh"
+    - "git commit --no-verify*"
+    - "git commit -n*"
+    - "git push --no-verify*"
+    - "git merge --no-verify*"
+    - "LEFTHOOK=0 *"
+    - "git -c core.hooksPath=*"
+    - "git config core.hooksPath*"
+    - "wardens worktree remove * --force*"
+  allow:
+    - "pnpm turbo run *"
+    - "pnpm check*"
+    - "uv run pytest *"
+    - "uv run ruff *"
+  rewrite:
+    npm install: pnpm install
+
+covenant:
+  agents_md_exempt: ["packages/contracts", "packages/api-client"]
+
+risk:
+  high:
+    paths:
+      - "**/auth/**"
+      - ".env*"
+      - "secrets/**"
+      - ".github/**"
+      - "panopticon.charter.yaml"
+      - "docs/constitution.md"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - ".claude/**"
+      - ".cursor/**"
+      - "lefthook.yml"
+      - "deploy/**"
+      - "apps/api/migrations/**"
+      - "wardens/**"
+      - "docs/decisions/**"
+      - "docs/decision-log.md"
+    labels: ["test:waived", "needs:human"]
+  medium: { default: true }
+  low:
+    paths: ["docs/**", "**/*.test.*", "**/tests/**"]
+    all_files_must_match: true
+    max_changed_lines: 200
+
+require_spec_for:
+  - issue_types: ["type:feature"]
+    paths: ["apps/**"]
+
+specs:
+  non_spec_files:
+    - "docs/specs/AGENTS.md"
+    - "docs/specs/TEMPLATE.md"
+    - "docs/specs/**/README.md"
+
+quality_gates:
+  definition_of_done: ["lint", "typecheck", "test:affected", "contract:drift"]
+  diff_coverage_min: 80
+  max_pr_changed_lines: 600
+
+budgets:
+  per_task: { max_cost_usd: null, max_turns: null }
+  per_night: { max_cost_usd: null }
+
+log_access:
+  local: { roles: all }
+  preview: { roles: all }
+  staging: { roles: [debugger] }
+  production: { requires: human_approval }
+  limits: { max_time_range: "24h", max_results: 500 }
+  redact: [secrets, pii, cv_data]
+
+ledger:
+  sink: [postgres, otlp]
+  capture_content: false
