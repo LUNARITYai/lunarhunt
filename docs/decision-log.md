@@ -42,11 +42,14 @@ Status legend: **accepted** (agreed), **proposed** (recommended, awaiting confir
 | 2026-11-04 | Additions A1–A4 found while applying the above (confirmed): `wardens/**`, `docs/decisions/**`, `docs/decision-log.md` are `risk:high` (amends ADR-0008); `LEFTHOOK=0`, `core.hooksPath` overrides and `wardens worktree remove --force` denied for agents; `ask` resolves to deny in non-interactive sessions. | accepted | 0013 |
 | 2026-11-04 | A5: `spec-check` dated-filename (and spec front-matter/EARS) rules exclude `docs/specs/AGENTS.md`, `docs/specs/TEMPLATE.md` and `README.md` files (Charter `specs.non_spec_files`; amends ADR-0011). | accepted | 0013 |
 | 2026-11-04 | ADR-0012, ADR-0013 (incl. A1–A5) and ADR-0014 accepted by Krzysztof. | accepted | 0012, 0013, 0014 |
+| 2026-11-04 | **Agent host (phases 0–2):** an always-on local machine owned by Krzysztof runs the agents (Dev Container Cell, one worktree per task, later the night shift); a second machine is for his own work and PR review. Local agents are preferred for cost; Cursor cloud agents are used only for background work that the local host can't do. | accepted | 0007, 0012 |
+| 2026-11-04 | **Branch prefix mapping** from the issue `type:*` label: `type:feature` → `feat/`, `type:bug` → `fix/`, `type:chore` → `chore/`, `type:spike` → `spike/`, `type:docs` → `docs/` (e.g. `feat/42-offer-crud`). Clarifies C-09 and ADR-0012; `wardens worktree new` applies it. | accepted | 0001, 0012 |
 
 ## Still open
 
 - Separate GitOps repo vs. `deploy/` folder (ADR-0007 proposes `deploy/` first, revisit with k3s).
-- Remote executor for agent runs (where OVERSEER background sessions and nightly Cells run in phase 2).
+- Remote executor for agent runs: the default is now the always-on local host (2026-11-04); still open whether phase 2 needs an extra remote executor.
+- Role of the Raspberry Pi (with AI module and SSD): proposed as an independent watchdog off the agent host (uptime checks, Grafana/Loki alerting, night-shift kill switch and Ledger budget alerts, possibly a self-hosted CI runner). Decide before phase 2.
 
 Resolved on 2026-11-04: Renovate vs. Dependabot (ADR-0014), model for the `debugger` role (ADR-0013), Cursor's import of Claude Code hooks (disabled, ADR-0005; checked by `wardens doctor`).
 
