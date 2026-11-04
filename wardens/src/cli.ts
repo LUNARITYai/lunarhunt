@@ -1,41 +1,38 @@
 import { Command, CommanderError } from "commander";
-import { loadCharterAt } from "./charter.ts";
-import { gitToplevel } from "./git.ts";
-import { CHARTER_INVALID_MESSAGE } from "./messages.ts";
-import {
-  allowVerdict,
-  checkExitCode,
-  type Decision,
-  type Verdict,
-} from "./verdict.ts";
+import { type RunResult, runCheck, runHook } from "./engine.ts";
+import { engineMessage } from "./messages.ts";
 
-function writeVerdict(verdict: Verdict): void {
-  process.stdout.write(`${JSON.stringify(verdict)}\n`);
+function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    return Promise.resolve("");
+  }
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    process.stdin.on("data", (chunk: Buffer | string) => {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    });
+    process.stdin.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    process.stdin.on("error", reject);
+  });
 }
 
-function engineDeny(message: string): Verdict {
-  return {
-    rule: "engine",
-    decision: "deny",
-    message,
-    replacement: null,
-    rendered: "deny",
-  };
-}
-
-function runCharterValidate(): Decision {
-  const toplevel = gitToplevel(process.cwd());
-  if (!toplevel) {
-    writeVerdict(engineDeny(CHARTER_INVALID_MESSAGE));
-    return "deny";
+function emit(result: RunResult): 0 | 2 {
+  try {
+    if (result.stdout.length > 0) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr.length > 0) {
+      process.stderr.write(result.stderr);
+    }
+    return result.exitCode;
+  } catch {
+    process.stderr.write(
+      `${engineMessage("the hook response could not be written")}\n`,
+    );
+    return 2;
   }
-  const result = loadCharterAt(toplevel);
-  if (!result.ok) {
-    writeVerdict(engineDeny(CHARTER_INVALID_MESSAGE));
-    return "deny";
-  }
-  writeVerdict(allowVerdict());
-  return "allow";
 }
 
 async function main(): Promise<void> {
@@ -50,17 +47,18 @@ async function main(): Promise<void> {
   program
     .command("check")
     .argument("<rule>", "rule id")
-    .action((rule: string) => {
-      if (rule !== "charter-validate") {
-        writeVerdict(
-          engineDeny(
-            `Blocked by Warden engine: unknown rule ${rule}. Label the issue needs:human.`,
-          ),
-        );
-        process.exitCode = 2;
-        return;
-      }
-      process.exitCode = checkExitCode(runCharterValidate());
+    .action(async (rule: string) => {
+      const stdin = rule === "charter-validate" ? "" : await readStdin();
+      process.exitCode = emit(runCheck(rule, stdin));
+    });
+
+  program
+    .command("hook")
+    .requiredOption("--tool <tool>", "claude or cursor")
+    .requiredOption("--event <event>", "hook event name")
+    .action(async (opts: { tool: string; event: string }) => {
+      const stdin = await readStdin();
+      process.exitCode = emit(runHook(opts.tool, opts.event, stdin));
     });
 
   await program.parseAsync(process.argv);
@@ -76,7 +74,7 @@ try {
       err.code === "commander.help";
     process.exitCode = helpOrVersion || err.exitCode === 0 ? 0 : 2;
   } else {
-    process.stderr.write(`${CHARTER_INVALID_MESSAGE}\n`);
+    process.stderr.write(`${engineMessage("the engine failed")}\n`);
     process.exitCode = 2;
   }
 }

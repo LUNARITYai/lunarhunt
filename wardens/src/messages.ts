@@ -14,3 +14,7 @@ export const CHARTER_INVALID_MESSAGE = wardenMessage(
   "Charter validation failed",
   "Label the issue needs:human",
 );
+
+export function engineMessage(what: string): string {
+  return wardenMessage("engine", what, "Label the issue needs:human");
+}
