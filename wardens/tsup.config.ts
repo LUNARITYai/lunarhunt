@@ -9,7 +9,7 @@ export default defineConfig({
   splitting: false,
   sourcemap: false,
   bundle: true,
-  noExternal: ["ajv", "commander", "yaml", "zod"],
+  noExternal: ["ajv", "commander", "picomatch", "yaml", "zod"],
   banner: { js: "#!/usr/bin/env node" },
   outExtension: () => ({ js: ".mjs" }),
 });

@@ -1,5 +1,11 @@
 import type { Charter } from "./charter.ts";
 import type { NormalizedEvent } from "./event.ts";
+import {
+  commandGuard,
+  protectedPaths,
+  scopeGuard,
+  secretReadGuard,
+} from "./guards.ts";
 import type { TaskState } from "./task.ts";
 import type { Decision } from "./verdict.ts";
 
@@ -28,12 +34,11 @@ export const RULE_IDS = [
 
 export type RuleId = (typeof RULE_IDS)[number];
 
-/** Ring-0 rules. Task 4 replaces these allow-stubs with the real guards. */
 export const RULES: Record<RuleId, Rule> = {
-  "protected-paths": () => null,
-  "secret-read-guard": () => null,
-  "command-guard": () => null,
-  "scope-guard": () => null,
+  "protected-paths": protectedPaths,
+  "secret-read-guard": secretReadGuard,
+  "command-guard": commandGuard,
+  "scope-guard": scopeGuard,
 };
 
 export function isRuleId(rule: string): rule is RuleId {

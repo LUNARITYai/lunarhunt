@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "source": "claude-docs",
+    "provisional": true,
+    "tool": "claude",
+    "event": "PreToolUse",
+    "note": "Shape from Claude Code hooks docs (PreToolUse Read), 2026-11-04.",
+    "expect": {
+      "action": "read",
+      "path": ".env.example",
+      "command": null,
+      "mcp_server": null,
+      "decision": "allow",
+      "rule": "none"
+    }
+  },
+  "stdin": {
+    "session_id": "abc123",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__WORKTREE__",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_input": {
+      "file_path": "__WORKTREE__/.env.example"
+    },
+    "tool_use_id": "toolu_read"
+  }
+}

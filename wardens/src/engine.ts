@@ -5,6 +5,7 @@ import {
   parseNormalizedEvent,
   type ToolName,
 } from "./event.ts";
+import { EngineFailure } from "./failures.ts";
 import { gitToplevel } from "./git.ts";
 import { appendVerdict, type LogLine, logLine } from "./log.ts";
 import { CHARTER_INVALID_MESSAGE, engineMessage } from "./messages.ts";
@@ -70,8 +71,8 @@ export function evaluateRules(
     let objection: Objection | null;
     try {
       objection = rules[id](ctx);
-    } catch {
-      return engineDeny("a rule threw");
+    } catch (err) {
+      return caught(err);
     }
     if (!objection) {
       continue;
@@ -109,9 +110,16 @@ export function evaluateRule(
       replacement: objection.replacement,
       rendered: objection.decision,
     };
-  } catch {
-    return engineDeny("a rule threw");
+  } catch (err) {
+    return caught(err);
   }
+}
+
+function caught(err: unknown): Verdict {
+  if (err instanceof EngineFailure) {
+    return engineDeny(err.what);
+  }
+  return engineDeny("a rule threw");
 }
 
 function commit(input: {

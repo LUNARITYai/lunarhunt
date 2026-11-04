@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "source": "recorded-cursor-session",
+    "provisional": false,
+    "tool": "cursor",
+    "event": "preToolUse",
+    "note": "Recorded from cursor-agent on 2026-11-04. Email, home paths and the recording directory were stripped.",
+    "expect": {
+      "action": "delete",
+      "path": "out.txt",
+      "command": null,
+      "mcp_server": null,
+      "decision": "deny",
+      "rule": "scope-guard"
+    }
+  },
+  "stdin": {
+    "conversation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "generation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "model": "grok-4.7",
+    "tool_name": "Delete",
+    "tool_input": {
+      "file_path": "__WORKTREE__/out.txt"
+    },
+    "tool_use_id": "call-81427f9f-d65f-4b47-a524-bb2086192e64-5\nfc_d32b590c-e42d-9286-af2a-7f7585357a0f_0",
+    "session_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "hook_event_name": "preToolUse",
+    "cursor_version": "2026.10.22-27dcf5f",
+    "workspace_roots": ["__WORKTREE__"],
+    "user_email": null,
+    "transcript_path": "transcript.jsonl"
+  }
+}

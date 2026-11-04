@@ -17,6 +17,7 @@
   "dependencies": {
     "ajv": "catalog:",
     "commander": "catalog:",
+    "picomatch": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },
