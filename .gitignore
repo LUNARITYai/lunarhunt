@@ -41,3 +41,6 @@ htmlcov/
 
 .panopticon/
 
+# Wardens bundle regression test output (wardens/test/bundle.test.ts)
+wardens/.bundle-test-*/
+
