@@ -23,6 +23,9 @@ function event(partial: Partial<NormalizedEvent>): NormalizedEvent {
     model: null,
     interactive: true,
     cwd: "/work",
+    phase: "pre",
+    stop_status: null,
+    foreign: false,
     ...partial,
   };
 }

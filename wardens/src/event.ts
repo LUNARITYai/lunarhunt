@@ -4,7 +4,16 @@ import { resolveRepoPath } from "./paths.ts";
 export const normalizedEventSchema = z.strictObject({
   tool: z.enum(["claude", "cursor"]),
   event: z.string().min(1),
-  action: z.enum(["shell", "read", "edit", "write", "delete", "mcp"]),
+  action: z.enum([
+    "shell",
+    "read",
+    "edit",
+    "write",
+    "delete",
+    "mcp",
+    "stop",
+    "session_start",
+  ]),
   path: z.string().nullable(),
   command: z.string().nullable(),
   mcp_server: z.string().nullable(),
@@ -13,6 +22,9 @@ export const normalizedEventSchema = z.strictObject({
   model: z.string().nullable(),
   interactive: z.boolean(),
   cwd: z.string().min(1),
+  phase: z.enum(["pre", "post"]).nullable(),
+  stop_status: z.enum(["completed", "aborted", "error"]).nullable(),
+  foreign: z.boolean(),
 });
 
 export type NormalizedEvent = z.infer<typeof normalizedEventSchema>;
@@ -88,12 +100,79 @@ function commandOf(
   return input ? asString(input.command) : null;
 }
 
+const STOP_STATUSES = ["completed", "aborted", "error"] as const;
+type StopStatus = (typeof STOP_STATUSES)[number];
+
+function stopStatusOf(value: unknown): StopStatus | null {
+  return STOP_STATUSES.find((status) => status === value) ?? null;
+}
+
+const NOT_MAPPED = {
+  ok: false,
+  message: "the hook event is not mapped",
+} as const;
+
+function noPath(action: Action): { ok: true; mapped: Mapped } {
+  return {
+    ok: true,
+    mapped: { action, path: null, command: null, mcp_server: null },
+  };
+}
+
+/** Rows added for post-edit audit, stop and session start. Adapters read only the path and status. */
+function mapLifecycle(
+  tool: string,
+  event: string,
+  payload: Record<string, unknown>,
+): { ok: true; mapped: Mapped } | NormalizeFailure | null {
+  if (tool === "claude" && event === "PostToolUse") {
+    const toolName = asString(payload.tool_name);
+    const path = filePath(payload);
+    if ((toolName !== "Edit" && toolName !== "Write") || !path) {
+      return NOT_MAPPED;
+    }
+    return {
+      ok: true,
+      mapped: {
+        action: toolName === "Edit" ? "edit" : "write",
+        path,
+        command: null,
+        mcp_server: null,
+      },
+    };
+  }
+  if (tool === "claude" && event === "Stop") {
+    return noPath("stop");
+  }
+  if (tool === "cursor" && event === "afterFileEdit") {
+    const path = asString(payload.file_path);
+    if (!path) {
+      return NOT_MAPPED;
+    }
+    return {
+      ok: true,
+      mapped: { action: "edit", path, command: null, mcp_server: null },
+    };
+  }
+  if (tool === "cursor" && event === "stop") {
+    return stopStatusOf(payload.status) ? noPath("stop") : NOT_MAPPED;
+  }
+  if (tool === "cursor" && event === "sessionStart") {
+    return noPath("session_start");
+  }
+  return null;
+}
+
 /** Map a hook payload. File paths are still tool paths; normalization resolves them. */
 export function mapPayload(
   tool: string,
   event: string,
   payload: Record<string, unknown>,
 ): { ok: true; mapped: Mapped } | NormalizeFailure {
+  const lifecycle = mapLifecycle(tool, event, payload);
+  if (lifecycle) {
+    return lifecycle;
+  }
   if (tool === "claude" && event === "PreToolUse") {
     const toolName = asString(payload.tool_name);
     if (!toolName) {
@@ -239,6 +318,13 @@ function modelOf(payload: Record<string, unknown>): string | null {
   return asString(payload.model);
 }
 
+function phaseOf(event: string, action: Action): "pre" | "post" | null {
+  if (action === "stop" || action === "session_start") {
+    return null;
+  }
+  return event === "PostToolUse" || event === "afterFileEdit" ? "post" : "pre";
+}
+
 export function normalizeHook(input: {
   tool: string;
   event: string;
@@ -275,6 +361,14 @@ export function normalizeHook(input: {
     model: modelOf(input.payload),
     interactive: resolveInteractive(input.payload, input.env),
     cwd,
+    phase: phaseOf(input.event, mapped.mapped.action),
+    stop_status:
+      mapped.mapped.action === "stop"
+        ? input.tool === "claude"
+          ? "completed"
+          : stopStatusOf(input.payload.status)
+        : null,
+    foreign: input.tool === "claude" && "cursor_version" in input.payload,
   });
   if (!parsed.success) {
     return { ok: false, message: "the hook event is not mapped" };

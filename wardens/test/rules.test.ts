@@ -31,6 +31,9 @@ function decide(
     model: null,
     interactive: true,
     cwd: root,
+    phase: "pre",
+    stop_status: null,
+    foreign: false,
     ...partial,
   };
   const verdict = evaluateRules({
