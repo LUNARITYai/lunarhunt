@@ -25,6 +25,12 @@ Closes #N
 A `type:bug` PR must add or change a test that fails on `main` and passes on this branch (C-15). The only exception is `test:waived` with a written justification here; that PR is `risk:high`, needs a human and is never auto-merged.
 Changing an existing Playwright test needs `needs:human` (C-17). -->
 
+## Checklist
+
+- [ ] Branch is `<type>/<issue-number>-<slug>` and the work was done in worktree `<issue-number>-<slug>`, not in the primary checkout or on `main` (C-09, C-33, ADR-0012).
+- [ ] `pnpm check` is green (C-12).
+- [ ] No secrets or personal data in the diff, issue or PR (C-18, C-19).
+
 ## Agent trailer
 
-<!-- Agent commits must include the trailer `Agent: <tool> (<model>)` (ADR-0008). Example: `Agent: cursor (grok-4.7)`. Phases 0–1 commit under Krzysztof's git identity; the trailer keeps authorship traceable. Renovate app PRs on `renovate/*` are exempt (ADR-0014). -->
+<!-- Agent commits must include the trailer `Agent: <tool> (<model>)` (ADR-0008). Example: `Agent: claude-code (<model>)`. Phases 0–1 commit under Krzysztof's git identity; the trailer keeps authorship traceable. Renovate app PRs on `renovate/*` are exempt (ADR-0014). -->

@@ -50,15 +50,3 @@ body:
         docs/**
     validations:
       required: true
-
-  - type: dropdown
-    id: risk
-    attributes:
-      label: Risk
-      description: Expected risk class (ADR-0008, ADR-0013). The risk-classifier Warden sets the pull-request label and overrides this hint. High risk always needs Krzysztof.
-      options:
-        - "risk:low"
-        - "risk:medium"
-        - "risk:high"
-    validations:
-      required: true

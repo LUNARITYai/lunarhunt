@@ -1,5 +1,5 @@
 # Label source of truth (ADR-0001, amended by ADR-0008, ADR-0013 and ADR-0014).
-# CI job labels-sync will create these; do not add labels by hand.
+# Until the labels-sync CI job exists, labels are created once from this file. Agents must not create labels outside it (C-09).
 # Colours are not specified in the ADRs. Descriptions paraphrase those ADRs.
 
 - name: "type:feature"

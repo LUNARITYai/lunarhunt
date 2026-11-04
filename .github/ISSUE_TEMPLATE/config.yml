@@ -1,0 +1,2 @@
+# Blank issues omit allowed paths. scope-guard reads those paths from the Issue Form (ADR-0001).
+blank_issues_enabled: false

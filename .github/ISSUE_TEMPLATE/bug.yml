@@ -52,15 +52,3 @@ body:
         apps/api/**
     validations:
       required: true
-
-  - type: dropdown
-    id: risk
-    attributes:
-      label: Risk
-      description: Expected risk class (ADR-0008, ADR-0013). The risk-classifier Warden sets the pull-request label and overrides this hint. `test:waived` and `needs:human` make the pull request risk:high.
-      options:
-        - "risk:low"
-        - "risk:medium"
-        - "risk:high"
-    validations:
-      required: true
