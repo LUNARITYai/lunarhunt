@@ -142,6 +142,9 @@ describe("fail-closed engine", () => {
         model: null,
         interactive: true,
         cwd: root,
+        phase: "pre" as const,
+        stop_status: null,
+        foreign: false,
       },
       charter: {} as never,
       task: { kind: "missing" as const },
@@ -168,6 +171,7 @@ describe("fail-closed engine", () => {
     const verdict = evaluateRules(ctx, {
       "protected-paths": deny,
       "secret-read-guard": () => null,
+      "generated-files-guard": () => null,
       "command-guard": rewrite,
       "scope-guard": ask,
     });

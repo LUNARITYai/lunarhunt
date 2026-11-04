@@ -30,6 +30,30 @@ export function finalizeVerdict(
   return { ...verdict, rendered: verdict.decision };
 }
 
+const json = (value: unknown): string => `${JSON.stringify(value)}\n`;
+
+/** Output for PostToolUse, Stop, afterFileEdit, stop and sessionStart; null for the pre-edit events. */
+function renderLifecycle(
+  tool: string,
+  event: string,
+  verdict: Verdict,
+): string | null {
+  const allowed = verdict.decision === "allow";
+  if (tool === "claude" && (event === "PostToolUse" || event === "Stop")) {
+    return allowed ? "" : json({ decision: "block", reason: verdict.message });
+  }
+  if (tool === "cursor" && event === "sessionStart") {
+    return json(allowed ? { env: { PANOPTICON_AGENT: "cursor" } } : {});
+  }
+  if (tool === "cursor" && event === "stop") {
+    return json(allowed ? {} : { followup_message: verdict.message });
+  }
+  if (tool === "cursor" && event === "afterFileEdit") {
+    return json({});
+  }
+  return null;
+}
+
 export function renderHook(input: {
   tool: string;
   event: string;
@@ -37,6 +61,10 @@ export function renderHook(input: {
   raw: Record<string, unknown>;
 }): string {
   const { verdict } = input;
+  const lifecycle = renderLifecycle(input.tool, input.event, verdict);
+  if (lifecycle !== null) {
+    return lifecycle;
+  }
   if (input.tool === "claude") {
     if (verdict.decision === "allow") {
       return "";
