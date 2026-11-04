@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "source": "documented",
+    "provisional": true,
+    "tool": "cursor",
+    "event": "stop",
+    "note": "Built from the Cursor hooks docs, not recorded. Replace with a recording from cursor-agent before merge.",
+    "expect": {
+      "action": "stop",
+      "path": null,
+      "command": null,
+      "mcp_server": null,
+      "decision": "allow",
+      "rule": "none"
+    }
+  },
+  "stdin": {
+    "conversation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "generation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "model": "grok-4.7",
+    "status": "completed",
+    "loop_count": 0,
+    "session_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "hook_event_name": "stop",
+    "cursor_version": "2026.10.22-27dcf5f",
+    "workspace_roots": ["__WORKTREE__"],
+    "user_email": null,
+    "transcript_path": "transcript.jsonl"
+  }
+}
