@@ -5,6 +5,12 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import { parse } from "yaml";
 import { z } from "zod";
+import {
+  BASE_MODEL_MESSAGE,
+  ENGINES,
+  isEngineName,
+  modelHasEmbeddedSuffix,
+} from "./engines.ts";
 
 const schemaPath = fileURLToPath(
   new URL("../schema/charter.schema.json", import.meta.url),
@@ -17,25 +23,59 @@ const NEGATION_LISTS = new Set([
   "paths.secrets_deny_read",
 ]);
 
-const engine = z.enum(["claude", "cursor"]);
-const effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
-const model = z.string().min(1);
 const glob = z.string().min(1);
 
-const engineModelEffort = z.strictObject({
-  engine,
-  model,
-  effort,
+const engineSchema = z.string().min(1).refine(isEngineName, {
+  message: "unknown engine",
 });
 
-const roleSchema = z.strictObject({
-  engine,
-  model,
-  effort,
-  allowed_paths: z.array(glob).optional(),
-  read_only: z.boolean().optional(),
-  escalate_to: engineModelEffort.optional(),
-});
+const invocationShape = {
+  engine: engineSchema,
+  model: z.string().min(1),
+  effort: z.string().min(1),
+  fast: z.boolean().optional(),
+};
+
+function refineInvocation(
+  role: { engine: string; model: string; effort: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (!isEngineName(role.engine)) {
+    return;
+  }
+  const adapter = ENGINES[role.engine];
+  if (!adapter.efforts.includes(role.effort)) {
+    const allowed = adapter.efforts.join(", ");
+    ctx.addIssue({
+      code: "custom",
+      path: ["effort"],
+      message: `effort ${role.effort} is not valid for ${role.engine} (${allowed})`,
+    });
+  }
+  if (
+    adapter.embedsEffort &&
+    modelHasEmbeddedSuffix(role.model, adapter.efforts)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["model"],
+      message: BASE_MODEL_MESSAGE,
+    });
+  }
+}
+
+const invocationSchema = z
+  .strictObject(invocationShape)
+  .superRefine(refineInvocation);
+
+const roleSchema = z
+  .strictObject({
+    ...invocationShape,
+    allowed_paths: z.array(glob).optional(),
+    read_only: z.boolean().optional(),
+    escalate_to: invocationSchema.optional(),
+  })
+  .superRefine(refineInvocation);
 
 const roleGate = z.strictObject({
   roles: z.union([z.literal("all"), z.array(z.string().min(1)).min(1)]),
@@ -175,6 +215,12 @@ function formatAjvErrors(errors: ErrorObject[] | null | undefined): string[] {
   }
   return errors.map((err) => {
     const path = err.instancePath.length > 0 ? err.instancePath : "/";
+    const embedded =
+      path.endsWith("/model") &&
+      (err.keyword === "not" || err.schemaPath.includes("cursorModelSuffix"));
+    if (embedded) {
+      return `${path} ${BASE_MODEL_MESSAGE}`;
+    }
     return `${path} ${err.message ?? "is invalid"}`;
   });
 }

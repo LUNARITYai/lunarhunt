@@ -100,7 +100,14 @@ describe("normative Charter", () => {
     expect(parsed.charter.version).toBe(1);
     expect(parsed.charter.autonomy).toEqual({ phase: 0, kill_switch: false });
     expect(parsed.charter.roles.implementer.engine).toBe("cursor");
-    expect(parsed.charter.roles.implementer.model).toBe("grok-4.7-high");
+    expect(parsed.charter.roles.implementer.model).toBe("grok-4.7");
+    expect(parsed.charter.roles.implementer.effort).toBe("medium");
+    expect(parsed.charter.roles.implementer.escalate_to?.model).toBe(
+      "grok-4.7",
+    );
+    expect(parsed.charter.roles.implementer.escalate_to?.effort).toBe("high");
+    expect(parsed.charter.roles.overseer.effort).toBe("high");
+    expect(parsed.charter.roles.reviewer.effort).toBe("medium");
     expect(parsed.charter.roles.debugger.effort).toBe("high");
   });
 
@@ -145,6 +152,79 @@ describe("charter rejection", () => {
     expect(validateCharterDocument(doc).ok).toBe(false);
   });
 
+  it("rejects a model that already embeds effort or -fast", () => {
+    for (const model of ["grok-4.7-high", "grok-4.7-medium-fast"]) {
+      const doc = clone();
+      asRecord(asRecord(doc.roles).implementer).model = model;
+      const ajv = validateWithAjv(doc);
+      const zodResult = parseWithZod(doc);
+      expect(ajv.ok).toBe(false);
+      expect(zodResult.ok).toBe(false);
+      const combined = validateCharterDocument(doc);
+      expect(combined.ok).toBe(false);
+      if (!combined.ok) {
+        expect(combined.errors.join("\n")).toMatch(/base model/);
+      }
+      if (!zodResult.ok) {
+        expect(zodResult.errors.join("\n")).toMatch(/base model/);
+      }
+    }
+  });
+
+  it("rejects effort xhigh on claude", () => {
+    const doc = clone();
+    const role = asRecord(asRecord(doc.roles).debugger);
+    role.engine = "claude";
+    role.model = "opus";
+    role.effort = "xhigh";
+    expect(validateWithAjv(doc).ok).toBe(false);
+    expect(parseWithZod(doc).ok).toBe(false);
+
+    role.effort = "high";
+    expect(validateCharterDocument(doc).ok).toBe(true);
+  });
+
+  it("rejects escalate_to the same way as a role", () => {
+    const embedded = clone();
+    const embeddedTarget = asRecord(
+      asRecord(asRecord(embedded.roles).implementer).escalate_to,
+    );
+    embeddedTarget.model = "grok-4.7-high";
+    expect(validateWithAjv(embedded).ok).toBe(false);
+    expect(parseWithZod(embedded).ok).toBe(false);
+
+    const unknown = clone();
+    asRecord(asRecord(asRecord(unknown.roles).implementer).escalate_to).engine =
+      "openai";
+    expect(validateCharterDocument(unknown).ok).toBe(false);
+
+    const effort = clone();
+    const target = asRecord(
+      asRecord(asRecord(effort.roles).implementer).escalate_to,
+    );
+    target.engine = "claude";
+    target.model = "opus";
+    target.effort = "xhigh";
+    expect(validateWithAjv(effort).ok).toBe(false);
+    expect(parseWithZod(effort).ok).toBe(false);
+  });
+
+  it("allows optional fast and a claude model ending in -high", () => {
+    const doc = clone();
+    const reviewer = asRecord(asRecord(doc.roles).reviewer);
+    reviewer.fast = true;
+    expect(validateCharterDocument(doc).ok).toBe(true);
+    reviewer.fast = "yes";
+    expect(validateCharterDocument(doc).ok).toBe(false);
+
+    const claude = clone();
+    const role = asRecord(asRecord(claude.roles).debugger);
+    role.engine = "claude";
+    role.model = "custom-high";
+    role.effort = "high";
+    expect(validateCharterDocument(claude).ok).toBe(true);
+  });
+
   it("rejects an empty model, a missing engine and an unknown engine", () => {
     const emptyModel = clone();
     asRecord(asRecord(emptyModel.roles).overseer).model = "";
@@ -167,14 +247,17 @@ describe("charter rejection", () => {
 describe("charter-validate CLI", () => {
   const cli = join(repoRoot, "wardens/src/cli.ts");
 
-  function run(cwd: string): {
+  function run(
+    cwd: string,
+    args: string[] = ["check", "charter-validate"],
+  ): {
     status: number | null;
     stdout: string;
     stderr: string;
   } {
     const result = spawnSync(
       process.execPath,
-      ["--experimental-strip-types", cli, "check", "charter-validate"],
+      ["--experimental-strip-types", cli, ...args],
       { cwd, encoding: "utf8" },
     );
     return {
@@ -217,5 +300,24 @@ describe("charter-validate CLI", () => {
     expect(verdict.decision).toBe("deny");
     expect(verdict.message).toBe(CHARTER_INVALID_MESSAGE);
     expect(verdict.message).toMatch(MESSAGE_PATTERN);
+  });
+
+  it("prints the resolved model for a Charter role", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wardens-charter-"));
+    execFileSync("git", ["init"], { cwd: dir });
+    writeFileSync(join(dir, "panopticon.charter.yaml"), charterText);
+    const implementer = run(dir, ["check", "role", "implementer"]);
+    expect(implementer.status).toBe(0);
+    expect(JSON.parse(implementer.stdout)).toEqual({
+      model: "grok-4.7-medium",
+      args: [],
+    });
+    const overseer = run(dir, ["check", "role", "overseer"]);
+    expect(JSON.parse(overseer.stdout)).toEqual({
+      model: "grok-4.7-high",
+      args: [],
+    });
+    const unknown = run(dir, ["check", "role", "missing"]);
+    expect(unknown.status).toBe(2);
   });
 });

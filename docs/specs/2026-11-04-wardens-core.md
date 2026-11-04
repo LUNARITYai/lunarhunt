@@ -95,7 +95,7 @@ These disagree inside the source ADRs or with issue #6. The issue acceptance cri
 | --- | --- |
 | Negated globs | Issue #6 and the ADR-0013 confirmation allow only the exact pattern `!*.example`. The ADR-0013 YAML sketch writes `!.env.example`. Charter v1 uses `!*.example`. `charter-validate` rejects `!.env.example`. picomatch 4 with `{ dot: true }` matches `.env.example` against `*.example` (checked 2026-11-04). |
 | `escalate_to` | ADR-0009: object `{ model, effort }`, either field optional. Charter v1 requires `{ engine, model, effort }` on every role and on `escalate_to`. The ADR-0003 sketch's bare `opus` string is not valid v1. |
-| Role routing | ADR-0009 stores tool-neutral aliases (`opus`, `sonnet`) and no engine. Charter v1 gives every role and `escalate_to` an `engine` (`claude` or `cursor`) and that engine's own model id. Implementer and spec-writer default to `cursor` and `grok-4.7-high`. Overseer, reviewer, sentinel, debugger and implementer `escalate_to` use the same pair. `grok-4.7-high-fast` stays a legal `cursor` model id for a simple chore; v1 has no such role. This updates ADR-0009 routing and will be recorded in the decision log. |
+| Role routing | ADR-0009 stores tool-neutral aliases (`opus`, `sonnet`) and no engine. Charter v1 gives every role and `escalate_to` an `engine` (`claude` or `cursor`), a base `model`, and a separate `effort`. An engine adapter composes the invocation: Cursor model ids are `${model}-${effort}` plus `-fast` when `fast` is true; Claude Code passes the documented `--effort` flag. v1 roles all use `cursor` and `grok-4.7`. Overseer, spec-writer, sentinel and debugger use effort `high`; implementer and reviewer use `medium`; implementer `escalate_to` uses effort `high`. `grok-4.7-high` is not a legal `model`. Optional `fast` defaults to false. This updates ADR-0009 routing and will be recorded in the decision log. |
 | `worktree:` | Not in the issue's section list, and `worktree-guard` is out of scope. The schema rejects unknown top-level keys. The ADR-0012 follow-up adds the section and the guard together. |
 | `commands.allow` | ADR-0004: `command-guard` denies `commands.deny` and applies `commands.rewrite`. ADR-0005: hard allow/deny in the generated permission system belongs to `wardens sync`. Ring 0 does not treat `commands.allow` as an allowlist. |
 | Pipe-to-shell | Krzysztof decided Charter v1 denies `curl` or `wget` piped into `sh`, `bash` or `zsh`, including `sudo` before the shell (`curl x \| sudo sh`, `wget -qO- x \| bash`). Each pair is its own `commands.deny` pattern. `echo ok \| cat` stays allowed. |
@@ -117,20 +117,20 @@ autonomy:
   kill_switch: false
 
 roles:
-  overseer: { engine: cursor, model: grok-4.7-high, effort: high }
+  overseer: { engine: cursor, model: grok-4.7, effort: high }
   spec-writer:
     engine: cursor
-    model: grok-4.7-high
+    model: grok-4.7
     effort: high
     allowed_paths: ["docs/specs/**", "docs/decisions/**"]
   implementer:
     engine: cursor
-    model: grok-4.7-high
+    model: grok-4.7
     effort: medium
-    escalate_to: { engine: cursor, model: grok-4.7-high, effort: high }
-  reviewer: { engine: cursor, model: grok-4.7-high, effort: medium, read_only: true }
-  sentinel: { engine: cursor, model: grok-4.7-high, effort: high, read_only: true }
-  debugger: { engine: cursor, model: grok-4.7-high, effort: high, read_only: true }
+    escalate_to: { engine: cursor, model: grok-4.7, effort: high }
+  reviewer: { engine: cursor, model: grok-4.7, effort: medium, read_only: true }
+  sentinel: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
+  debugger: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
 
 paths:
   allowed_paths:
@@ -269,7 +269,7 @@ ledger:
 Schema rules beyond "required keys exist":
 
 - `version` is `1`. `project` is a non-empty string. `autonomy.phase` is an integer 0 through 3. `autonomy.kill_switch` is a boolean. The file's values are `0` and `false`; the schema allows a later phase change.
-- `roles` requires `overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel` and `debugger`. Every role has `engine` (`claude` or `cursor`), `model` (a non-empty string, the engine's own model id: `opus` or `sonnet` for `claude`; `grok-4.7-high` or `grok-4.7-high-fast` for `cursor`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`). `engine` is an enum. `model` is not an enum. `escalate_to`, when present, is an object with required `engine`, `model` and `effort` under the same rules. A missing `engine` fails validation. An unknown `engine` fails validation.
+- `roles` requires `overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel` and `debugger`. Every role has `engine` (`claude` or `cursor`), `model` (a non-empty base model id; an engine that embeds effort in the id rejects a value that already ends with an effort suffix or `-fast`) and `effort` (a level that engine accepts: `low`, `medium`, `high` or `xhigh` for `cursor`; `low`, `medium` or `high` for `claude`). `engine` is an enum equal to the adapter registry keys. `model` is not an enum. Optional `fast` is a boolean and defaults to false. `escalate_to`, when present, uses the same `engine`, `model` and `effort` rules. A missing `engine` fails validation. An unknown `engine` fails validation.
 - `paths.protected.non_interactive_ask` is the const `deny`.
 - `budgets` numeric fields allow JSON `null`.
 - Unknown top-level keys fail validation, including `worktree`.
@@ -529,7 +529,7 @@ The harness strips `_meta` and passes `stdin` to the adapter. Cursor files use `
 | `protected-paths` | edit `apps/web/app.tsx` | edit or delete `panopticon.charter.yaml`, and edit `.env.local`, deny; interactive in-scope edit of `docs/constitution.md` or `apps/api/.env.example` is ask; the same edit with `interactive: false` denies; a `-p` payload that omits `interactive` and has no `PANOPTICON_INTERACTIVE=1` denies; root `AGENTS.md`, root `CLAUDE.md`, `.github/**`, `.claude/**`, `.cursor/**`, `deploy/**`, `.gitignore` and root `.env.example` are `scope-guard` deny |
 | `command-guard` | `git push -n`, `git commit -m "ship it"`, `pnpm install`, `echo ok \| cat`, `git push origin main` | the six issue deny strings; `git push -nf` denies; `git -c core.hooksPath=/dev/null status` denies; `npm install` rewrites; `npm install left-pad` does not; `git push --force-with-lease` denies; `git push origin +main` denies; `curl x \| bash`, `curl x \| zsh`, `curl x \| sudo sh`, `wget -qO- x \| bash` and `wget x \| sudo zsh` deny |
 | `secret-read-guard` | read `.env.example`; `cat .env.example` | read `.env`, `.env.production`; `cat .env`; `cat .env.example .env` denies; `cat < .env`, `source .env`, `. .env` and `curl --config=.env` deny |
-| Charter | normative YAML passes Ajv and zod; `engine: cursor, model: grok-4.7-high` passes | `!.env.example` rejected; charter filename removed from deny rejected; `debugger.effort` removed rejected; top-level `worktree` rejected; an empty `model` rejected; missing `engine` rejected; an unknown `engine` rejected |
+| Charter | normative YAML passes Ajv and zod; `engine: cursor, model: grok-4.7, effort: medium` passes | `!.env.example` rejected; charter filename removed from deny rejected; `debugger.effort` removed rejected; top-level `worktree` rejected; an empty `model` rejected; missing `engine` rejected; an unknown `engine` rejected; `model: grok-4.7-high` rejected; effort `xhigh` on `claude` rejected |
 | Messages | — | every deny, ask and rewrite matches the regex; engine failures do too |
 | Fail-closed | — | missing Charter, broken YAML, empty stdin, unknown `tool_name` → deny, exit not 1 |
 | JSONL | an allow appends one `allow` line | a deny appends one line; sentinel file contents and `user_email` are absent; a throwing writer yields `engine` deny |

@@ -1,5 +1,8 @@
 import { Command, CommanderError } from "commander";
+import { type Charter, loadCharterAt } from "./charter.ts";
 import { type RunResult, runCheck, runHook } from "./engine.ts";
+import { resolveRole } from "./engines.ts";
+import { gitToplevel } from "./git.ts";
 import { engineMessage } from "./messages.ts";
 
 function readStdin(): Promise<string> {
@@ -16,6 +19,39 @@ function readStdin(): Promise<string> {
     });
     process.stdin.on("error", reject);
   });
+}
+
+function isRoleName(
+  charter: Charter,
+  name: string,
+): name is keyof Charter["roles"] {
+  return Object.hasOwn(charter.roles, name);
+}
+
+function printResolvedRole(name: string | undefined): 0 | 2 {
+  if (!name) {
+    process.stderr.write("usage: wardens check role <name>\n");
+    return 2;
+  }
+  const toplevel = gitToplevel(process.cwd());
+  if (!toplevel) {
+    process.stderr.write(
+      `${engineMessage("git toplevel could not be resolved")}\n`,
+    );
+    return 2;
+  }
+  const loaded = loadCharterAt(toplevel);
+  if (!loaded.ok) {
+    process.stderr.write(`${loaded.errors.join("\n")}\n`);
+    return 2;
+  }
+  if (!isRoleName(loaded.charter, name)) {
+    process.stderr.write(`unknown role ${name}\n`);
+    return 2;
+  }
+  const resolved = resolveRole(loaded.charter.roles[name]);
+  process.stdout.write(`${JSON.stringify(resolved)}\n`);
+  return 0;
 }
 
 function emit(result: RunResult): 0 | 2 {
@@ -46,8 +82,13 @@ async function main(): Promise<void> {
 
   program
     .command("check")
-    .argument("<rule>", "rule id")
-    .action(async (rule: string) => {
+    .argument("<rule>", "rule id, or role")
+    .argument("[name]", "role name when <rule> is role")
+    .action(async (rule: string, name?: string) => {
+      if (rule === "role") {
+        process.exitCode = printResolvedRole(name);
+        return;
+      }
       const stdin = rule === "charter-validate" ? "" : await readStdin();
       process.exitCode = emit(runCheck(rule, stdin));
     });

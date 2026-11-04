@@ -40,9 +40,45 @@
   },
   "$defs": {
     "engine": { "enum": ["claude", "cursor"] },
-    "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
     "model": { "type": "string", "minLength": 1 },
     "glob": { "type": "string", "minLength": 1 },
+    "claudeEffort": { "enum": ["low", "medium", "high"] },
+    "cursorEffort": { "enum": ["low", "medium", "high", "xhigh"] },
+    "cursorModelSuffix": {
+      "type": "string",
+      "pattern": "-(?:medium|xhigh|high|low)(?:-fast)?$|-fast$"
+    },
+    "invocationRules": {
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "engine": { "const": "claude" } },
+            "required": ["engine"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "effort": { "$ref": "#/$defs/claudeEffort" }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": { "engine": { "const": "cursor" } },
+            "required": ["engine"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "effort": { "$ref": "#/$defs/cursorEffort" },
+              "model": { "not": { "$ref": "#/$defs/cursorModelSuffix" } }
+            }
+          }
+        }
+      ]
+    },
     "engineModelEffort": {
       "type": "object",
       "additionalProperties": false,
@@ -50,8 +86,10 @@
       "properties": {
         "engine": { "$ref": "#/$defs/engine" },
         "model": { "$ref": "#/$defs/model" },
-        "effort": { "$ref": "#/$defs/effort" }
-      }
+        "effort": { "type": "string", "minLength": 1 },
+        "fast": { "type": "boolean" }
+      },
+      "allOf": [{ "$ref": "#/$defs/invocationRules" }]
     },
     "role": {
       "type": "object",
@@ -60,14 +98,16 @@
       "properties": {
         "engine": { "$ref": "#/$defs/engine" },
         "model": { "$ref": "#/$defs/model" },
-        "effort": { "$ref": "#/$defs/effort" },
+        "effort": { "type": "string", "minLength": 1 },
+        "fast": { "type": "boolean" },
         "allowed_paths": {
           "type": "array",
           "items": { "$ref": "#/$defs/glob" }
         },
         "read_only": { "type": "boolean" },
         "escalate_to": { "$ref": "#/$defs/engineModelEffort" }
-      }
+      },
+      "allOf": [{ "$ref": "#/$defs/invocationRules" }]
     },
     "roles": {
       "type": "object",
