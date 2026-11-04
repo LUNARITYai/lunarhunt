@@ -1,0 +1,42 @@
+# Dev Container base Cell (ADR-0007). Postgres only.
+# The local Grafana/Loki/Tempo/Prometheus stack stays with the observability work (ADR-0010).
+name: lunarhunt
+
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/lunarhunt:cached
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      COMPOSE_PROJECT_NAME: lunarhunt
+      DATABASE_URL: postgresql://lunarhunt:lunarhunt@postgres:5432/lunarhunt
+      WEB_PORT: "3000"
+      API_PORT: "8000"
+      UV_PYTHON: "3.14.10"
+
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lunarhunt
+      POSTGRES_PASSWORD: lunarhunt
+      POSTGRES_DB: lunarhunt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lunarhunt -d lunarhunt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

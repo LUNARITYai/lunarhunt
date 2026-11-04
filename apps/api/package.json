@@ -1,0 +1,11 @@
+{
+  "name": "@lunarhunt/api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "pnpm exec biome check . && uv run --frozen --directory ../.. ruff check apps/api && uv run --frozen --directory ../.. ruff format --check apps/api",
+    "typecheck": "uv run --frozen --directory ../.. pyright apps/api",
+    "test": "uv run --frozen --directory ../.. pytest apps/api/tests",
+    "check": "node -e \"process.exit(0)\""
+  }
+}

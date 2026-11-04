@@ -1,0 +1,16 @@
+[project]
+name = "lunarhunt-api"
+version = "0.0.0"
+description = "LunarHunt HTTP API"
+requires-python = ">=3.14.10,<3.15"
+dependencies = ["fastapi>=0.162.0"]
+
+[project.scripts]
+export-openapi = "lunarhunt_api.export_openapi:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

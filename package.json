@@ -1,0 +1,20 @@
+{
+  "name": "lunarhunt",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": "26.13.0",
+    "pnpm": "12.16.1"
+  },
+  "scripts": {
+    "check": "TURBO_TELEMETRY_DISABLED=1 turbo run check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.3",
+    "@hey-api/openapi-ts": "0.99.0",
+    "lefthook": "2.2.2",
+    "turbo": "2.11.10",
+    "typescript": "catalog:"
+  }
+}

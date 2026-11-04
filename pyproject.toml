@@ -1,0 +1,48 @@
+[project]
+name = "lunarhunt"
+version = "0.0.0"
+description = "LunarHunt workspace root (virtual; not a published package)"
+requires-python = ">=3.14.10,<3.15"
+dependencies = [
+  "lunarhunt-api",
+  "lunarhunt-worker",
+]
+
+[dependency-groups]
+dev = [
+  "httpx==0.28.1",
+  "pyright>=1.1.414",
+  "pytest>=9.2.0",
+  "ruff>=0.17.3",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.13.6"
+exclude-newer = "7 days"
+
+[tool.uv.sources]
+lunarhunt-api = { workspace = true }
+lunarhunt-worker = { workspace = true }
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = [".claude/worktrees", ".venv", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lunarhunt_api", "lunarhunt_worker"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+include = ["apps/api", "apps/worker"]
+exclude = [".claude/worktrees", ".venv", "node_modules", "**/__pycache__"]
+venvPath = "."
+venv = ".venv"
