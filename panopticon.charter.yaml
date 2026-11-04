@@ -6,20 +6,20 @@ autonomy:
   kill_switch: false
 
 roles:
-  overseer: { engine: cursor, model: grok-4.7, effort: high }
+  overseer: { engine: claude, model: opus, effort: high }
   spec-writer:
-    engine: cursor
-    model: grok-4.7
+    engine: claude
+    model: opus
     effort: high
     allowed_paths: ["docs/specs/**", "docs/decisions/**"]
   implementer:
-    engine: cursor
-    model: grok-4.7
+    engine: claude
+    model: sonnet
     effort: medium
-    escalate_to: { engine: cursor, model: grok-4.7, effort: high }
-  reviewer: { engine: cursor, model: grok-4.7, effort: medium, read_only: true }
-  sentinel: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
-  debugger: { engine: cursor, model: grok-4.7, effort: high, read_only: true }
+    escalate_to: { engine: claude, model: opus, effort: high }
+  reviewer: { engine: claude, model: sonnet, effort: medium, read_only: true }
+  sentinel: { engine: claude, model: sonnet, effort: high, read_only: true }
+  debugger: { engine: claude, model: sonnet, effort: high, read_only: true }
 
 paths:
   allowed_paths:
