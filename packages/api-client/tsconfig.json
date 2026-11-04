@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "ES2022"],
+    "noEmit": true,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["src", "openapi-ts.config.ts"]
+}

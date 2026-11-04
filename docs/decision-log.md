@@ -44,6 +44,7 @@ Status legend: **accepted** (agreed), **proposed** (recommended, awaiting confir
 | 2026-11-04 | ADR-0012, ADR-0013 (incl. A1–A5) and ADR-0014 accepted by Krzysztof. | accepted | 0012, 0013, 0014 |
 | 2026-11-04 | **Agent host (phases 0–2):** an always-on local machine owned by Krzysztof runs the agents (Dev Container Cell, one worktree per task, later the night shift); a second machine is for his own work and PR review. Local agents are preferred for cost; Cursor cloud agents are used only for background work that the local host can't do. | accepted | 0007, 0012 |
 | 2026-11-04 | **Branch prefix mapping** from the issue `type:*` label: `type:feature` → `feat/`, `type:bug` → `fix/`, `type:chore` → `chore/`, `type:spike` → `spike/`, `type:docs` → `docs/` (e.g. `feat/42-offer-crud`). Clarifies C-09 and ADR-0012; `wardens worktree new` applies it. | accepted | 0001, 0012 |
+| 2026-11-04 | **`main` ruleset in phases 0–1:** PR required, 1 approval with CODEOWNERS review, conversation resolution, linear history, squash only, no force pushes or deletions; the Repository admin role is a bypass actor *for pull requests only*, because agents open PRs under Krzysztof's account and GitHub forbids self-approval (ADR-0008). Required status checks are added with CI. Revisit when the agent GitHub App arrives (phase 2). | proposed | 0001, 0008 |
 
 ## Still open
 

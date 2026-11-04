@@ -2,7 +2,7 @@
 
 Operating manual for every agent (Claude Code, Cursor) and human in `LUNARITYai/lunarhunt`. Part of the **Covenant** ([ADR-0006](docs/decisions/0006-covenant-constitution-and-agents-md.md)). The principles in [`docs/constitution.md`](docs/constitution.md) override this file. The nearest `AGENTS.md` in the directory tree adds local rules.
 
-> **Status:** the repository skeleton does not exist yet. Commands and Wardens marked *(planned)* are decided in ADRs but not built.
+> **Status:** the repository skeleton is in place (`pnpm check`, `uv run export-openapi`, Dev Container, CI). Wardens, The Charter and commands marked *(planned)* are not built yet.
 
 ## Purpose
 
@@ -53,18 +53,18 @@ docs/           constitution.md  decisions/  decision-log.md  specs/  research/
 deploy/         Kubernetes manifests (GitOps)
 ```
 
-## Commands *(planned)*
+## Commands
 
 | Command | Use |
 |---------|-----|
-| `pnpm check` | The one entry command: Biome, `tsc --noEmit`, Ruff, Pyright, tests and the API contract drift check on affected packages. Must be green before you finish. |
-| `pnpm --filter wardens test` / `build` | Wardens tests (Vitest) / bundle `wardens/dist/wardens.mjs`. |
+| `pnpm check` | The one entry command: Biome, `tsc --noEmit`, Ruff, Pyright, tests and the API contract drift check. Must be green before you finish. |
+| `pnpm --filter wardens test` / `build` | *(planned)* Wardens tests (Vitest) / bundle `wardens/dist/wardens.mjs`. |
 | `uv run export-openapi` | Regenerate `packages/contracts/openapi.json`, then regenerate the hey-api client. Never hand-edit either. |
-| `wardens sync` | Regenerate tool configs from The Charter (humans; output is in protected paths). |
-| `wardens doctor` | Self-test: fail-closed hooks, duplicate hook runs, effort overrides, stale worktrees and orphan task DBs. |
-| `wardens check <rule>` / `wardens pr-check` | Run one Warden or the PR checks locally. |
-| `wardens worktree new <issue>` | Create the task worktree `.claude/worktrees/<issue>-<slug>` on `<type>/<issue>-<slug>`, with deps, `.env` from `.env.example` and DB `lunarhunt_t<issue>`. |
-| `wardens worktree list` / `remove <name>` / `prune` | List task worktrees; remove one (drops its DB); prune merged or closed ones. |
+| `wardens sync` | *(planned)* Regenerate tool configs from The Charter (humans; output is in protected paths). |
+| `wardens doctor` | *(planned)* Self-test: fail-closed hooks, duplicate hook runs, effort overrides, stale worktrees and orphan task DBs. |
+| `wardens check <rule>` / `wardens pr-check` | *(planned)* Run one Warden or the PR checks locally. |
+| `wardens worktree new <issue>` | *(planned)* Create the task worktree `.claude/worktrees/<issue>-<slug>` on `<type>/<issue>-<slug>`, with deps, `.env` from `.env.example` and DB `lunarhunt_t<issue>`. |
+| `wardens worktree list` / `remove <name>` / `prune` | *(planned)* List task worktrees; remove one (drops its DB); prune merged or closed ones. |
 
 Use `pnpm`, never `npm`; Python runs through `uv run`. TypeScript is linted and formatted by Biome only.
 

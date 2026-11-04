@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Warsaw",
+  "schedule": ["before 6am on Monday"],
+  "minimumReleaseAge": "7 days",
+  "dependencyDashboard": true,
+  "automerge": false,
+  "platformAutomerge": false,
+  "labels": ["dependencies", "type:chore"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on Monday"],
+    "automerge": false,
+    "platformAutomerge": false
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "type:chore"],
+    "automerge": false
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "Group non-major npm dev tooling.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "npm dev tooling (non-major)"
+    },
+    {
+      "description": "Group non-major Python packages.",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "python packages (non-major)"
+    },
+    {
+      "description": "Group GitHub Actions and pin them to commit digests.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "pinDigests": true
+    },
+    {
+      "description": "Group non-major Dev Container and Docker image updates.",
+      "matchManagers": ["dockerfile", "docker-compose", "devcontainer"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "devcontainer and docker images"
+    },
+    {
+      "description": "No Renovate auto-merge. Phase 3 auto-merge is only through autonomy-gate (ADR-0008, ADR-0014).",
+      "matchPackageNames": ["*"],
+      "automerge": false,
+      "platformAutomerge": false
+    }
+  ]
+}

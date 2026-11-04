@@ -1,0 +1,20 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "lint": {},
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^typecheck"]
+    },
+    "contract:check": {
+      "cache": false,
+      "dependsOn": ["^typecheck"]
+    },
+    "check": {
+      "dependsOn": ["lint", "typecheck", "test", "contract:check"],
+      "cache": false
+    }
+  }
+}
