@@ -1,0 +1,54 @@
+name: contract
+
+# CI-only breaking-change detection for the API contract (ADR-0007, ADR-0013).
+# The job always runs so it can be a required check; the comparison runs only
+# when the pull request changes packages/contracts/openapi.json.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: contract
+    runs-on: ubuntu-24.04
+    env:
+      SPEC: packages/contracts/openapi.json
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect contract change
+        id: changed
+        run: |
+          if git diff --quiet "$BASE_SHA" HEAD -- "$SPEC"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$SPEC is unchanged, skipping oasdiff."
+          elif ! git cat-file -e "$BASE_SHA:$SPEC" 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$SPEC does not exist on the base branch, nothing to compare."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Written inside the workspace: the oasdiff action runs in a container that only sees the workspace.
+      - name: Extract base spec
+        if: steps.changed.outputs.changed == 'true'
+        run: git show "$BASE_SHA:$SPEC" > openapi.base.json
+
+      # review: false keeps the specs in CI (no upload); github-token empty means no PR comment.
+      - name: Detect breaking changes
+        if: steps.changed.outputs.changed == 'true'
+        uses: oasdiff/oasdiff-action/breaking@9e56cf8b3aff7edb326d5767d3d23f96127e20c3 # v0.1.21
+        with:
+          base: openapi.base.json
+          revision: ${{ env.SPEC }}
+          fail-on: ERR
+          review: false
+          github-token: ""
