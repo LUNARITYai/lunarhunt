@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lunarhunt.dev/schema/charter.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "project",
+    "autonomy",
+    "roles",
+    "paths",
+    "commands",
+    "covenant",
+    "risk",
+    "require_spec_for",
+    "specs",
+    "quality_gates",
+    "budgets",
+    "log_access",
+    "ledger"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "project": { "type": "string", "minLength": 1 },
+    "autonomy": { "$ref": "#/$defs/autonomy" },
+    "roles": { "$ref": "#/$defs/roles" },
+    "paths": { "$ref": "#/$defs/paths" },
+    "commands": { "$ref": "#/$defs/commands" },
+    "covenant": { "$ref": "#/$defs/covenant" },
+    "risk": { "$ref": "#/$defs/risk" },
+    "require_spec_for": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/specRequirement" }
+    },
+    "specs": { "$ref": "#/$defs/specs" },
+    "quality_gates": { "$ref": "#/$defs/qualityGates" },
+    "budgets": { "$ref": "#/$defs/budgets" },
+    "log_access": { "$ref": "#/$defs/logAccess" },
+    "ledger": { "$ref": "#/$defs/ledger" }
+  },
+  "$defs": {
+    "engine": { "enum": ["claude", "cursor"] },
+    "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "model": { "type": "string", "minLength": 1 },
+    "glob": { "type": "string", "minLength": 1 },
+    "engineModelEffort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "model", "effort"],
+      "properties": {
+        "engine": { "$ref": "#/$defs/engine" },
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "model", "effort"],
+      "properties": {
+        "engine": { "$ref": "#/$defs/engine" },
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" },
+        "allowed_paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glob" }
+        },
+        "read_only": { "type": "boolean" },
+        "escalate_to": { "$ref": "#/$defs/engineModelEffort" }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overseer",
+        "spec-writer",
+        "implementer",
+        "reviewer",
+        "sentinel",
+        "debugger"
+      ],
+      "properties": {
+        "overseer": { "$ref": "#/$defs/role" },
+        "spec-writer": { "$ref": "#/$defs/role" },
+        "implementer": { "$ref": "#/$defs/role" },
+        "reviewer": { "$ref": "#/$defs/role" },
+        "sentinel": { "$ref": "#/$defs/role" },
+        "debugger": { "$ref": "#/$defs/role" }
+      }
+    },
+    "autonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "kill_switch"],
+      "properties": {
+        "phase": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "kill_switch": { "type": "boolean" }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_paths",
+        "protected",
+        "generated",
+        "secrets_deny_read"
+      ],
+      "properties": {
+        "allowed_paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glob" }
+        },
+        "protected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["deny", "ask", "non_interactive_ask"],
+          "properties": {
+            "deny": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/glob" }
+            },
+            "ask": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/glob" }
+            },
+            "non_interactive_ask": { "const": "deny" }
+          }
+        },
+        "generated": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glob" }
+        },
+        "secrets_deny_read": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glob" }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deny", "allow", "rewrite"],
+      "properties": {
+        "deny": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allow": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rewrite": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "covenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agents_md_exempt"],
+      "properties": {
+        "agents_md_exempt": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "medium", "low"],
+      "properties": {
+        "high": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["paths", "labels"],
+          "properties": {
+            "paths": { "type": "array", "items": { "$ref": "#/$defs/glob" } },
+            "labels": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "medium": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default"],
+          "properties": {
+            "default": { "const": true }
+          }
+        },
+        "low": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["paths", "all_files_must_match", "max_changed_lines"],
+          "properties": {
+            "paths": { "type": "array", "items": { "$ref": "#/$defs/glob" } },
+            "all_files_must_match": { "type": "boolean" },
+            "max_changed_lines": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "specRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_types", "paths"],
+      "properties": {
+        "issue_types": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "paths": { "type": "array", "items": { "$ref": "#/$defs/glob" } }
+      }
+    },
+    "specs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["non_spec_files"],
+      "properties": {
+        "non_spec_files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glob" }
+        }
+      }
+    },
+    "qualityGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition_of_done",
+        "diff_coverage_min",
+        "max_pr_changed_lines"
+      ],
+      "properties": {
+        "definition_of_done": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "diff_coverage_min": { "type": "number", "minimum": 0, "maximum": 100 },
+        "max_pr_changed_lines": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "nullableNumber": { "type": ["number", "null"] },
+    "nullableInt": { "type": ["integer", "null"] },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["per_task", "per_night"],
+      "properties": {
+        "per_task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_cost_usd", "max_turns"],
+          "properties": {
+            "max_cost_usd": { "$ref": "#/$defs/nullableNumber" },
+            "max_turns": { "$ref": "#/$defs/nullableInt" }
+          }
+        },
+        "per_night": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_cost_usd"],
+          "properties": {
+            "max_cost_usd": { "$ref": "#/$defs/nullableNumber" }
+          }
+        }
+      }
+    },
+    "roleGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roles"],
+      "properties": {
+        "roles": {
+          "oneOf": [
+            { "const": "all" },
+            {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          ]
+        }
+      }
+    },
+    "logAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local",
+        "preview",
+        "staging",
+        "production",
+        "limits",
+        "redact"
+      ],
+      "properties": {
+        "local": { "$ref": "#/$defs/roleGate" },
+        "preview": { "$ref": "#/$defs/roleGate" },
+        "staging": { "$ref": "#/$defs/roleGate" },
+        "production": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requires"],
+          "properties": {
+            "requires": { "const": "human_approval" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_time_range", "max_results"],
+          "properties": {
+            "max_time_range": { "type": "string", "minLength": 1 },
+            "max_results": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "redact": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sink", "capture_content"],
+      "properties": {
+        "sink": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "capture_content": { "type": "boolean" }
+      }
+    }
+  }
+}

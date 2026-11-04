@@ -38,3 +38,6 @@ htmlcov/
 
 # Claude Code task worktrees (ADR-0012)
 .claude/worktrees/
+
+.panopticon/
+
