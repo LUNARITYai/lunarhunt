@@ -53,7 +53,7 @@ The tool facts below were read from the Claude Code hooks, settings and permissi
 
 ### Post-edit audit
 
-- WHEN Claude Code `PostToolUse` reports an `Edit` or `Write` of a path that `protected-paths` (deny list only), `scope-guard` or `generated-files-guard` would have denied, THE SYSTEM SHALL return `decision: "block"` with a C-30 reason whose next action is `Revert <path> with git checkout -- <path>`.
+- WHEN Claude Code `PostToolUse` reports an `Edit` or `Write` of a path that `protected-paths` (deny list only), `scope-guard` or `generated-files-guard` would have denied, THE SYSTEM SHALL return `decision: "block"` with a C-30 reason whose next action is `Revert <path> with git checkout -- <path>`, or `Delete <path>` when the path is untracked in git (a new file from `Write`).
 - WHEN Claude Code `PostToolUse` reports an edit of a path on `paths.protected.ask`, THE SYSTEM SHALL NOT object, because a human may have approved it.
 - WHEN Cursor `afterFileEdit` fires, THE SYSTEM SHALL run the same audit, append the verdict to the JSONL log and print `{}`.
 
@@ -373,7 +373,7 @@ Adapters drop `tool_response`, `edits`, `last_assistant_message` and `transcript
 | Rule | Actions | Behaviour |
 | --- | --- | --- |
 | `generated-files-guard` | edit, write, delete (pre) | Path matches `paths.generated` (same glob rules as the core spec) → deny. |
-| post-edit audit | edit, write (post) | Runs the deny side of `protected-paths` (deny list only), `scope-guard` and `generated-files-guard`. Any deny → Claude Code `decision: "block"` with the C-30 line from the denying rule and next action `Revert <path> with git checkout -- <path>`. `ask` matches are ignored. |
+| post-edit audit | edit, write (post) | Runs the deny side of `protected-paths` (deny list only), `scope-guard` and `generated-files-guard`. Any deny → Claude Code `decision: "block"` with the C-30 line from the denying rule and next action `Revert <path> with git checkout -- <path>`, or `Delete <path>` when the path is untracked (`git checkout` cannot restore a file that git does not track). `ask` matches are ignored. |
 | `definition-of-done` | stop | See below. |
 | session env | session_start | Always allow. Cursor output `{"env": {"PANOPTICON_AGENT": "cursor"}}`. |
 
@@ -383,6 +383,7 @@ Messages:
 
 - `Blocked by Warden generated-files-guard: packages/contracts/openapi.json is generated. Run uv run export-openapi to regenerate it.`
 - `Blocked by Warden scope-guard: infra/main.tf was edited outside allowed_paths for this task. Revert infra/main.tf with git checkout -- infra/main.tf.`
+- `Blocked by Warden scope-guard: infra/new.tf was edited outside allowed_paths for this task. Delete infra/new.tf.`
 
 #### `definition-of-done`
 
