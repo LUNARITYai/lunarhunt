@@ -40,15 +40,18 @@ Path globs for these rules are resolved from the worktree root (`git rev-parse -
 ### Rules
 
 - WHEN an agent edits, writes or deletes `panopticon.charter.yaml` or `.env.local`, THE SYSTEM SHALL deny via `protected-paths`.
-- WHEN an agent edits `docs/constitution.md` in an interactive event, THE SYSTEM SHALL return `ask` via `protected-paths`.
-- WHEN an agent edits `docs/constitution.md` in a non-interactive event, THE SYSTEM SHALL deny via `protected-paths`.
+- WHEN an agent edits `docs/constitution.md` inside the task scope in an interactive event, THE SYSTEM SHALL return `ask` via `protected-paths`.
+- WHEN an agent edits `docs/constitution.md` inside the task scope in a non-interactive event, THE SYSTEM SHALL deny via `protected-paths`.
+- WHEN an agent edits `docs/constitution.md` inside the task scope from `claude -p` or `agent -p`, the payload omits `interactive`, and `PANOPTICON_INTERACTIVE` is not `1`, THE SYSTEM SHALL deny via `protected-paths`.
 - WHEN an agent edits, writes or deletes a path outside the Charter `allowed_paths` narrowed by `.panopticon/task.json`, THE SYSTEM SHALL deny via `scope-guard`.
+- WHEN an agent edits a path outside the task scope that is not on `paths.protected.deny`, including root `AGENTS.md`, root `CLAUDE.md`, `.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`, `.gitignore` or root `.env.example`, THE SYSTEM SHALL deny via `scope-guard` and SHALL NOT return `ask`.
 - WHEN `.panopticon/task.json` is absent, THE SYSTEM SHALL apply `scope-guard` using Charter `paths.allowed_paths` only.
 - WHEN `.panopticon/task.json` is present but invalid, THE SYSTEM SHALL deny edit, write and delete actions via `scope-guard`.
-- WHEN an agent runs `git commit --no-verify -m x`, `git commit -nm x`, `git push --no-verify`, `git push --force`, `LEFTHOOK=0 git commit` or `curl x | sh`, THE SYSTEM SHALL deny via `command-guard`.
-- WHEN an agent runs `git push -n` or `git commit -m "ship it"`, THE SYSTEM SHALL allow via `command-guard`.
+- WHEN an agent runs `git commit --no-verify -m x`, `git commit -nm x`, `git push --no-verify`, `git push --force`, `git push --force-with-lease`, `git push origin +main` or `LEFTHOOK=0 git commit`, THE SYSTEM SHALL deny via `command-guard`.
+- WHEN an agent runs `curl` or `wget` piped into `sh`, `bash` or `zsh`, including `sudo` before the shell, THE SYSTEM SHALL deny via `command-guard`. Denied commands include `curl x | sh`, `curl x | bash`, `curl x | zsh`, `curl x | sudo sh`, `wget -qO- x | bash` and `wget x | sudo zsh`.
+- WHEN an agent runs `git push -n`, `git commit -m "ship it"` or `echo ok | cat`, THE SYSTEM SHALL allow via `command-guard`.
 - WHEN an agent runs `npm install` with no extra arguments, THE SYSTEM SHALL return `rewrite` via `command-guard` with replacement `pnpm install`.
-- WHEN an agent reads `.env` or `.env.production`, or runs `cat .env`, THE SYSTEM SHALL deny via `secret-read-guard`.
+- WHEN an agent reads `.env` or `.env.production`, or runs `cat .env`, `cat < .env`, `source .env`, `. .env` or `curl --config=.env`, THE SYSTEM SHALL deny via `secret-read-guard`.
 - WHEN an agent reads `.env.example`, THE SYSTEM SHALL allow via `secret-read-guard`.
 
 ### Blocking, fail-closed and logging
@@ -94,10 +97,11 @@ These disagree inside the source ADRs or with issue #6. The issue acceptance cri
 | `escalate_to` | ADR-0009: object `{ model, effort }`. The ADR-0003 sketch's bare `opus` string is not valid v1. |
 | `worktree:` | Not in the issue's section list, and `worktree-guard` is out of scope. The schema rejects unknown top-level keys. The ADR-0012 follow-up adds the section and the guard together. |
 | `commands.allow` | ADR-0004: `command-guard` denies `commands.deny` and applies `commands.rewrite`. ADR-0005: hard allow/deny in the generated permission system belongs to `wardens sync`. Ring 0 does not treat `commands.allow` as an allowlist. |
-| Pipe-to-shell | The Charter pattern is `curl * \| sh`. `curl x \| bash` is not denied. Widening that is a Charter change. |
-| `git push --force*` | The glob matches `--force` and `--force-with-lease`. The matcher must not special-case `--force-with-lease`. |
+| Pipe-to-shell | Krzysztof decided Charter v1 denies `curl` or `wget` piped into `sh`, `bash` or `zsh`, including `sudo` before the shell (`curl x \| sudo sh`, `wget -qO- x \| bash`). Each pair is its own `commands.deny` pattern. `echo ok \| cat` stays allowed. |
+| `git push --force*` | The pattern matches `--force` and `--force-with-lease`. Krzysztof confirmed `--force-with-lease` stays denied; the matcher must not special-case it. A refspec with a leading `+` is denied too (`git push origin +main` matches `git push +*`). |
 | Hook install | Issue allowed paths forbid `.claude/**` and `.cursor/**`. This issue does not install hooks. |
-| Headless bit | Claude Code and Cursor hook docs (2026-11-04) do not document a headless flag on `PreToolUse` / `beforeShellExecution`. Detection is specified under Normalized event. `wardens sync` (out of scope) must set `PANOPTICON_INTERACTIVE=0` for `claude -p` and `agent -p`. |
+| Headless bit | Claude Code and Cursor hook docs (2026-11-04) do not document a headless flag on `PreToolUse` / `beforeShellExecution`. `interactive` defaults to false unless the payload sets it or `PANOPTICON_INTERACTIVE=1`. A `-p` run without that variable is non-interactive, so `ask` denies. `wardens sync` (out of scope) sets `PANOPTICON_INTERACTIVE=1` only for an interactive session. |
+| `protected.ask` outside scope | `ask` is returned only for a path inside the task scope. Root `AGENTS.md`, root `CLAUDE.md`, `.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`, `.gitignore` and root `.env.example` are outside `paths.allowed_paths`, and a task cannot widen scope (C-11), so those edits are denied and `ask` does not fire. Charter v1 omits ask globs that cannot match any `allowed_paths` entry (`.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`). Basename globs `AGENTS.md`, `CLAUDE.md` and `.env.example` stay, because they also match in-scope copies. `panopticon.charter.yaml` stays on the deny list. |
 
 ### Charter v1
 
@@ -146,10 +150,6 @@ paths:
       - "AGENTS.md"
       - "**/AGENTS.md"
       - "CLAUDE.md"
-      - ".claude/**"
-      - ".cursor/**"
-      - ".github/**"
-      - "deploy/**"
       - "apps/api/migrations/**"
       - ".env.example"
     non_interactive_ask: deny
@@ -166,9 +166,21 @@ commands:
   deny:
     - "git push --force*"
     - "git push -f*"
+    - "git push +*"
     - "kubectl * --context prod*"
     - "npm publish*"
     - "curl * | sh"
+    - "curl * | bash"
+    - "curl * | zsh"
+    - "curl * | sudo sh"
+    - "curl * | sudo bash"
+    - "curl * | sudo zsh"
+    - "wget * | sh"
+    - "wget * | bash"
+    - "wget * | zsh"
+    - "wget * | sudo sh"
+    - "wget * | sudo bash"
+    - "wget * | sudo zsh"
     - "git commit --no-verify*"
     - "git commit -n*"
     - "git push --no-verify*"
@@ -249,10 +261,12 @@ ledger:
 
 `paths.allowed_paths` starts from the ADR-0003 sketch and adds `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `turbo.json`, which issue #6 already permits, so a later `task.json` can narrow to them. An issue may narrow this list and cannot widen it (C-11).
 
+`paths.protected.ask` applies only to a path inside the task scope (Charter `allowed_paths`, narrowed by `task.json` when that file is present and valid). An edit outside that scope is denied regardless, and the ask list is not consulted for it. Root `AGENTS.md`, root `CLAUDE.md`, `.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`, `.gitignore`, root `.env.example` and `panopticon.charter.yaml` are outside `paths.allowed_paths`. `panopticon.charter.yaml` is also on the deny list, so `protected-paths` denies it. `.claude/**`, `.cursor/**`, `.github/**` and `deploy/**` are omitted from `ask` because no `allowed_paths` glob can match them. `AGENTS.md`, `CLAUDE.md` and `.env.example` remain: with no `/` they match a basename, including in-scope files such as `wardens/AGENTS.md`, `apps/web/CLAUDE.md` and `apps/api/.env.example`. The root copies of those names stay outside scope, so editing them is `scope-guard` deny.
+
 Schema rules beyond "required keys exist":
 
 - `version` is `1`. `project` is a non-empty string. `autonomy.phase` is an integer 0 through 3. `autonomy.kill_switch` is a boolean. The file's values are `0` and `false`; the schema allows a later phase change.
-- `roles` requires `overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel` and `debugger`. Every role has `model` (`opus` or `sonnet`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`). `escalate_to`, when present, is an object with `model` and/or `effort`.
+- `roles` requires `overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel` and `debugger`. Every role has `model` (a non-empty string, for example `grok-4.7-high` or `opus`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`). `escalate_to`, when present, is an object with `model` and/or `effort`. `escalate_to.model`, when present, is a non-empty string. `model` is not an enum.
 - `paths.protected.non_interactive_ask` is the const `deny`.
 - `budgets` numeric fields allow JSON `null`.
 - Unknown top-level keys fail validation, including `worktree`.
@@ -281,7 +295,7 @@ Match rules:
 - A pattern that contains no `/` is matched against the path's basename. `.env.*` then matches `.env.local` in any directory, and `*.example` matches `.env.example`.
 - A pattern that contains `/` is matched against the full repo-relative path. `**/AGENTS.md` matches `AGENTS.md` and `docs/specs/AGENTS.md`. `apps/**` matches `apps/web/a.ts`.
 - Deny-list evaluation is last-match-wins, starting from "not denied". A normal match sets denied. The exception `!*.example` clears denied when the basename matches `*.example`. A later match can deny again. `secrets/foo.example` matches `!*.example` and then `secrets/**`, so it stays denied. `.env.example` matches `.env.*` and then `!*.example`, so the deny list does not catch it.
-- `protected.ask`, `allowed_paths` and task globs use "any pattern matches". They have no exceptions.
+- `protected.ask`, `allowed_paths` and task globs use "any pattern matches". They have no exceptions. An ask match is returned only when the path is also inside the task scope.
 - `deny` wins over `ask` when both match (ADR-0013 D1).
 
 ### Command matching
@@ -301,15 +315,16 @@ Git short flags, only when `argv[0]` is `git`:
 - These options consume the following token as a value, so it is not a flag: global `-c`, `--config`, `-C`; `commit` `-m`, `--message`, `-F`, `--file`.
 - `git commit -m "ship it"` has no `-n` flag and is allowed. `git commit -nm x` still has `-n` and is denied. `git commit -m --no-verify` stores the message `--no-verify` and is allowed. `git push -n` is dry-run and is allowed. `git push -nf` still has `-f` and is denied.
 
-A `commands.deny` pattern matches if any segment matches it. Patterns that contain ` | ` match only a real pipe: the left pattern matches one segment and the right pattern matches the next segment. `curl x | sh` denies. `curl x | bash` does not. `echo ok && git commit --no-verify` denies because the second segment matches `git commit --no-verify*`.
+A `commands.deny` pattern matches if any segment matches it. Patterns that contain ` | ` match only a real pipe: the left pattern matches one segment and the right pattern matches the next segment. There is no alternation, so each downloader and each shell is its own pattern. `curl *` and `wget *` require at least one argument, which covers flags such as `wget -qO- x`. The right-hand side is `sh`, `bash` or `zsh`, or `sudo` immediately followed by one of those names. `curl x | sh`, `curl x | bash`, `curl x | zsh`, `curl x | sudo sh`, `wget -qO- x | bash` and `wget x | sudo zsh` deny. `echo ok | cat` does not. `echo ok && git commit --no-verify` denies because the second segment matches `git commit --no-verify*`.
 
 Pattern tokens against one segment's argv, in order, as a subsequence (not a string prefix):
 
 - The first token equals `argv[0]`, except an environment pattern.
 - A token that is only `*` and is not last consumes one or more argv tokens, backtracking so a later token can match. A final `*` consumes zero or more. `kubectl * --context prod*` therefore matches `kubectl get pods --context prod`. `LEFTHOOK=0 *` matches any argv when that environment variable's value is `0`.
-- Any other token containing `*` matches exactly one argv token, and `*` matches any characters, including `/` and the empty string. This is not picomatch: picomatch's `*` does not match `/`, so `core.hooksPath=*` would miss `core.hooksPath=/dev/null`. `--force*` matches `--force` and `--force-with-lease`. `-n*` matches `-n` and does not match `--no-verify`.
+- Any other token containing `*` matches exactly one argv token, and `*` matches any characters, including `/` and the empty string. This is not picomatch: picomatch's `*` does not match `/`, so `core.hooksPath=*` would miss `core.hooksPath=/dev/null`. `--force*` matches `--force` and `--force-with-lease`. The matcher must not special-case `--force-with-lease`. `+*` matches one argv token that starts with `+`. `-n*` matches `-n` and does not match `--no-verify`.
 - Any other token equals exactly one argv token.
 - `git commit -n*` matches when some token is `commit` and a later token matches `-n*`. It does not match `git push -n`.
+- `git push +*` matches when some token is `push` and a later token matches `+*`. `git push origin +main` denies. `git push origin main` does not.
 - `git -c core.hooksPath=*` matches the separate argv words `-c` and `core.hooksPath=…`.
 
 `commands.rewrite` matches only a single segment with no environment assignments whose argv is exactly `["npm", "install"]`. `npm install left-pad` is not rewritten. Rewrite loses to any `deny` from another rule or from `commands.deny`.
@@ -322,7 +337,7 @@ The coordinator writes this file at the worktree root. It is gitignored. The eng
 {
   "issue": 6,
   "allowed_paths": ["wardens/**", "docs/specs/2026-11-04-wardens-core.md"],
-  "branch": "feat/6-wardens-core",
+  "branch": "feat/6-wardens-core-charter",
   "slug": "wardens-core"
 }
 ```
@@ -356,13 +371,13 @@ zod `.strict()` object. Adapters copy these fields and nothing else. Claude `too
 | `interactive` | boolean | see below |
 | `cwd` | string | payload `cwd`, else `process.cwd()` |
 
-`interactive` is the first match of:
+`interactive` defaults to false. It is true only when the payload boolean `interactive` is true, or when that field is absent and `PANOPTICON_INTERACTIVE` is `1` or `true`. The value is the first match of:
 
-1. A boolean `interactive` on the payload.
-2. The environment variable `PANOPTICON_INTERACTIVE`: `0` or `false` → false, `1` or `true` → true.
-3. Otherwise `true` (phase 0 is a local interactive session).
+1. A boolean `interactive` on the payload, when that field is present.
+2. `PANOPTICON_INTERACTIVE` set to `1` or `true` → true, or to `0` or `false` → false.
+3. Otherwise `false`, including when the variable is unset.
 
-Headless fixtures set `"interactive": false` on the payload. Non-interactive `ask` becomes `deny` inside `protected-paths` before precedence, with next action `Label the issue needs:human.`
+A `claude -p` or `agent -p` run that omits `interactive` and does not set `PANOPTICON_INTERACTIVE=1` is non-interactive, so `ask` becomes `deny`. Headless fixtures may set `"interactive": false` on the payload. Non-interactive `ask` becomes `deny` inside `protected-paths` before precedence, with next action `Label the issue needs:human.`
 
 Mapping. `--tool` plus `--event` plus `tool_name` selects the row. Any other combination denies with rule `engine`, so an unmapped tool cannot fail open. `wardens sync` must later match only these tools.
 
@@ -388,14 +403,25 @@ Which rules run:
 
 | Rule | Actions | Behaviour |
 | --- | --- | --- |
-| `protected-paths` | edit, write, delete | deny list, else ask list, else no objection. Non-interactive ask becomes deny. A null path denies. |
+| `protected-paths` | edit, write, delete | deny list, else ask list when the path is inside the task scope, else no objection. Non-interactive ask becomes deny. A null path denies. Outside the task scope, `ask` does not apply. |
 | `scope-guard` | edit, write, delete | in-scope check above. A null path denies. |
-| `secret-read-guard` | read, shell | read: `path` against `secrets_deny_read`. shell: tokenize, resolve every non-option argv word (words that do not start with `-`) as a path, deny if any match. `cat .env` denies. `cat .env.example` allows. A null read path denies. |
+| `secret-read-guard` | read, shell | read: `path` against `secrets_deny_read`. shell: the path scan below. A null read path denies. |
 | `command-guard` | shell | deny patterns, else rewrite, else no objection. |
+
+On `shell`, `secret-read-guard` tokenizes the command and denies if any resolved path matches `secrets_deny_read`. These are paths:
+
+- an argv word that does not start with `-` (`cat .env` denies; `cat .env.example` allows)
+- the value after the first `=` in a `--opt=value` word (`curl --config=.env` denies)
+- the target of an input redirection `<`, either the word after a `<` token or the remainder of a `<file` token (`cat < .env` and `cat <.env` deny)
+- the operand of `source`, and the operand of a command whose `argv[0]` is `.` (`source .env` and `. .env` deny)
+
+#### Known limitations
+
+The shell secret scan does not expand variables, so `cat "$ENV_FILE"` and `source "$ENV_FILE"` are not denied here. It does not re-parse a script passed to `sh -c` or `bash -c`. It does not treat environment assignments (`FOO=.env cat`), process substitution, here-documents, here-strings, output redirections (`>` and `>>`) or a short option with an attached value (`-f=.env`) as secret paths.
 
 `mcp` is normalized and does not by itself trip these four rules. A follow-up owns MCP policy.
 
-Precedence when several rules object: `deny` beats `rewrite`, then `ask`, then allow. Same severity: `protected-paths`, `secret-read-guard`, `command-guard`, `scope-guard`. One winner. `cat .env` is `secret-read-guard`. An edit of `.env.local` that is also outside the task is `protected-paths`, not `scope-guard`. An interactive edit of `docs/constitution.md` outside the task is `scope-guard` deny, because deny beats ask.
+Precedence when several rules object: `deny` beats `rewrite`, then `ask`, then allow. Same severity: `protected-paths`, `secret-read-guard`, `command-guard`, `scope-guard`. One winner. `cat .env` is `secret-read-guard`. An edit of `.env.local` that is also outside the task is `protected-paths`, not `scope-guard`. `ask` applies only inside the task scope. An edit outside that scope is denied regardless: root `AGENTS.md`, root `CLAUDE.md`, `.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`, `.gitignore` and root `.env.example` are `scope-guard` deny, including when a basename glob would otherwise ask. `panopticon.charter.yaml` is `protected-paths` deny. An interactive edit of `docs/constitution.md` inside the task is `protected-paths` ask; the same edit outside the task is `scope-guard` deny.
 
 ### Hook responses
 
@@ -408,7 +434,7 @@ Stdout is either empty or one JSON object. No log lines on stdout. Exit 0 when t
 | ask | exit 0, `permissionDecision: "ask"`, reason is the C-30 line | `beforeShellExecution`: `permission: "ask"` with the same messages. `preToolUse`: Cursor does not enforce `ask`, so emit `permission: "deny"` (ADR-0013: no native ask degrades to deny) |
 | rewrite | exit 0, `updatedInput` is the original `tool_input` with `command` set to `pnpm install`, no `permissionDecision`. `additionalContext` is the C-30 line | `preToolUse`: `permission: "allow"` and `updated_input` with `command: "pnpm install"`. `beforeShellExecution` has no updated-input field: `permission: "deny"` and the C-30 line whose next action is `Run pnpm install.` |
 
-`wardens check` does not render a tool. It prints `{ "rule", "decision", "message", "replacement", "rendered" }` and exits 0 or 2 as in the acceptance criteria. `rendered` equals `decision` except for a Cursor `preToolUse` ask, where `decision` stays `ask` and `rendered` is `deny`.
+`wardens check` does not render a tool. It prints `{ "rule", "decision", "message", "replacement", "rendered" }` and exits 0 or 2 as in the acceptance criteria. `wardens check` exits 2 on deny; `wardens hook` exits 0 and carries the deny in JSON. `rendered` equals `decision` except for a Cursor `preToolUse` ask, where `decision` stays `ask` and `rendered` is `deny`.
 
 Message shape, locked by a unit test:
 
@@ -497,10 +523,10 @@ The harness strips `_meta` and passes `stdin` to the adapter. Cursor files use `
 | Area | Allow / expected pass | Deny / ask / rewrite |
 | --- | --- | --- |
 | `scope-guard` | edit `wardens/src/cli.ts` inside Charter ∩ task | edit `infra/main.tf`; task glob `infra/**` still denies; missing task file allows `docs/specs/x.md` and denies `infra/main.tf`; invalid task file denies the edit and still allows a read of `.env.example` |
-| `protected-paths` | edit `apps/web/app.tsx` | edit or delete `panopticon.charter.yaml`, and edit `.env.local`, deny; interactive edit of `docs/constitution.md` or `.env.example` is ask; the same edits with `interactive: false` deny |
-| `command-guard` | `git push -n`, `git commit -m "ship it"`, `pnpm install`, `curl x \| bash` | the six issue deny strings; `git push -nf` denies; `git -c core.hooksPath=/dev/null status` denies; `npm install` rewrites; `npm install left-pad` does not; `git push --force-with-lease` denies |
-| `secret-read-guard` | read `.env.example`; `cat .env.example` | read `.env`, `.env.production`; `cat .env`; `cat .env.example .env` denies |
-| Charter | normative YAML passes Ajv and zod | `!.env.example` rejected; charter filename removed from deny rejected; `debugger.effort` removed rejected; top-level `worktree` rejected |
+| `protected-paths` | edit `apps/web/app.tsx` | edit or delete `panopticon.charter.yaml`, and edit `.env.local`, deny; interactive in-scope edit of `docs/constitution.md` or `apps/api/.env.example` is ask; the same edit with `interactive: false` denies; a `-p` payload that omits `interactive` and has no `PANOPTICON_INTERACTIVE=1` denies; root `AGENTS.md`, root `CLAUDE.md`, `.github/**`, `.claude/**`, `.cursor/**`, `deploy/**`, `.gitignore` and root `.env.example` are `scope-guard` deny |
+| `command-guard` | `git push -n`, `git commit -m "ship it"`, `pnpm install`, `echo ok \| cat`, `git push origin main` | the six issue deny strings; `git push -nf` denies; `git -c core.hooksPath=/dev/null status` denies; `npm install` rewrites; `npm install left-pad` does not; `git push --force-with-lease` denies; `git push origin +main` denies; `curl x \| bash`, `curl x \| zsh`, `curl x \| sudo sh`, `wget -qO- x \| bash` and `wget x \| sudo zsh` deny |
+| `secret-read-guard` | read `.env.example`; `cat .env.example` | read `.env`, `.env.production`; `cat .env`; `cat .env.example .env` denies; `cat < .env`, `source .env`, `. .env` and `curl --config=.env` deny |
+| Charter | normative YAML passes Ajv and zod; `model: grok-4.7-high` passes | `!.env.example` rejected; charter filename removed from deny rejected; `debugger.effort` removed rejected; top-level `worktree` rejected; an empty `model` rejected |
 | Messages | — | every deny, ask and rewrite matches the regex; engine failures do too |
 | Fail-closed | — | missing Charter, broken YAML, empty stdin, unknown `tool_name` → deny, exit not 1 |
 | JSONL | an allow appends one `allow` line | a deny appends one line; sentinel file contents and `user_email` are absent; a throwing writer yields `engine` deny |
@@ -539,7 +565,7 @@ None. No constitution change. The implementation follows ADR-0003, ADR-0004, ADR
    **Allowed paths:** `docs/specs/2026-11-04-wardens-core.md`
 
 2. **Package, Charter and schema.** Add the normative `panopticon.charter.yaml`, `wardens/schema/charter.schema.json`, Ajv + zod validation, `wardens check charter-validate`, package scripts, tsconfig, Vitest, tsup bundle, the `.panopticon/` gitignore line, and a CODEOWNERS check that does not edit the file while the owner line exists.
-   **Allowed paths:** `panopticon.charter.yaml`, `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `turbo.json`, `.gitignore`, `.github/CODEOWNERS`
+   **Allowed paths:** `panopticon.charter.yaml`, `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `turbo.json` (only if needed), `.gitignore`, `.github/CODEOWNERS`
 
 3. **CLI, adapters, log, fail-closed.** commander `hook` and `check`, the normalized event, the mapping table, C-30 messages, the JSONL writer, and hook response rendering.
    **Allowed paths:** `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`
@@ -549,4 +575,4 @@ None. No constitution change. The implementation follows ADR-0003, ADR-0004, ADR
 
 ## Open questions
 
-None. The issue left glob matching, combined short flags, `task.json`, the normalized event, the block message, fail-closed behaviour, the JSONL line, fixture sources and the test plan unspecified. Those are fixed in the Plan. The conflicts between ADR sketches and issue #6 are fixed in Settled conflicts. A change to `--force-with-lease` or to `curl | bash` is a Charter edit, not a matcher exception.
+None. Krzysztof decided the pipe-to-shell patterns and the force-push patterns; they are Charter v1, not left open. Pipe-to-shell denial covers `curl` and `wget` piped into `sh`, `bash` or `zsh`, including `sudo` before the shell. `git push --force-with-lease` stays denied, and so does a refspec with a leading `+` (`git push origin +main`). The issue left glob matching, combined short flags, `task.json`, the normalized event, the block message, fail-closed behaviour, the JSONL line, fixture sources and the test plan unspecified. Those are fixed in the Plan. The conflicts between ADR sketches and issue #6 are fixed in Settled conflicts.
