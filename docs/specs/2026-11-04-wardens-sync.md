@@ -115,7 +115,7 @@ The generated configs call the bundle. If the configs landed before the engine u
 | `PostToolUse` / `afterFileEdit` purpose | ADR-0005 lists these hooks but gives them no rule. They become an audit that catches an edit the pre-hook should have denied (a bypassed or failed pre-hook). They cannot undo the edit. Claude Code shows the reason next to the tool result. Cursor documents no output for `afterFileEdit`, so it only logs. |
 | Interactive bit | A static settings file cannot tell an interactive session from `claude -p`. Sync does not set `PANOPTICON_INTERACTIVE`. A human who wants an `ask` path to prompt instead of being denied exports `PANOPTICON_INTERACTIVE=1` before starting the session. `wardens/AGENTS.md` documents this. |
 | DoD gate list | C-12 says `pnpm check` covers the whole Definition of Done. The rule runs `pnpm check`, not a per-gate command list. A unit test maps each Charter `quality_gates.definition_of_done` id to a Turborepo task (`lint`→`lint`, `typecheck`→`typecheck`, `test:affected`→`test`, `contract:drift`→`contract:check`) and asserts each task is in `turbo.json` `check.dependsOn`. An unknown gate id fails that test. |
-| Loop limit | ADR-0009 escalates after 3 failed `Stop` hooks. The rule stops blocking after 3 consecutive red stops. In v1 the limit is a constant in the engine, not a Charter key. Claude Code's own cap is 8 continuations. Cursor gets `loop_limit: 3` as a second line. |
+| Loop limit | ADR-0009 escalates after 3 failed `Stop` hooks. The rule stops blocking after 3 consecutive red stops. In v1 the limit is a constant in the engine, not a Charter key; it moves into The Charter with the ADR-0009 escalation work (Decisions, item 1). Claude Code's own cap is 8 continuations. Cursor gets `loop_limit: 3` as a second line. |
 | Agent detection | A git hook cannot see which tool started it. Claude Code gets `env.PANOPTICON_AGENT=claude` from settings. Cursor gets `PANOPTICON_AGENT=cursor` from the `sessionStart` hook output. `CLAUDECODE=1` is a fallback marker if the implementation confirms Claude Code sets it. The model is not known to a git hook, so the agent writes the trailer and `agent-trailer` only checks it. |
 | Who runs `wardens sync` | `AGENTS.md` says humans run it; its output is in protected paths. The engine refuses a writing sync when `PANOPTICON_AGENT` is set. Rings 2 and 3 (`charter-drift`, CODEOWNERS, `risk:high` on `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/**`) are the backstop. Bootstrap: the Task 3 PR is the first sync. It runs before any settings file exists, so the variable is unset. |
 | JSON headers | JSON has no comments, and unknown keys may be rejected by either tool. The generated JSON files carry no "generated" header. `lefthook.yml` gets a YAML comment header. Drift is caught by `charter-drift`, not by a header. |
@@ -245,7 +245,7 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
 }
 ```
 
-The `Bash(...)` permission rules are a second line. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
+The `Bash(...)` permission rules are a second line (Decisions, item 3); unlike hooks, they still apply under `disableAllHooks`. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
 
 `onFailure` needs Claude Code v2.1.295 or later (docs, 2026-11-04). `doctor` warns on an older `claude`.
 
@@ -518,8 +518,12 @@ Each task below becomes its own `agent:ready` issue, linked to #7 as the parent.
 
 Expected size: Task 2 is the largest. If its PR passes 600 changed lines, split `definition-of-done` into its own PR under the same issue.
 
-## Open questions
+## Decisions
 
-1. **Loop limit in The Charter.** v1 keeps the DoD limit (3) as an engine constant tied to ADR-0009. Should it be a Charter key (for example `quality_gates.dod_loop_limit`) instead? Moving it would be a Charter change by Krzysztof plus a schema change.
-2. **`NotebookEdit` deny.** The repository has no notebooks, and `NotebookEdit` path rules never match in Claude Code, so sync denies the tool outright. Confirm, or leave it unhandled.
-3. **`Bash(...)` permission rules from `commands.deny` and `commands.allow`.** They duplicate `command-guard` with looser matching. Keep them as a second line (proposed), or emit only the path rules the issue names?
+Krzysztof answered the draft's open questions on 2026-11-04:
+
+1. **Loop limit stays an engine constant (3) in v1.** It moves into The Charter with the ADR-0009 escalation work, together with the other escalation thresholds (3 failed `Stop` hooks, 5 Warden blocks), so that The Charter and its schema change once.
+2. **`NotebookEdit` is denied.** The repository has no notebooks, and `NotebookEdit` path rules never match in Claude Code, so sync emits the bare tool name in `permissions.deny`.
+3. **`Bash(...)` permission rules are generated** from both `commands.deny` and `commands.allow`. `command-guard` stays authoritative. The deny rules still apply when hooks are turned off with `disableAllHooks`, which does not affect `permissions`. The allow rules spare prompts for routine commands such as `pnpm check`.
+
+No open questions remain.
