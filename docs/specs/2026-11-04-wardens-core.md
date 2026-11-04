@@ -1,310 +1,552 @@
 ---
 status: draft
-issue: #6
-adrs: [0003, 0004, 0005, 0008, 0011, 0012, 0013]
+issue: "#6"
+adrs: ["0003", "0004", "0005", "0008", "0009", "0011", "0012", "0013"]
 ---
 
 # Wardens core: Charter v1, schema validation and ring-0 guard rules
 
 ## Goal and context
 
-Ship the first half of PANOPTICON's phase-0 entry criteria ([ADR-0008](../decisions/0008-autonomy-phases-and-risk-based-merge-policy.md)): **The Charter** as the single source of policy ([ADR-0003](../decisions/0003-the-charter-as-single-source-of-policy.md), amended by [ADR-0013](../decisions/0013-charter-policy-refinements.md)) and the core of the TypeScript Wardens engine ([ADR-0005](../decisions/0005-wardens-engine-in-typescript-with-single-cli.md)) in `wardens/`.
+Issue [#6](https://github.com/LUNARITYai/lunarhunt/issues/6) is the first half of PANOPTICON phase 0 ([ADR-0008](../decisions/0008-autonomy-phases-and-risk-based-merge-policy.md)): put **The Charter** on disk and ship the ring-0 core of the TypeScript Wardens engine. Phase 0 still needs Definition of Done, CI gates and the branch ruleset; those are later issues. This issue delivers the policy file and the four guards an agent hits before a tool call.
 
-This issue ([#6](https://github.com/LUNARITYai/lunarhunt/issues/6)) covers:
+The Charter (`panopticon.charter.yaml`) is the only policy source ([ADR-0003](../decisions/0003-the-charter-as-single-source-of-policy.md), amended by [ADR-0013](../decisions/0013-charter-policy-refinements.md)). The engine in `wardens/` ([ADR-0005](../decisions/0005-wardens-engine-in-typescript-with-single-cli.md)) loads it, checks it against `wardens/schema/charter.schema.json`, and evaluates `scope-guard`, `protected-paths`, `command-guard` and `secret-read-guard` ([ADR-0004](../decisions/0004-four-rings-of-wardens.md)). Claude Code and Cursor payloads are normalized into one event so each rule is written once. Verdicts follow constitution C-30. A protective failure denies the action (C-03). Exit code 1 is never an enforcement result.
 
-- `panopticon.charter.yaml` (v1) and `wardens/schema/charter.schema.json`
-- Charter load + JSON Schema validation (`charter-validate`)
-- Hook payload normalization for Claude Code and Cursor into one internal event
-- Ring-0 rules: `scope-guard`, `protected-paths`, `command-guard`, `secret-read-guard`
-- CLI entry points `wardens hook` and `wardens check` (library: **commander**, per issue Decisions)
-- Fail-closed protective behaviour (constitution C-03), C-30 block messages, and a local JSONL verdict log until Ledger v0
-- Vitest suite with positive/negative cases per rule and contract fixtures
+Krzysztof's decisions on the issue are binding. The implementation agent creates `panopticon.charter.yaml` in the implementation PR; Krzysztof reviews it. After that PR merges, The Charter is a deny path for agents. This spec lands first, with `status: draft`. Implementation starts only after Krzysztof sets `status: ready`. The CLI library is **commander**. Per-task scope is read from `.panopticon/task.json` at the worktree root. Until The Ledger exists ([ADR-0010](../decisions/0010-the-ledger-and-observability.md) is out of scope), every hook run appends one JSON line to `.panopticon/wardens.log.jsonl`.
 
-**Bootstrap exception (binding):** the implementation agent creates `panopticon.charter.yaml` in the implementation PR; Krzysztof reviews and approves it. After merge, The Charter is a deny path for agents.
+`wardens sync`, generated `.claude/**` and `.cursor/**` configs, lefthook, `charter-drift`, `definition-of-done`, `wardens doctor`, `agent-trailer`, `generated-files-guard`, `worktree-guard`, every ring-2 Warden, Ledger writes, security scanners, and phase 1+ routing, budgets and kill-switch behaviour are out of scope. This issue ships the CLI and tests only. It does not edit `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/workflows/**`, root `AGENTS.md` or `docs/decisions/**`.
 
-**Out of scope (follow-up issues):** `wardens sync` and generated tool configs; `charter-drift`; `definition-of-done`; `wardens doctor`; `agent-trailer`; `generated-files-guard`; ring-2 Wardens; writing verdicts to The Ledger; security scanners; phase 1+ routing/budgets/kill-switch behaviour; `worktree-guard` (ADR-0012) — though Charter v1 **includes** the `worktree:` section so later work does not require another Charter schema break.
+Path globs for these rules are resolved from the worktree root (`git rev-parse --show-toplevel` of the hook `cwd`), as [ADR-0012](../decisions/0012-task-isolation-with-git-worktrees.md) requires for `scope-guard` and `protected-paths`. The Charter `worktree:` section and `worktree-guard` are not part of this issue; they land together in the ADR-0012 implementation. ADR-0009 role `allowed_paths` are stored on the `spec-writer` role and are not enforced here. Narrowing comes only from `task.json`.
 
 ## Acceptance criteria (EARS)
 
 ### Charter and schema
 
-- THE SYSTEM SHALL contain `panopticon.charter.yaml` (v1) with `autonomy.phase: 0`, `autonomy.kill_switch: false`, and sections `roles`, `paths` (`allowed_paths`, `protected.deny`, `protected.ask`, `non_interactive_ask: deny`, `generated`, `secrets_deny_read`), `commands`, `covenant`, `risk`, `require_spec_for`, `specs`, `quality_gates`, `budgets` (placeholder `null` values), `log_access`, `ledger` and `worktree` (per ADR-0012 sketch).
-- THE SYSTEM SHALL contain `wardens/schema/charter.schema.json` that requires `paths.protected.deny`, `paths.protected.ask`, `roles.*.model` and `roles.*.effort` (including `debugger`), `risk.high|medium|low`, `require_spec_for` and `covenant.agents_md_exempt`.
-- WHEN the Charter is validated, THE SYSTEM SHALL reject any negated glob other than `!*.example` in `paths.protected.deny` and `paths.secrets_deny_read`.
-- WHEN the Charter is validated, THE SYSTEM SHALL fail if `panopticon.charter.yaml` is missing from `paths.protected.deny`.
-- WHEN `pnpm check` runs, THE SYSTEM SHALL run Charter validation (`charter-validate`), Biome, `tsc` (strict) and Vitest for the `wardens` package so the existing CI job `check` covers it.
-- THE SYSTEM SHALL build the `wardens` package with tsup into one file `wardens/dist/wardens.mjs` (not committed) via `pnpm --filter wardens build`.
-- THE SYSTEM SHALL list `panopticon.charter.yaml` in `.github/CODEOWNERS` with Krzysztof as owner (if not already covered).
-- THE SYSTEM SHALL gitignore `.panopticon/` (add that entry only; no other `.gitignore` policy changes).
+- THE SYSTEM SHALL contain `panopticon.charter.yaml` at version 1 with `autonomy.phase: 0`, `autonomy.kill_switch: false`, and the sections `roles`, `paths`, `commands`, `covenant`, `risk`, `require_spec_for`, `specs`, `quality_gates`, `budgets`, `log_access` and `ledger`, with the values in Plan (Charter v1).
+- THE SYSTEM SHALL contain `wardens/schema/charter.schema.json` (JSON Schema draft 2020-12) that requires `paths.protected.deny`, `paths.protected.ask`, `roles.*.model`, `roles.*.effort` (including `debugger`), `risk.high`, `risk.medium`, `risk.low`, `require_spec_for` and `covenant.agents_md_exempt`.
+- WHEN `panopticon.charter.yaml` is validated, THE SYSTEM SHALL reject a negated glob other than the exact string `!*.example` in `paths.protected.deny` and `paths.secrets_deny_read`.
+- WHEN `panopticon.charter.yaml` is validated, THE SYSTEM SHALL fail when `paths.protected.deny` does not contain `panopticon.charter.yaml`.
+- WHEN `pnpm check` runs, THE SYSTEM SHALL run `charter-validate`, Biome, `tsc --noEmit` with the repository strict TypeScript settings, and Vitest for the `wardens` package, using the existing CI job `check`.
+- THE SYSTEM SHALL build `@lunarhunt/wardens` with tsup into one file `wardens/dist/wardens.mjs` via `pnpm --filter wardens build`, and that file SHALL stay uncommitted.
+- WHEN `panopticon.charter.yaml` is not already owned by `@koszczapinski` in `.github/CODEOWNERS`, THE SYSTEM SHALL add that ownership line. The current file already has it, so the implementation PR makes no CODEOWNERS edit unless the line is gone.
+- THE SYSTEM SHALL append `.panopticon/` to `.gitignore` and SHALL NOT change any other gitignore rule.
 
 ### Normalization and CLI
 
-- WHEN `wardens hook --tool claude|cursor --event <event>` receives a hook JSON document on stdin, THE SYSTEM SHALL normalize it into one internal event validated with zod: `action` ∈ `{shell, read, edit, write, delete, mcp}`, plus `path`, `command`, `mcp_server`, `session_id`, `agent`, `model`, `interactive`, and `cwd` (see Plan).
-- WHEN `wardens check <rule>` runs with an equivalent synthetic or file-based input, THE SYSTEM SHALL evaluate the named rule against the same normalized event shape and print a machine-readable verdict (exit 0 allow, exit 2 deny/ask-as-block for local checks).
+- WHEN `wardens hook --tool claude|cursor --event <event>` receives a hook JSON document on stdin, THE SYSTEM SHALL normalize it with zod into the event in Plan (Normalized event) before any rule runs.
+- WHEN `wardens check <rule>` receives that normalized event on stdin, THE SYSTEM SHALL print one JSON verdict and exit 0 for `allow` and 2 for `deny`, `ask`, `rewrite` or an engine failure.
+- THE SYSTEM SHALL expose `wardens check charter-validate`, which validates `panopticon.charter.yaml` at the git toplevel and uses the same exit codes.
 
 ### Rules
 
-- WHEN an agent edits `panopticon.charter.yaml` or `.env.local`, THE SYSTEM SHALL deny via `protected-paths`.
-- WHEN an agent edits `docs/constitution.md`, THE SYSTEM SHALL return ask via `protected-paths` for an interactive payload and deny for a headless payload.
-- WHEN an agent edits a path outside the Charter `allowed_paths` narrowed by the task's allowed paths, THE SYSTEM SHALL deny via `scope-guard`.
-- WHEN `.panopticon/task.json` exists at the worktree root, THE SYSTEM SHALL narrow `scope-guard` `allowed_paths` to the intersection of Charter `paths.allowed_paths` and `task.json`'s `allowed_paths`.
-- WHEN `.panopticon/task.json` is missing, THE SYSTEM SHALL use Charter `paths.allowed_paths` only for `scope-guard`.
+- WHEN an agent edits, writes or deletes `panopticon.charter.yaml` or `.env.local`, THE SYSTEM SHALL deny via `protected-paths`.
+- WHEN an agent edits `docs/constitution.md` in an interactive event, THE SYSTEM SHALL return `ask` via `protected-paths`.
+- WHEN an agent edits `docs/constitution.md` in a non-interactive event, THE SYSTEM SHALL deny via `protected-paths`.
+- WHEN an agent edits, writes or deletes a path outside the Charter `allowed_paths` narrowed by `.panopticon/task.json`, THE SYSTEM SHALL deny via `scope-guard`.
+- WHEN `.panopticon/task.json` is absent, THE SYSTEM SHALL apply `scope-guard` using Charter `paths.allowed_paths` only.
+- WHEN `.panopticon/task.json` is present but invalid, THE SYSTEM SHALL deny edit, write and delete actions via `scope-guard`.
 - WHEN an agent runs `git commit --no-verify -m x`, `git commit -nm x`, `git push --no-verify`, `git push --force`, `LEFTHOOK=0 git commit` or `curl x | sh`, THE SYSTEM SHALL deny via `command-guard`.
-- WHEN an agent runs `git push -n`, THE SYSTEM SHALL allow via `command-guard` (`-n` is dry-run for push).
-- WHEN an agent runs `npm install`, THE SYSTEM SHALL apply the Charter `commands.rewrite` mapping to `pnpm install` via `command-guard` (rewrite verdict, not a bare allow of `npm install`).
-- WHEN an agent reads `.env`, `.env.production` or runs `cat .env`, THE SYSTEM SHALL deny via `secret-read-guard`.
+- WHEN an agent runs `git push -n` or `git commit -m "ship it"`, THE SYSTEM SHALL allow via `command-guard`.
+- WHEN an agent runs `npm install` with no extra arguments, THE SYSTEM SHALL return `rewrite` via `command-guard` with replacement `pnpm install`.
+- WHEN an agent reads `.env` or `.env.production`, or runs `cat .env`, THE SYSTEM SHALL deny via `secret-read-guard`.
 - WHEN an agent reads `.env.example`, THE SYSTEM SHALL allow via `secret-read-guard`.
 
 ### Blocking, fail-closed and logging
 
-- WHEN a rule blocks, THE SYSTEM SHALL return the tool's native blocking form (Claude Code: exit code 2 or JSON `permissionDecision: deny` / ask; Cursor: deny / ask response) and a message matching `Blocked by Warden <rule-id>: <what was blocked and why>. <Next allowed action>.`
-- THE SYSTEM SHALL NOT use exit code 1 for enforcement.
-- IF the engine hits an internal error, cannot load or validate The Charter, or cannot parse stdin as the expected hook payload, THEN THE SYSTEM SHALL deny (fail-closed, C-03) with a C-30 message naming rule-id `engine` (or the failing rule when known) and next action `label the issue needs:human`.
-- WHEN a hook runs, THE SYSTEM SHALL append one JSON line (timestamp, rule, decision, normalized event without secrets) to `.panopticon/wardens.log.jsonl` at the worktree root, creating `.panopticon/` if needed.
+- WHEN a rule denies, asks or rewrites, THE SYSTEM SHALL show a message matching `Blocked by Warden <rule-id>: <what was blocked and why>. <Next allowed action>.`
+- THE SYSTEM SHALL NOT exit 1 for an allow, deny, ask, rewrite or engine failure.
+- WHEN a Claude Code decision is allow, THE SYSTEM SHALL exit 0 with empty stdout and SHALL NOT emit `permissionDecision: "allow"`.
+- WHEN a Claude Code decision is deny or ask, THE SYSTEM SHALL exit 0 and emit `hookSpecificOutput.permissionDecision` of `deny` or `ask` with the C-30 text in `permissionDecisionReason`.
+- IF the engine cannot load or validate The Charter, cannot parse stdin, cannot map the event, resolves a path outside the worktree, or throws, THE SYSTEM SHALL deny with rule id `engine`.
+- WHEN a hook or `wardens check` invocation finishes with a verdict, THE SYSTEM SHALL append exactly one JSON object to `<worktree>/.panopticon/wardens.log.jsonl`.
+- THE SYSTEM SHALL omit file contents, `user_email` and absolute `cwd` from that log line.
+- IF the verdict line cannot be appended, THE SYSTEM SHALL deny with rule id `engine`.
 
 ### Tests
 
-- THE SYSTEM SHALL contain one positive and one negative Vitest case per rule (`scope-guard`, `protected-paths`, `command-guard`, `secret-read-guard`), plus engine tests for message format, fail-closed paths and JSONL append.
-- THE SYSTEM SHALL contain contract tests on recorded Claude Code and Cursor payloads for every hook event used by ring-0 in this issue.
-- WHEN Claude Code fixtures are built from documentation rather than a live session, THE fixture file SHALL mark that provenance explicitly.
+- THE SYSTEM SHALL contain at least one allowing Vitest case and one denying Vitest case for each of `scope-guard`, `protected-paths`, `command-guard` and `secret-read-guard`.
+- THE SYSTEM SHALL contain contract tests for every hook event in the mapping table, using Cursor payloads recorded from a real `cursor-agent` session and Claude Code payloads built from the official hooks documentation.
+- WHEN a Claude Code fixture was built from documentation, THE SYSTEM SHALL require `_meta.source` `claude-docs` and `_meta.provisional` true, and SHALL fail the suite if a Cursor fixture uses that marker.
 
 ## Plan
 
 ### Approach
 
-1. Turn the placeholder `wardens/` package into a TypeScript CLI package: strict TS, Biome, Vitest, **commander**, **zod**, **yaml** parser, JSON Schema validator, **tsup** single-file ESM bundle `wardens/dist/wardens.mjs`.
-2. Author `panopticon.charter.yaml` v1 from ADR-0003 + ADR-0013 (+ ADR-0012 `worktree:`) and the authoritative schema `wardens/schema/charter.schema.json`.
-3. Implement load → schema-validate → zod-parse Charter once per process invocation.
-4. Implement tool adapters (`claude`, `cursor`) that map hook stdin JSON + `--event` into the normalized event; rules see only the normalized event.
-5. Implement the four ring-0 rules; wire `wardens hook` (stdin) and `wardens check <rule>` (local/CI helper).
-6. Wire package scripts so `pnpm check` / Turborepo `check` runs `charter-validate`, lint, typecheck and tests for `wardens`.
-7. Add `.panopticon/` to `.gitignore`; ensure CODEOWNERS covers The Charter.
+1. Replace the placeholder `wardens/` package with a strict TypeScript package: Biome, Vitest (node environment), commander, zod, the `yaml` package, Ajv (draft 2020-12), picomatch and tsup. New packages go in the `pnpm-workspace.yaml` catalog and are referenced as `catalog:`.
+2. Write `panopticon.charter.yaml` v1 as specified below. The JSON Schema is the structural check; `charter-validate` adds the negation check and the required deny entry.
+3. Normalize hook stdin into one event. Rules receive only that event plus the parsed Charter and the optional task file.
+4. Implement the four rules, `wardens hook` and `wardens check`.
+5. Give the package `lint` (`biome check .`), `typecheck` (`tsc --noEmit`), `test` (`vitest run`) and `check` scripts. `check` runs `node --experimental-strip-types src/cli.ts check charter-validate`. Turborepo already runs `lint`, `typecheck` and `test` before `check` for every package that defines `check` (same pattern as `apps/web`). No workflow file changes.
+6. tsup writes a single ESM bundle `wardens/dist/wardens.mjs` with dependencies inlined. `package.json` `bin.wardens` points at that file. Hooks are not installed in this issue; the follow-up `wardens sync` will call `node <bundle> hook …` with `onFailure: "block"` / `failClosed: true`.
+7. Append `.panopticon/` to `.gitignore`. Confirm CODEOWNERS. Do not edit it while `panopticon.charter.yaml @koszczapinski` is present (it is, today).
 
-### Glob matching (paths)
+Package layout: `wardens/src/**` for the engine, `wardens/test/**` for Vitest and fixtures, `wardens/tsconfig.json` extending `tsconfig.base.json` (no DOM lib), `wardens/vitest.config.ts` with `environment: "node"`. Tests call pure functions with an explicit root. They must not read a developer `.panopticon/task.json` from the real worktree. CLI tests use a temporary git repository.
 
-**Library:** `picomatch` (small, micromatch-compatible, no Babel runtime). Match with `{ dot: true }` so patterns like `.env*` hit hidden files.
+`wardens/AGENTS.md` may be updated because `wardens/**` is an allowed path. Root `AGENTS.md` stays unchanged.
 
-**Path normalization before match:**
+### Settled conflicts
 
-1. Resolve the candidate path relative to the **worktree root** (`git rev-parse --show-toplevel` of event `cwd`, falling back to `process.cwd()`).
-2. Convert to POSIX separators; strip a leading `./`.
-3. Reject / fail-closed if the resolved path escapes the worktree root (symlink or `..` escape) — treat as deny for protective rules.
+These disagree inside the source ADRs or with issue #6. The issue acceptance criteria win.
 
-**Glob semantics:**
+| Topic | Settlement |
+| --- | --- |
+| Negated globs | Issue #6 and the ADR-0013 confirmation allow only the exact pattern `!*.example`. The ADR-0013 YAML sketch writes `!.env.example`. Charter v1 uses `!*.example`. `charter-validate` rejects `!.env.example`. picomatch 4 with `{ dot: true }` matches `.env.example` against `*.example` (checked 2026-11-04). |
+| `escalate_to` | ADR-0009: object `{ model, effort }`. The ADR-0003 sketch's bare `opus` string is not valid v1. |
+| `worktree:` | Not in the issue's section list, and `worktree-guard` is out of scope. The schema rejects unknown top-level keys. The ADR-0012 follow-up adds the section and the guard together. |
+| `commands.allow` | ADR-0004: `command-guard` denies `commands.deny` and applies `commands.rewrite`. ADR-0005: hard allow/deny in the generated permission system belongs to `wardens sync`. Ring 0 does not treat `commands.allow` as an allowlist. |
+| Pipe-to-shell | The Charter pattern is `curl * \| sh`. `curl x \| bash` is not denied. Widening that is a Charter change. |
+| `git push --force*` | The glob matches `--force` and `--force-with-lease`. The matcher must not special-case `--force-with-lease`. |
+| Hook install | Issue allowed paths forbid `.claude/**` and `.cursor/**`. This issue does not install hooks. |
+| Headless bit | Claude Code and Cursor hook docs (2026-11-04) do not document a headless flag on `PreToolUse` / `beforeShellExecution`. Detection is specified under Normalized event. `wardens sync` (out of scope) must set `PANOPTICON_INTERACTIVE=0` for `claude -p` and `agent -p`. |
 
-- Patterns are Charter strings as written (`apps/**`, `.env.*`, `**/AGENTS.md`).
-- Negation (`!pattern`) is allowed **only** in `paths.protected.deny` and `paths.secrets_deny_read`, and **only** when the negated pattern matches `!*.example` (schema + `charter-validate` custom check). Example: `!.env.example`.
-- Evaluation order within a list: last matching pattern wins (gitignore-style). A positive match after a negation re-denies; a trailing `!.env.example` allows that exact basename exception.
-- `protected-paths` precedence: if any `deny` list pattern matches (after negation rules), result is **deny**; else if any `ask` list pattern matches, result is **ask** (then degraded per interactivity); else the rule does not fire (other rules may still fire).
-- `scope-guard`: path must match **at least one** pattern in the effective allowed list (Charter ∩ task). No negation in `allowed_paths`.
+### Charter v1
 
-### Flag / command matching (`command-guard`)
+Normative contents. `charter-validate` accepts this document and rejects the cases in the test plan.
 
-**Not** raw string prefix globs on the whole command line. Steps:
+```yaml
+version: 1
+project: lunarhunt
 
-1. **Split env assignments** leading the command (`LEFTHOOK=0 git commit` → env `{ LEFTHOOK: "0" }` + argv `["git","commit",...]`). Matching Charter patterns that begin with `LEFTHOOK=0` uses this env view.
-2. **Tokenize** the remainder with a POSIX-ish shell tokenizer (dependency: `shell-quote` parse, or equivalent) into `argv[]`. Fail-closed deny if tokenization fails on a candidate deny pattern family (safer than fail-open).
-3. Detect pipelines / shell metacharacters for patterns like `curl * | sh` (pipe-to-shell): if the reconstructed command contains a pipe into `sh`/`bash`/`zsh`/`dash`, deny.
-4. **Expand combined short flags** for known git subcommands: a token matching `^-[a-zA-Z]{2,}$` (no long-opt, no `--`) is expanded into one flag per character **before** option-value attachment. Example: `-nm` → `-n`, `-m` for `git commit`. Characters that take a value consume the following argv element as their argument after expansion (git commit `-m` takes the next token).
-5. **Subcommand-aware long/short meaning:**
-   - `git commit`: `-n` / `--no-verify` are deny targets; `-m` is message.
-   - `git push`: `-n` / `--dry-run` are **allowed**; `--no-verify` / `--force` / `-f` deny per Charter.
-   - `git merge`: `--no-verify` deny.
-6. Charter `commands.deny` entries are matched against the parsed form: program + subcommand + flag set + positional wildcards (`*`), not as a single unparsed string. Implementation MAY compile each deny entry into a small matcher; tests lock the examples in the issue AC.
-7. `commands.rewrite`: if the normalized argv (or original simple command string) equals a rewrite key (e.g. `npm install`), return decision `rewrite` with `replacement` (e.g. `pnpm install`) and a C-30-style message instructing the agent to run the replacement. Hook response uses the tool's native “deny with message” or rewrite channel when available; until tool rewrite APIs are confirmed, **deny with next action = run the rewritten command** is acceptable and must be tested.
-8. `commands.allow` is advisory documentation for humans/`wardens sync` later; ring-0 in this issue only **deny** and **rewrite**. Anything not denied or rewritten is allowed by `command-guard` (other rules still apply).
+autonomy:
+  phase: 0
+  kill_switch: false
 
-### `.panopticon/task.json` format
+roles:
+  overseer: { model: opus, effort: high }
+  spec-writer:
+    model: opus
+    effort: high
+    allowed_paths: ["docs/specs/**", "docs/decisions/**"]
+  implementer:
+    model: sonnet
+    effort: medium
+    escalate_to: { model: opus, effort: high }
+  reviewer: { model: sonnet, effort: medium, read_only: true }
+  sentinel: { model: sonnet, effort: high, read_only: true }
+  debugger: { model: sonnet, effort: high, read_only: true }
 
-Written by the coordinator when a task starts; **gitignored**; lives at the **worktree root**.
+paths:
+  allowed_paths:
+    - "apps/**"
+    - "packages/**"
+    - "wardens/**"
+    - "docs/**"
+    - "pnpm-lock.yaml"
+    - "pnpm-workspace.yaml"
+    - "turbo.json"
+  protected:
+    deny:
+      - "panopticon.charter.yaml"
+      - ".env"
+      - ".env.*"
+      - "!*.example"
+      - "secrets/**"
+    ask:
+      - "docs/constitution.md"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - ".claude/**"
+      - ".cursor/**"
+      - ".github/**"
+      - "deploy/**"
+      - "apps/api/migrations/**"
+      - ".env.example"
+    non_interactive_ask: deny
+  generated:
+    - "packages/api-client/src/**"
+    - "packages/contracts/openapi.json"
+  secrets_deny_read:
+    - ".env"
+    - ".env.*"
+    - "!*.example"
+    - "secrets/**"
+
+commands:
+  deny:
+    - "git push --force*"
+    - "git push -f*"
+    - "kubectl * --context prod*"
+    - "npm publish*"
+    - "curl * | sh"
+    - "git commit --no-verify*"
+    - "git commit -n*"
+    - "git push --no-verify*"
+    - "git merge --no-verify*"
+    - "LEFTHOOK=0 *"
+    - "git -c core.hooksPath=*"
+    - "git config core.hooksPath*"
+    - "wardens worktree remove * --force*"
+  allow:
+    - "pnpm turbo run *"
+    - "pnpm check*"
+    - "uv run pytest *"
+    - "uv run ruff *"
+  rewrite:
+    npm install: pnpm install
+
+covenant:
+  agents_md_exempt: ["packages/contracts", "packages/api-client"]
+
+risk:
+  high:
+    paths:
+      - "**/auth/**"
+      - ".env*"
+      - "secrets/**"
+      - ".github/**"
+      - "panopticon.charter.yaml"
+      - "docs/constitution.md"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - ".claude/**"
+      - ".cursor/**"
+      - "lefthook.yml"
+      - "deploy/**"
+      - "apps/api/migrations/**"
+      - "wardens/**"
+      - "docs/decisions/**"
+      - "docs/decision-log.md"
+    labels: ["test:waived", "needs:human"]
+  medium: { default: true }
+  low:
+    paths: ["docs/**", "**/*.test.*", "**/tests/**"]
+    all_files_must_match: true
+    max_changed_lines: 200
+
+require_spec_for:
+  - issue_types: ["type:feature"]
+    paths: ["apps/**"]
+
+specs:
+  non_spec_files:
+    - "docs/specs/AGENTS.md"
+    - "docs/specs/TEMPLATE.md"
+    - "docs/specs/**/README.md"
+
+quality_gates:
+  definition_of_done: ["lint", "typecheck", "test:affected", "contract:drift"]
+  diff_coverage_min: 80
+  max_pr_changed_lines: 600
+
+budgets:
+  per_task: { max_cost_usd: null, max_turns: null }
+  per_night: { max_cost_usd: null }
+
+log_access:
+  local: { roles: all }
+  preview: { roles: all }
+  staging: { roles: [debugger] }
+  production: { requires: human_approval }
+  limits: { max_time_range: "24h", max_results: 500 }
+  redact: [secrets, pii, cv_data]
+
+ledger:
+  sink: [postgres, otlp]
+  capture_content: false
+```
+
+`paths.allowed_paths` starts from the ADR-0003 sketch and adds `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `turbo.json`, which issue #6 already permits, so a later `task.json` can narrow to them. An issue may narrow this list and cannot widen it (C-11).
+
+Schema rules beyond "required keys exist":
+
+- `version` is `1`. `project` is a non-empty string. `autonomy.phase` is an integer 0 through 3. `autonomy.kill_switch` is a boolean. The file's values are `0` and `false`; the schema allows a later phase change.
+- `roles` requires `overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel` and `debugger`. Every role has `model` (`opus` or `sonnet`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`). `escalate_to`, when present, is an object with `model` and/or `effort`.
+- `paths.protected.non_interactive_ask` is the const `deny`.
+- `budgets` numeric fields allow JSON `null`.
+- Unknown top-level keys fail validation, including `worktree`.
+- A `!` prefix is legal only as the exact item `!*.example`, and only inside `paths.protected.deny` and `paths.secrets_deny_read`. Any other `!` fails validation, including inside `allowed_paths`.
+- `paths.protected.deny` must contain the item `panopticon.charter.yaml`.
+
+After Ajv succeeds, a zod parser accepts the same document. A test feeds the normative YAML through both and expects both to accept it. Zod must not reject a schema-valid Charter.
+
+`risk`, `quality_gates`, `budgets`, `log_access`, `ledger`, `specs` and `covenant` are validated and stored. No Warden in this issue enforces them. `generated-files-guard` does not run, so `paths.generated` is not enforced here.
+
+### Glob matching
+
+Library: **picomatch** with `{ dot: true }`. A leading `!` is not passed to picomatch. The engine strips it and treats `*.example` as an exception pattern.
+
+Path preparation, before any glob:
+
+1. Take `cwd` from the hook payload. If it is missing, use `process.cwd()`.
+2. `git rev-parse --show-toplevel` from that directory. If git fails, deny with rule `engine`.
+3. Turn `\` into `/`. Resolve the candidate against the toplevel.
+4. If the file exists, use its realpath. If it does not, resolve the parent lexically and keep the final segment un-resolved, so a not-yet-created file still works.
+5. If the result is outside the toplevel, deny with rule `engine`.
+6. Store the repo-relative POSIX path with no leading `./` on the event as `path`.
+
+Match rules:
+
+- A pattern that contains no `/` is matched against the path's basename. `.env.*` then matches `.env.local` in any directory, and `*.example` matches `.env.example`.
+- A pattern that contains `/` is matched against the full repo-relative path. `**/AGENTS.md` matches `AGENTS.md` and `docs/specs/AGENTS.md`. `apps/**` matches `apps/web/a.ts`.
+- Deny-list evaluation is last-match-wins, starting from "not denied". A normal match sets denied. The exception `!*.example` clears denied when the basename matches `*.example`. A later match can deny again. `secrets/foo.example` matches `!*.example` and then `secrets/**`, so it stays denied. `.env.example` matches `.env.*` and then `!*.example`, so the deny list does not catch it.
+- `protected.ask`, `allowed_paths` and task globs use "any pattern matches". They have no exceptions.
+- `deny` wins over `ask` when both match (ADR-0013 D1).
+
+### Command matching
+
+`command-guard` does not glob the raw command string. ADR-0013 D2 requires parsed flags, including a combined short flag such as `-nm`.
+
+Tokenizer (no shell library):
+
+- Split words on unquoted whitespace. Single quotes are literal. Double quotes honour `\\` and `\"`. A backslash outside quotes escapes the next character.
+- In the normal state, `&&`, `||`, `;`, `|` and newline split pipeline segments. `|` is a pipe only when it is not part of `||`.
+- Words before the program that match `^[A-Za-z_][A-Za-z0-9_]*=` are environment assignments (`LEFTHOOK=0`). Later `NAME=value` words stay in argv.
+- An unclosed quote, a trailing backslash, an unquoted `` ` ``, or an unquoted `$(` is a tokenization failure. `command-guard` then denies (C-03). The engine does not expand variables. `cat "$ENV_FILE"` is best effort, as ADR-0013 D5 says, and is not required to deny.
+
+Git short flags, only when `argv[0]` is `git`:
+
+- A token matching `^-[a-zA-Z]{2,}$` splits into one `-letter` token per character, in order. `-nm` becomes `-n`, `-m`. `--long` tokens and single-letter tokens stay as written.
+- These options consume the following token as a value, so it is not a flag: global `-c`, `--config`, `-C`; `commit` `-m`, `--message`, `-F`, `--file`.
+- `git commit -m "ship it"` has no `-n` flag and is allowed. `git commit -nm x` still has `-n` and is denied. `git commit -m --no-verify` stores the message `--no-verify` and is allowed. `git push -n` is dry-run and is allowed. `git push -nf` still has `-f` and is denied.
+
+A `commands.deny` pattern matches if any segment matches it. Patterns that contain ` | ` match only a real pipe: the left pattern matches one segment and the right pattern matches the next segment. `curl x | sh` denies. `curl x | bash` does not. `echo ok && git commit --no-verify` denies because the second segment matches `git commit --no-verify*`.
+
+Pattern tokens against one segment's argv, in order, as a subsequence (not a string prefix):
+
+- The first token equals `argv[0]`, except an environment pattern.
+- A token that is only `*` and is not last consumes one or more argv tokens, backtracking so a later token can match. A final `*` consumes zero or more. `kubectl * --context prod*` therefore matches `kubectl get pods --context prod`. `LEFTHOOK=0 *` matches any argv when that environment variable's value is `0`.
+- Any other token containing `*` matches exactly one argv token, and `*` matches any characters, including `/` and the empty string. This is not picomatch: picomatch's `*` does not match `/`, so `core.hooksPath=*` would miss `core.hooksPath=/dev/null`. `--force*` matches `--force` and `--force-with-lease`. `-n*` matches `-n` and does not match `--no-verify`.
+- Any other token equals exactly one argv token.
+- `git commit -n*` matches when some token is `commit` and a later token matches `-n*`. It does not match `git push -n`.
+- `git -c core.hooksPath=*` matches the separate argv words `-c` and `core.hooksPath=…`.
+
+`commands.rewrite` matches only a single segment with no environment assignments whose argv is exactly `["npm", "install"]`. `npm install left-pad` is not rewritten. Rewrite loses to any `deny` from another rule or from `commands.deny`.
+
+### `.panopticon/task.json`
+
+The coordinator writes this file at the worktree root. It is gitignored. The engine only reads it.
 
 ```json
 {
   "issue": 6,
-  "allowed_paths": [
-    "panopticon.charter.yaml",
-    "wardens/**",
-    "pnpm-lock.yaml"
-  ]
+  "allowed_paths": ["wardens/**", "docs/specs/2026-11-04-wardens-core.md"],
+  "branch": "feat/6-wardens-core",
+  "slug": "wardens-core"
 }
 ```
 
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `issue` | number | yes | GitHub issue number |
-| `allowed_paths` | string[] | yes | Non-empty list of globs; must be a **subset** (narrowing only) of Charter `paths.allowed_paths`. Engine intersects: a path is allowed iff it matches ≥1 Charter allowed glob **and** ≥1 task glob. If a task glob matches nothing under Charter globs (attempted widen), `scope-guard` still cannot widen — effective allow list is the intersection; a task glob outside Charter scope never grants access. |
-| `branch` | string | no | Informational; not enforced in this issue (`worktree-guard` is out of scope). |
-| `slug` | string | no | Informational. |
+| Field | Required | Rule |
+| --- | --- | --- |
+| `issue` | yes | Integer ≥ 1 |
+| `allowed_paths` | yes | Non-empty array of non-empty strings. No entry may start with `!` |
+| `branch` | no | Non-empty string. Not enforced (`worktree-guard` is out of scope) |
+| `slug` | no | Non-empty string. Not enforced |
 
-Zod schema rejects missing `issue` / `allowed_paths`, non-array paths, or empty `allowed_paths`. **Invalid `task.json`:** fail-closed for `scope-guard` (deny edits/writes/deletes with next action `fix .panopticon/task.json or remove it and use Charter allowed_paths only` / `needs:human`). Reads and unrelated rules are unaffected beyond that deny.
+Zod `.strict()` rejects missing required fields, an empty `allowed_paths`, a `!` glob and unknown keys.
 
-### Internal normalized event schema (zod)
+A path is in scope when it matches at least one Charter `allowed_paths` glob and, if the task file exists and is valid, at least one task glob. A task glob outside the Charter matches nothing. An empty intersection denies every edit. A missing file means Charter globs only. An invalid file denies edit, write and delete, and does not affect read or shell rules.
 
-```ts
-{
-  tool: "claude" | "cursor",
-  event: string,                 // tool event name as passed to --event
-  action: "shell" | "read" | "edit" | "write" | "delete" | "mcp",
-  path: string | null,           // repo-relative POSIX path when applicable
-  paths: string[],               // multi-path tools; may be empty
-  command: string | null,        // raw shell command when action=shell
-  mcp_server: string | null,
-  mcp_tool: string | null,
-  session_id: string | null,
-  agent: string | null,          // role or agent name if present in payload
-  model: string | null,
-  interactive: boolean,          // false => ask degrades to deny (ADR-0013 A4)
-  cwd: string,                   // absolute cwd from payload or process
-  raw: unknown                   // original payload retained for contract tests only; never logged
-}
-```
+### Normalized event
 
-**Interactivity detection (settled default):** `interactive === false` when any of: CLI flags/env indicate print/headless mode if present on the payload; payload field `interactive: false`; missing TTY hints the adapter documents. If the tool payload does not carry a reliable signal, adapters default to `interactive: true` for local IDE hooks and `false` for documented headless event shapes — see Open questions if live payloads disagree.
+zod `.strict()` object. Adapters copy these fields and nothing else. Claude `tool_input.content`, `old_string`, `new_string` and Cursor `beforeReadFile.content` and `user_email` are dropped before the object is built.
 
-**Action mapping (initial):**
+| Field | Type | Source |
+| --- | --- | --- |
+| `tool` | `"claude"` \| `"cursor"` | `--tool` |
+| `event` | string | `--event` |
+| `action` | `shell` \| `read` \| `edit` \| `write` \| `delete` \| `mcp` | mapping table |
+| `path` | string \| null | repo-relative POSIX path, or null |
+| `command` | string \| null | raw command string for `shell`, else null |
+| `mcp_server` | string \| null | server name, else null |
+| `session_id` | string \| null | Claude `session_id`. Cursor `session_id`, else `conversation_id` |
+| `agent` | string \| null | Claude `agent_type`, else null |
+| `model` | string \| null | Cursor `model`. Claude `model` only when the payload has a string `model` |
+| `interactive` | boolean | see below |
+| `cwd` | string | payload `cwd`, else `process.cwd()` |
 
-| Tool | Typical events (ring-0 this issue) | → action |
-|------|--------------------------------------|----------|
-| Claude Code | `PreToolUse` with tool `Bash` | shell |
-| Claude Code | `PreToolUse` with `Read` | read |
-| Claude Code | `PreToolUse` with `Edit` / `Write` | edit / write |
-| Claude Code | `PreToolUse` with `mcp__…` | mcp |
-| Cursor | `beforeShellExecution` / shell `preToolUse` | shell |
-| Cursor | `beforeReadFile` | read |
-| Cursor | `preToolUse` write/edit/delete | write / edit / delete |
-| Cursor | `beforeMCPExecution` | mcp |
+`interactive` is the first match of:
 
-Exact event name list for wiring is fixed by fixtures in the implementation PR; every event used MUST have a contract fixture.
+1. A boolean `interactive` on the payload.
+2. The environment variable `PANOPTICON_INTERACTIVE`: `0` or `false` → false, `1` or `true` → true.
+3. Otherwise `true` (phase 0 is a local interactive session).
 
-### Block message format (C-30)
+Headless fixtures set `"interactive": false` on the payload. Non-interactive `ask` becomes `deny` inside `protected-paths` before precedence, with next action `Label the issue needs:human.`
+
+Mapping. `--tool` plus `--event` plus `tool_name` selects the row. Any other combination denies with rule `engine`, so an unmapped tool cannot fail open. `wardens sync` must later match only these tools.
+
+| Tool | Event | Condition | Action | Path | Command | MCP server |
+| --- | --- | --- | --- | --- | --- | --- |
+| claude | `PreToolUse` | `tool_name` `Bash` or `PowerShell` | shell | null | `tool_input.command` | null |
+| claude | `PreToolUse` | `Read` | read | `tool_input.file_path` | null | null |
+| claude | `PreToolUse` | `Edit` | edit | `tool_input.file_path` | null | null |
+| claude | `PreToolUse` | `Write` | write | `tool_input.file_path` | null | null |
+| claude | `PreToolUse` | `tool_name` starts with `mcp__` | mcp | null | null | `mcp_server.name` |
+| cursor | `beforeShellExecution` | — | shell | null | `command` | null |
+| cursor | `beforeReadFile` | — | read | `file_path` | null | null |
+| cursor | `preToolUse` | `tool_name` `Shell` | shell | null | `tool_input.command` | null |
+| cursor | `preToolUse` | `Read` | read | `file_path`, else `path` | null | null |
+| cursor | `preToolUse` | `Write` | write | `file_path`, else `path` | null | null |
+| cursor | `preToolUse` | `Delete` | delete | `file_path`, else `path` | null | null |
+| cursor | `beforeMCPExecution` | — | mcp | null | null | `mcp_server_name` |
+| cursor | `preToolUse` | `tool_name` starts with `MCP:` | mcp | null | null | `mcp_server_name` if present, else the tool name |
+
+Cursor's public `preToolUse` example shows `Shell` only. Recorded fixtures are authoritative for Read, Write and Delete field names. The adapter tries `file_path` then `path`. If a recorded fixture uses another key, the adapter follows the fixture in the same PR. A fixture labelled `recorded-cursor-session` that was not recorded is a test failure; do not invent one.
+
+Which rules run:
+
+| Rule | Actions | Behaviour |
+| --- | --- | --- |
+| `protected-paths` | edit, write, delete | deny list, else ask list, else no objection. Non-interactive ask becomes deny. A null path denies. |
+| `scope-guard` | edit, write, delete | in-scope check above. A null path denies. |
+| `secret-read-guard` | read, shell | read: `path` against `secrets_deny_read`. shell: tokenize, resolve every non-option argv word (words that do not start with `-`) as a path, deny if any match. `cat .env` denies. `cat .env.example` allows. A null read path denies. |
+| `command-guard` | shell | deny patterns, else rewrite, else no objection. |
+
+`mcp` is normalized and does not by itself trip these four rules. A follow-up owns MCP policy.
+
+Precedence when several rules object: `deny` beats `rewrite`, then `ask`, then allow. Same severity: `protected-paths`, `secret-read-guard`, `command-guard`, `scope-guard`. One winner. `cat .env` is `secret-read-guard`. An edit of `.env.local` that is also outside the task is `protected-paths`, not `scope-guard`. An interactive edit of `docs/constitution.md` outside the task is `scope-guard` deny, because deny beats ask.
+
+### Hook responses
+
+Stdout is either empty or one JSON object. No log lines on stdout. Exit 0 when the process produced a decision, including deny and engine deny. Exit 2 only when the process cannot write that JSON; the C-30 line goes to stderr. Never exit 1.
+
+| Verdict | Claude Code `PreToolUse` | Cursor |
+| --- | --- | --- |
+| allow | exit 0, empty stdout | exit 0, `{"permission":"allow"}` |
+| deny | exit 0, `permissionDecision: "deny"`, reason is the C-30 line | exit 0, `permission: "deny"`, `agent_message` and `user_message` are the C-30 line |
+| ask | exit 0, `permissionDecision: "ask"`, reason is the C-30 line | `beforeShellExecution`: `permission: "ask"` with the same messages. `preToolUse`: Cursor does not enforce `ask`, so emit `permission: "deny"` (ADR-0013: no native ask degrades to deny) |
+| rewrite | exit 0, `updatedInput` is the original `tool_input` with `command` set to `pnpm install`, no `permissionDecision`. `additionalContext` is the C-30 line | `preToolUse`: `permission: "allow"` and `updated_input` with `command: "pnpm install"`. `beforeShellExecution` has no updated-input field: `permission: "deny"` and the C-30 line whose next action is `Run pnpm install.` |
+
+`wardens check` does not render a tool. It prints `{ "rule", "decision", "message", "replacement", "rendered" }` and exits 0 or 2 as in the acceptance criteria. `rendered` equals `decision` except for a Cursor `preToolUse` ask, where `decision` stays `ask` and `rendered` is `deny`.
+
+Message shape, locked by a unit test:
 
 ```text
-Blocked by Warden <rule-id>: <what was blocked and why>. <Next allowed action>.
+/^Blocked by Warden [a-z0-9-]+: .+\. .+\.$/
 ```
 
-Examples:
+Examples the tests assert as substrings (rule id, the blocked thing, and the next action):
 
-- `Blocked by Warden scope-guard: path infra/ not in allowed_paths for this task. Ask for needs:human.`
-- `Blocked by Warden protected-paths: panopticon.charter.yaml is deny for agents. Edit via a human-approved PR.`
+- `Blocked by Warden scope-guard: path infra/main.tf not in allowed_paths for this task. Ask for needs:human.`
+- `Blocked by Warden protected-paths: panopticon.charter.yaml is deny for agents. A human must change it in a reviewed PR.`
+- `Blocked by Warden protected-paths: docs/constitution.md requires approval. Ask Krzysztof to approve this edit in the session.`
 - `Blocked by Warden protected-paths: docs/constitution.md requires ask and this session is non-interactive. Label the issue needs:human.`
+- `Blocked by Warden protected-paths: docs/constitution.md requires ask and this hook cannot prompt. Label the issue needs:human.`
 - `Blocked by Warden command-guard: git commit --no-verify is denied. Remove --no-verify and retry.`
+- `Blocked by Warden command-guard: npm install is rewritten to pnpm install. Run pnpm install.`
 - `Blocked by Warden secret-read-guard: reading .env is denied. Use .env.example for non-secret templates.`
 - `Blocked by Warden engine: Charter validation failed. Label the issue needs:human.`
 
-Unit test: every deny/ask message matches `/^Blocked by Warden [a-z0-9-]+: .+\. .+\.$/`.
+### Fail-closed
 
-### Fail-closed behaviour (C-03)
+| Condition | Result |
+| --- | --- |
+| Charter missing, unreadable, invalid YAML, schema failure or zod failure | deny, rule `engine` |
+| Stdin empty, not JSON, or not the object the event requires | deny, rule `engine` |
+| Unknown tool, event or tool name | deny, rule `engine` |
+| Path escapes the worktree | deny, rule `engine` |
+| A rule throws | deny, rule `engine` |
+| Log append throws | deny, rule `engine`, and do not try to log again |
+| Invalid `task.json` | deny edit/write/delete via `scope-guard`; reads and shell commands still run the other rules |
+| Exit code 1 | not used |
 
-| Condition | Hook behaviour |
-|-----------|----------------|
-| Missing / unreadable Charter | deny, exit 2 (Claude) / deny JSON (Cursor) |
-| Charter fails JSON Schema or zod | deny |
-| Stdin empty / invalid JSON / adapter cannot map event | deny |
-| Rule throws | deny (rule-id `engine` or the rule if identified) |
-| Missing `wardens/dist/wardens.mjs` | tool-level `onFailure: "block"` / `failClosed: true` once configs exist; until `wardens sync`, document that hooks are not installed yet — engine itself still fail-closes when invoked |
-| Exit code 1 | **never** used for allow/deny enforcement |
+Tool-level `onFailure: "block"` and `failClosed: true` are generated by `wardens sync`, not by this issue. The engine still denies when it is actually invoked.
 
-Ask results: interactive → tool native ask; non-interactive → deny with needs:human next action.
+### JSONL verdict log
 
-### JSONL verdict log format
-
-Path: `.panopticon/wardens.log.jsonl` (append-only, gitignored).
-
-One line per hook/`check` invocation that produces a verdict:
+Path: `<toplevel>/.panopticon/wardens.log.jsonl`. Create `.panopticon/` if needed. Append one line per `wardens hook` or `wardens check` invocation, the winning verdict only. `JSON.stringify` the object so a newline inside a string cannot break the file.
 
 ```json
 {
   "ts": "2026-11-04T02:15:30.123Z",
-  "rule": "scope-guard",
+  "rule": "secret-read-guard",
   "decision": "deny",
+  "rendered": "deny",
+  "duration_ms": 4,
   "tool": "cursor",
-  "event": "preToolUse",
-  "action": "edit",
-  "path": "infra/main.tf",
+  "event": "beforeReadFile",
+  "action": "read",
+  "path": ".env",
   "command": null,
+  "mcp_server": null,
   "session_id": "sess_abc",
-  "duration_ms": 12,
-  "message": "Blocked by Warden scope-guard: path infra/main.tf not in allowed_paths for this task. Ask for needs:human."
+  "agent": null,
+  "model": null,
+  "interactive": true,
+  "message": "Blocked by Warden secret-read-guard: reading .env is denied. Use .env.example for non-secret templates.",
+  "replacement": null
 }
 ```
 
-Rules:
+`ts` is UTC with milliseconds. `duration_ms` is an integer ≥ 0. `rule` is `none` when every rule allows, and `decision` is then `allow`, `message` null, `replacement` null. `replacement` is `pnpm install` only for rewrite. `decision` is the rule verdict (`allow`, `deny`, `ask`, `rewrite`). `rendered` is what the tool was sent. No other keys. A test fixture that puts a sentinel in `content` and `user_email` must not find that sentinel in the log line.
 
-- `decision` ∈ `allow` | `deny` | `ask` | `rewrite`
-- NEVER log secret file contents, `.env` values, or `raw` payload bodies
-- For `secret-read-guard` denies, log the path/command only
-- If multiple rules would fire, log one line per evaluated rule that contributed to the final decision (or a single line for the winning rule — implementation MUST pick **winning rule only** for v1 to keep one line per hook as the issue requires). **Settled:** one JSON line per hook run (the decisive verdict).
-- Log write failure MUST NOT convert an allow into a silent success without a verdict: if the decision was deny/ask, still return deny/ask even if the log write fails; if the decision was allow and log write fails, still allow (logging is best-effort for allow) but stderr MAY warn. Protective deny paths remain fail-closed on engine errors before logging.
+### Fixtures and test plan
 
-### Fixture sources
+Fixture files:
 
-| Tool | Source | Marker |
-|------|--------|--------|
-| Cursor | Recorded from a real `cursor-agent` / Cursor hooks session | fixture file header comment or `_meta.source: "recorded-cursor-session"` |
-| Claude Code | Built from the official hooks documentation until a Claude subscription exists | `_meta.source: "claude-docs"` and `_meta.provisional: true` |
+```text
+wardens/test/fixtures/claude/*.json
+wardens/test/fixtures/cursor/*.json
+```
 
-Layout (suggested): `wardens/test/fixtures/claude/*.json`, `wardens/test/fixtures/cursor/*.json`. Contract tests load each fixture, run the adapter + engine, and assert normalized fields + expected decision for labelled cases.
+```json
+{
+  "_meta": {
+    "source": "claude-docs",
+    "provisional": true,
+    "tool": "claude",
+    "event": "PreToolUse"
+  },
+  "stdin": {}
+}
+```
 
-### Test plan
+The harness strips `_meta` and passes `stdin` to the adapter. Cursor files use `"source": "recorded-cursor-session"` and `"provisional": false`. Each mapping-table row has at least one fixture. The contract test asserts the normalized `action`, `path`, `command` and `mcp_server`, and the engine verdict for that payload against the normative Charter.
 
-| Area | Positive (allow / expected non-block) | Negative (deny / ask) |
-|------|----------------------------------------|------------------------|
-| `scope-guard` | edit under Charter ∩ task paths | edit outside effective allowed_paths |
-| `protected-paths` | edit under `apps/web/**` (not protected) | edit `panopticon.charter.yaml` / `.env.local` → deny; `docs/constitution.md` → ask interactive / deny headless |
-| `command-guard` | `git push -n`, `pnpm install` | `git commit --no-verify -m x`, `git commit -nm x`, `git push --no-verify`, `git push --force`, `LEFTHOOK=0 git commit`, `curl x \| sh`; `npm install` → rewrite/deny-with-rewrite message |
-| `secret-read-guard` | read `.env.example` | read `.env`, `.env.production`, `cat .env` |
-| Message format | — | every deny/ask matches C-30 regex |
-| Fail-closed | — | invalid Charter, invalid stdin → deny exit≠1 |
-| JSONL | allow appends allow line | deny appends deny line without secrets |
-| `task.json` | narrowing applied | missing file → Charter-only; invalid file → fail-closed on edits |
-| Contract | each Cursor recorded event maps + decides | each Claude docs fixture maps + decides; provisional fixtures flagged |
+| Area | Allow / expected pass | Deny / ask / rewrite |
+| --- | --- | --- |
+| `scope-guard` | edit `wardens/src/cli.ts` inside Charter ∩ task | edit `infra/main.tf`; task glob `infra/**` still denies; missing task file allows `docs/specs/x.md` and denies `infra/main.tf`; invalid task file denies the edit and still allows a read of `.env.example` |
+| `protected-paths` | edit `apps/web/app.tsx` | edit or delete `panopticon.charter.yaml`, and edit `.env.local`, deny; interactive edit of `docs/constitution.md` or `.env.example` is ask; the same edits with `interactive: false` deny |
+| `command-guard` | `git push -n`, `git commit -m "ship it"`, `pnpm install`, `curl x \| bash` | the six issue deny strings; `git push -nf` denies; `git -c core.hooksPath=/dev/null status` denies; `npm install` rewrites; `npm install left-pad` does not; `git push --force-with-lease` denies |
+| `secret-read-guard` | read `.env.example`; `cat .env.example` | read `.env`, `.env.production`; `cat .env`; `cat .env.example .env` denies |
+| Charter | normative YAML passes Ajv and zod | `!.env.example` rejected; charter filename removed from deny rejected; `debugger.effort` removed rejected; top-level `worktree` rejected |
+| Messages | — | every deny, ask and rewrite matches the regex; engine failures do too |
+| Fail-closed | — | missing Charter, broken YAML, empty stdin, unknown `tool_name` → deny, exit not 1 |
+| JSONL | an allow appends one `allow` line | a deny appends one line; sentinel file contents and `user_email` are absent; a throwing writer yields `engine` deny |
+| Hooks | Claude allow has empty stdout | Claude deny/ask JSON; Cursor `preToolUse` ask rendered as deny with `decision` still `ask`; `npm install` `updatedInput.command` is `pnpm install` |
+| Contract | each recorded Cursor event maps | each provisional Claude event maps and is marked `claude-docs` |
 
-`charter-validate` tests: good Charter passes; missing deny entry for The Charter fails; illegal negation fails; missing `roles.debugger.effort` fails.
+### Known limitations
 
-### Affected packages / files (implementation PR — not this docs PR)
+- Shell redirections and variable indirection are not path writes. `echo x >> infra/main.tf` is not a `scope-guard` edit. ADR-0013 D5 calls the shell scan best effort.
+- `worktree-guard` does not run, so an agent in the primary checkout is not stopped by this issue.
+- Claude auto mode can drop `updatedInput` on the first call and ask the model to send the rewritten command again (Claude Code hooks docs, 2026-11-04). The original `npm install` is not approved. `beforeShellExecution` denies it outright.
+- Grep and Glob are unmapped, so a hook that receives them denies with `engine`. The sync follow-up must not subscribe those tools.
+- `risk-classifier` does not run. The `risk:` keys are stored so the later Warden reads the same file.
 
-- `panopticon.charter.yaml` (bootstrap create)
-- `wardens/**` (engine, schema, tests, package.json scripts)
-- `pnpm-lock.yaml` / catalog pins as needed
-- `turbo.json` only if required to wire `wardens` into `check`
-- `.github/CODEOWNERS`
-- `.gitignore` (`.panopticon/` only)
+### Affected packages
 
-Not touched here or in implementation without a follow-up: `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/workflows/**`, `AGENTS.md`, `docs/decisions/**`.
+Implementation PR, not this docs PR:
 
-### API / data model
+- `panopticon.charter.yaml`
+- `wardens/**` (including `wardens/schema/charter.schema.json`, source, tests, `package.json`)
+- `pnpm-lock.yaml`
+- `pnpm-workspace.yaml` (catalog entries only)
+- `turbo.json` only if `check` does not already pull the package in
+- `.gitignore` (the `.panopticon/` line only)
+- `.github/CODEOWNERS` only if the Charter owner line is missing
 
-No LunarHunt product API or DB migrations. Local files only: Charter, schema, `.panopticon/task.json`, `.panopticon/wardens.log.jsonl`.
+No product API, OpenAPI client or database migration.
 
 ### ADRs needed
 
-None new. Implementation follows ADR-0003, 0004, 0005, 0008, 0012, 0013. No constitution change.
+None. No constitution change. The implementation follows ADR-0003, ADR-0004, ADR-0005, ADR-0008, ADR-0009, ADR-0012 (path root only) and ADR-0013.
 
 ## Tasks
 
-1. **Docs PR (this file):** land `docs/specs/2026-11-04-wardens-core.md` with `status: draft`; Krzysztof sets `status: ready` before implementation.  
+1. **This spec.** Land `docs/specs/2026-11-04-wardens-core.md` at `status: draft`. Krzysztof sets `status: ready` before any implementation commit.
    **Allowed paths:** `docs/specs/2026-11-04-wardens-core.md`
 
-2. **Charter + schema:** add `panopticon.charter.yaml` v1 and `wardens/schema/charter.schema.json`; `charter-validate` CLI path; CODEOWNERS + `.gitignore` `.panopticon/`.  
-   **Allowed paths:** `panopticon.charter.yaml`, `wardens/schema/**`, `wardens/package.json`, `.github/CODEOWNERS`, `.gitignore`
+2. **Package, Charter and schema.** Add the normative `panopticon.charter.yaml`, `wardens/schema/charter.schema.json`, Ajv + zod validation, `wardens check charter-validate`, package scripts, tsconfig, Vitest, tsup bundle, the `.panopticon/` gitignore line, and a CODEOWNERS check that does not edit the file while the owner line exists.
+   **Allowed paths:** `panopticon.charter.yaml`, `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `turbo.json`, `.gitignore`, `.github/CODEOWNERS`
 
-3. **Engine skeleton:** commander CLI (`hook`, `check`), tsup bundle, zod normalized event, Charter loader, fail-closed wrapper, JSONL logger, C-30 helper.  
-   **Allowed paths:** `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` (catalog only), `turbo.json` (if needed)
+3. **CLI, adapters, log, fail-closed.** commander `hook` and `check`, the normalized event, the mapping table, C-30 messages, the JSONL writer, and hook response rendering.
+   **Allowed paths:** `wardens/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`
 
-4. **Adapters + fixtures:** Claude (docs/provisional) and Cursor (recorded) adapters; contract tests for every event used.  
+4. **Rules and tests.** `scope-guard`, `protected-paths`, `command-guard`, `secret-read-guard`, the test-plan cases, and contract fixtures. Record Cursor fixtures from a real session. Claude fixtures cite the docs and set `provisional: true`. If a Cursor session cannot be recorded, stop and label the issue `needs:human` rather than inventing a recorded payload.
    **Allowed paths:** `wardens/**`
-
-5. **Rules:** implement `scope-guard`, `protected-paths`, `command-guard`, `secret-read-guard` with picomatch + flag-aware matching + `task.json` narrowing; positive/negative tests per rule.  
-   **Allowed paths:** `wardens/**`
-
-6. **Wire check:** ensure `pnpm check` runs wardens lint, `tsc`, Vitest and charter-validate.  
-   **Allowed paths:** `wardens/**`, `turbo.json` (if needed), `pnpm-lock.yaml`
 
 ## Open questions
 
-1. **Cursor / Claude native rewrite channel:** for `commands.rewrite` (`npm install` → `pnpm install`), do current hook APIs support an in-place command rewrite, or is deny-plus-message the only portable behaviour? Spec allows deny-with-next-action until confirmed against live Cursor payloads.
-2. **Authoritative headless/interactive fields:** exact payload keys for non-interactive Cursor (`agent -p`) and Claude Code (`claude -p`) sessions must be confirmed when recording fixtures; defaults above may need a one-line adapter fix without a Charter change.
-3. **Full ring-0 event matrix:** final list of `--event` values wired before `wardens sync` exists (manual hook install vs none) — confirm whether implementation PR installs temporary hook snippets or only ships the CLI for `wardens check` + future sync. Preference: ship CLI + tests only; do not hand-edit `.claude/**` or `.cursor/**` in #6.
-4. **Shell tokenizer edge cases:** whether `shell-quote`'s parse is sufficient for `LEFTHOOK=0`, Windows paths, and nested quotes in deny detection, or a thinner argv split is enough for v1 deny patterns listed in The Charter.
-
-**Resolved while writing this spec:** `.github/CODEOWNERS` already lists `panopticon.charter.yaml @koszczapinski`; task 2 only needs a verification no-op unless that line is removed before implementation.
+None. The issue left glob matching, combined short flags, `task.json`, the normalized event, the block message, fail-closed behaviour, the JSONL line, fixture sources and the test plan unspecified. Those are fixed in the Plan. The conflicts between ADR sketches and issue #6 are fixed in Settled conflicts. A change to `--force-with-lease` or to `curl | bash` is a Charter edit, not a matcher exception.
