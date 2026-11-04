@@ -10,6 +10,13 @@ export default defineConfig({
   sourcemap: false,
   bundle: true,
   noExternal: ["ajv", "commander", "picomatch", "yaml", "zod"],
-  banner: { js: "#!/usr/bin/env node" },
+  // Bundled CommonJS (yaml) calls require(); ESM output has none.
+  banner: {
+    js: [
+      "#!/usr/bin/env node",
+      'import { createRequire as __wardensCreateRequire } from "node:module";',
+      "const require = __wardensCreateRequire(import.meta.url);",
+    ].join("\n"),
+  },
   outExtension: () => ({ js: ".mjs" }),
 });
