@@ -1,0 +1,52 @@
+name: Chore
+description: Maintenance, tooling or repository upkeep. No spec unless a require_spec_for rule matches.
+labels:
+  - "type:chore"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Work starts from this issue (ADR-0001, C-09). Branch `<type>/<issue-number>-<slug>`. `<type>` comes from the issue's `type:*` label (ADR-0012).
+
+        A chore does not need a spec unless a Charter `require_spec_for` rule matches (ADR-0011). Dependency-update pull requests from Renovate are the exception to the issue and branch rules (ADR-0014).
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this chore achieves and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: |
+        EARS notation, one criterion per line (ADR-0011):
+        THE SYSTEM SHALL …
+        WHEN <trigger>, THE SYSTEM SHALL …
+        WHILE <state>, THE SYSTEM SHALL …
+        IF <unwanted condition>, THE SYSTEM SHALL …
+        WHERE <feature is enabled>, THE SYSTEM SHALL …
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: Linked spec
+      description: Path to the spec, if a require_spec_for rule matches (ADR-0011). Otherwise leave empty.
+      placeholder: docs/specs/YYYY-MM-DD-slug.md
+    validations:
+      required: false
+
+  - type: textarea
+    id: allowed-paths
+    attributes:
+      label: Allowed paths
+      description: Paths an agent may edit. The issue may narrow the Charter allowed paths, never widen them (C-11).
+      placeholder: |
+        wardens/**
+    validations:
+      required: true

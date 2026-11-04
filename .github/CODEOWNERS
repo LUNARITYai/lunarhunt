@@ -1,0 +1,33 @@
+# CODEOWNERS for LUNARITYai/lunarhunt.
+# Krzysztof (@koszczapinski) is the only reviewer (ADR-0001).
+# The last matching pattern wins. The default is first; high-risk paths from
+# ADR-0008 as amended by ADR-0013 are repeated so they stay with him.
+
+* @koszczapinski
+
+# Auth and secrets (ADR-0008; Charter risk.high paths in ADR-0013)
+**/auth/** @koszczapinski
+.env* @koszczapinski
+secrets/** @koszczapinski
+
+# CI, The Charter, generated hook config
+.github/** @koszczapinski
+panopticon.charter.yaml @koszczapinski
+lefthook.yml @koszczapinski
+
+# Covenant files (ADR-0006, ADR-0008, ADR-0013)
+docs/constitution.md @koszczapinski
+AGENTS.md @koszczapinski
+**/AGENTS.md @koszczapinski
+CLAUDE.md @koszczapinski
+
+# Agent configs
+.claude/** @koszczapinski
+.cursor/** @koszczapinski
+
+# Deploy, migrations, Wardens, decision records (ADR-0013 A1 extends ADR-0008)
+deploy/** @koszczapinski
+apps/api/migrations/** @koszczapinski
+wardens/** @koszczapinski
+docs/decisions/** @koszczapinski
+docs/decision-log.md @koszczapinski

@@ -1,0 +1,52 @@
+name: Spike
+description: Time-boxed investigation. The outcome is a decision or a follow-up issue.
+labels:
+  - "type:spike"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Work starts from this issue (ADR-0001, C-09). Branch `<type>/<issue-number>-<slug>`. `<type>` comes from the issue's `type:*` label (ADR-0012).
+
+        A spike investigates a question and records the outcome. It does not need a spec unless a Charter `require_spec_for` rule matches (ADR-0011).
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: The question this spike answers, and what decision it should unblock.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: |
+        EARS notation, one criterion per line (ADR-0011):
+        THE SYSTEM SHALL …
+        WHEN <trigger>, THE SYSTEM SHALL …
+        WHILE <state>, THE SYSTEM SHALL …
+        IF <unwanted condition>, THE SYSTEM SHALL …
+        WHERE <feature is enabled>, THE SYSTEM SHALL …
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: Linked spec
+      description: Path to the spec, if this spike produces or follows one (ADR-0011). Otherwise leave empty.
+      placeholder: docs/specs/YYYY-MM-DD-slug.md
+    validations:
+      required: false
+
+  - type: textarea
+    id: allowed-paths
+    attributes:
+      label: Allowed paths
+      description: Paths an agent may edit. The issue may narrow the Charter allowed paths, never widen them (C-11). Use `docs/**` when the spike only writes notes.
+      placeholder: |
+        docs/**
+    validations:
+      required: true

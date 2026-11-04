@@ -1,0 +1,107 @@
+# Label source of truth (ADR-0001, amended by ADR-0008, ADR-0013 and ADR-0014).
+# Until the labels-sync CI job exists, labels are created once from this file. Agents must not create labels outside it (C-09).
+# Colours are not specified in the ADRs. Descriptions paraphrase those ADRs.
+
+- name: "type:feature"
+  color: "1D76DB"
+  description: "New user-facing behaviour"
+
+- name: "type:bug"
+  color: "D73A4A"
+  description: "Defect. PR needs a test that fails on main, unless test:waived"
+
+- name: "type:chore"
+  color: "C5DEF5"
+  description: "Maintenance, tooling or repository upkeep"
+
+- name: "type:spike"
+  color: "F9D0C4"
+  description: "Time-boxed investigation"
+
+- name: "type:docs"
+  color: "0075CA"
+  description: "Documentation only"
+
+- name: "area:web"
+  color: "0052CC"
+  description: "Next.js UI and admin panel (apps/web)"
+
+- name: "area:api"
+  color: "5319E7"
+  description: "FastAPI domain service (apps/api)"
+
+- name: "area:worker"
+  color: "006B75"
+  description: "Background jobs and Nightwatch (apps/worker)"
+
+- name: "area:wardens"
+  color: "6F42C1"
+  description: "Wardens engine and CLI"
+
+- name: "area:ledger"
+  color: "C2E0C6"
+  description: "The Ledger (run log and metrics)"
+
+- name: "area:infra"
+  color: "D4C5F9"
+  description: "Infrastructure and deploy"
+
+- name: "area:docs"
+  color: "BFD4F2"
+  description: "Documentation"
+
+- name: "priority:p0"
+  color: "B60205"
+  description: "Priority P0"
+
+- name: "priority:p1"
+  color: "D93F0B"
+  description: "Priority P1"
+
+- name: "priority:p2"
+  color: "FEF2C0"
+  description: "Priority P2"
+
+- name: "agent:ready"
+  color: "0E8A16"
+  description: "Ready for an agent to pick up"
+
+- name: "agent:in-progress"
+  color: "FBCA04"
+  description: "An agent is working on this issue"
+
+- name: "needs:human"
+  color: "D93F0B"
+  description: "Stop and wait for Krzysztof. The PR is risk:high"
+
+- name: "blocked"
+  color: "000000"
+  description: "Cannot proceed"
+
+- name: "risk:low"
+  color: "0E8A16"
+  description: "Docs, tests or a small non-protected change. Auto-merge only in phase 3"
+
+- name: "risk:medium"
+  color: "FBCA04"
+  description: "Default for product code. Needs human approval"
+
+- name: "risk:high"
+  color: "B60205"
+  description: "Auth, secrets, policy, CI or waived tests. Always needs Krzysztof"
+
+- name: "test:waived"
+  color: "F9D0C4"
+  description: "Bug fix without a failing reproduction test. Always risk:high"
+
+- name: "complexity:high"
+  color: "8B5CF6"
+  description: "Start on the escalated model (ADR-0009)"
+
+- name: "security"
+  color: "E11D48"
+  description: "Security finding or hardening"
+
+- name: "dependencies"
+  color: "0366D6"
+  description: "Dependency update. Renovate PRs also carry type:chore (ADR-0014)"

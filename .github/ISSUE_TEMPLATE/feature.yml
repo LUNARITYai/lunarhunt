@@ -1,0 +1,53 @@
+name: Feature
+description: New behaviour. A feature that changes apps/** needs a spec (ADR-0011).
+labels:
+  - "type:feature"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Work starts from this issue (ADR-0001, C-09). Branch `<type>/<issue-number>-<slug>`, one branch and one pull request. `<type>` comes from the issue's `type:*` label (ADR-0012).
+
+        A `type:feature` that changes `apps/**` needs a spec at `docs/specs/YYYY-MM-DD-<slug>.md` with `status: ready` before implementation (ADR-0011, C-10).
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this change achieves and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: |
+        EARS notation, one criterion per line (ADR-0011):
+        THE SYSTEM SHALL …
+        WHEN <trigger>, THE SYSTEM SHALL …
+        WHILE <state>, THE SYSTEM SHALL …
+        IF <unwanted condition>, THE SYSTEM SHALL …
+        WHERE <feature is enabled>, THE SYSTEM SHALL …
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: Linked spec
+      description: Path to the spec (ADR-0011). Required for a feature.
+      placeholder: docs/specs/YYYY-MM-DD-slug.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: allowed-paths
+    attributes:
+      label: Allowed paths
+      description: Paths an agent may edit. The issue may narrow the Charter allowed paths, never widen them (C-11).
+      placeholder: |
+        apps/web/**
+        apps/api/**
+    validations:
+      required: true
