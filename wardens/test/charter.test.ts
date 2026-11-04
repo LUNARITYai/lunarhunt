@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import {
   loadCharterYaml,
   parseWithZod,
@@ -24,6 +24,21 @@ const normative: unknown = parse(charterText);
 
 function clone(): Record<string, unknown> {
   return structuredClone(normative) as Record<string, unknown>;
+}
+
+function cursorClone(): Record<string, unknown> {
+  const doc = clone();
+  for (const role of Object.values(asRecord(doc.roles))) {
+    const r = asRecord(role);
+    r.engine = "cursor";
+    r.model = "grok-4.7";
+    if (r.escalate_to) {
+      const target = asRecord(r.escalate_to);
+      target.engine = "cursor";
+      target.model = "grok-4.7";
+    }
+  }
+  return doc;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -90,7 +105,7 @@ describe("charter schema", () => {
 });
 
 describe("normative Charter", () => {
-  it("passes Ajv and zod, including the cursor implementer model", () => {
+  it("passes Ajv and zod, and every role has a registered engine and legal effort", () => {
     expect(validateWithAjv(normative).ok).toBe(true);
     const parsed = parseWithZod(normative);
     expect(parsed.ok).toBe(true);
@@ -99,16 +114,21 @@ describe("normative Charter", () => {
     }
     expect(parsed.charter.version).toBe(1);
     expect(parsed.charter.autonomy).toEqual({ phase: 0, kill_switch: false });
-    expect(parsed.charter.roles.implementer.engine).toBe("cursor");
-    expect(parsed.charter.roles.implementer.model).toBe("grok-4.7");
-    expect(parsed.charter.roles.implementer.effort).toBe("medium");
-    expect(parsed.charter.roles.implementer.escalate_to?.model).toBe(
-      "grok-4.7",
-    );
-    expect(parsed.charter.roles.implementer.escalate_to?.effort).toBe("high");
-    expect(parsed.charter.roles.overseer.effort).toBe("high");
-    expect(parsed.charter.roles.reviewer.effort).toBe("medium");
-    expect(parsed.charter.roles.debugger.effort).toBe("high");
+    const engines = ["claude", "cursor"];
+    const efforts: Record<string, string[]> = {
+      claude: ["low", "medium", "high"],
+      cursor: ["low", "medium", "high", "xhigh"],
+    };
+    for (const role of Object.values(parsed.charter.roles)) {
+      expect(engines).toContain(role.engine);
+      expect(efforts[role.engine]).toContain(role.effort);
+      if (role.escalate_to) {
+        expect(engines).toContain(role.escalate_to.engine);
+        expect(efforts[role.escalate_to.engine]).toContain(
+          role.escalate_to.effort,
+        );
+      }
+    }
   });
 
   it("accepts the file through charter-validate", () => {
@@ -154,7 +174,7 @@ describe("charter rejection", () => {
 
   it("rejects a model that already embeds effort or -fast", () => {
     for (const model of ["grok-4.7-high", "grok-4.7-medium-fast"]) {
-      const doc = clone();
+      const doc = cursorClone();
       asRecord(asRecord(doc.roles).implementer).model = model;
       const ajv = validateWithAjv(doc);
       const zodResult = parseWithZod(doc);
@@ -185,7 +205,7 @@ describe("charter rejection", () => {
   });
 
   it("rejects escalate_to the same way as a role", () => {
-    const embedded = clone();
+    const embedded = cursorClone();
     const embeddedTarget = asRecord(
       asRecord(asRecord(embedded.roles).implementer).escalate_to,
     );
@@ -306,18 +326,31 @@ describe("charter-validate CLI", () => {
     const dir = mkdtempSync(join(tmpdir(), "wardens-charter-"));
     execFileSync("git", ["init"], { cwd: dir });
     writeFileSync(join(dir, "panopticon.charter.yaml"), charterText);
-    const implementer = run(dir, ["check", "role", "implementer"]);
+    const live = run(dir, ["check", "role", "implementer"]);
+    expect(live.status).toBe(0);
+    expect(JSON.parse(live.stdout)).toEqual({
+      model: "sonnet",
+      args: ["--effort", "medium"],
+    });
+
+    const cursorDir = mkdtempSync(join(tmpdir(), "wardens-charter-"));
+    execFileSync("git", ["init"], { cwd: cursorDir });
+    writeFileSync(
+      join(cursorDir, "panopticon.charter.yaml"),
+      stringify(cursorClone()),
+    );
+    const implementer = run(cursorDir, ["check", "role", "implementer"]);
     expect(implementer.status).toBe(0);
     expect(JSON.parse(implementer.stdout)).toEqual({
       model: "grok-4.7-medium",
       args: [],
     });
-    const overseer = run(dir, ["check", "role", "overseer"]);
+    const overseer = run(cursorDir, ["check", "role", "overseer"]);
     expect(JSON.parse(overseer.stdout)).toEqual({
       model: "grok-4.7-high",
       args: [],
     });
-    const unknown = run(dir, ["check", "role", "missing"]);
+    const unknown = run(cursorDir, ["check", "role", "missing"]);
     expect(unknown.status).toBe(2);
   });
 });
