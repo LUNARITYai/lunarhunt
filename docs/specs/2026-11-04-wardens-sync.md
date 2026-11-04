@@ -1,0 +1,525 @@
+---
+status: draft
+issue: "#7"
+adrs: ["0003", "0004", "0005", "0008", "0009", "0011", "0012", "0013"]
+---
+
+# Wardens sync, Definition of Done and doctor
+
+## Goal and context
+
+Issue [#7](https://github.com/LUNARITYai/lunarhunt/issues/7) is the second half of the Wardens entry criteria for PANOPTICON phase 0 ([ADR-0008](../decisions/0008-autonomy-phases-and-risk-based-merge-policy.md)). Issue #6 ([spec](2026-11-04-wardens-core.md)) shipped The Charter, its schema and the ring-0 rules `scope-guard`, `protected-paths`, `command-guard` and `secret-read-guard`. Nothing calls them yet: `.claude/settings.json` and `.cursor/hooks.json` do not exist, and `lefthook.yml` is hand-written.
+
+This issue wires the engine into the tools and adds the rules that finish ring 0 and ring 1:
+
+- `wardens sync` generates `.claude/settings.json`, `.cursor/hooks.json` and `lefthook.yml` from The Charter ([ADR-0003](../decisions/0003-the-charter-as-single-source-of-policy.md), [ADR-0005](../decisions/0005-wardens-engine-in-typescript-with-single-cli.md)). `charter-drift` fails when a generated file differs from the generator output (C-04).
+- `generated-files-guard` denies hand edits of the generated API contract and client (C-13).
+- `definition-of-done` runs on agent `Stop` and keeps the agent working while `pnpm check` is red, within a loop limit (C-12).
+- `agent-trailer` fails an agent commit without `Agent: <tool> (<model>)` (C-27).
+- `wardens doctor` checks that the generated hooks are fail-closed, breaks a hook on purpose, and warns when Cursor runs the Claude Code hooks a second time (C-03, ADR-0005).
+- CI gets the jobs `charter-drift` and `wardens-test`.
+
+Out of scope: ring-2 PR Wardens (`risk-classifier`, `pr-check`, `bug-repro-test`, `test-tampering`, `diff-coverage`), `panopticon/gate`, adding required checks to the `main` ruleset, `worktree-guard` and `wardens worktree *` ([ADR-0012](../decisions/0012-task-isolation-with-git-worktrees.md) follow-up), model routing and escalation ([ADR-0009](../decisions/0009-model-routing-and-escalation-per-role.md)), Ledger writes ([ADR-0010](../decisions/0010-the-ledger-and-observability.md)), security scanners, and the `wardens doctor` checks for effort overrides, stale worktrees and orphan task databases listed in `AGENTS.md`. Those checks belong to the ADR-0009 and ADR-0012 follow-ups.
+
+The tool facts below were read from the Claude Code hooks, settings and permissions docs and the Cursor hooks docs on 2026-11-04. Where the docs were incomplete, the Plan marks the point **unverified**. The implementation must confirm it with a recorded payload or a manual test, or stop with `needs:human`.
+
+## Acceptance criteria (EARS)
+
+### `wardens sync` and `charter-drift`
+
+- WHEN `wardens sync` runs, THE SYSTEM SHALL write `.claude/settings.json`, `.cursor/hooks.json` and `lefthook.yml` at the git toplevel, with the contents defined in Plan (Generated files), and SHALL write no other file.
+- WHEN `wardens sync` runs twice on the same Charter, THE SYSTEM SHALL produce byte-identical files.
+- WHEN `wardens sync` writes its files, THE SYSTEM SHALL produce output that `biome format` leaves unchanged.
+- WHEN `wardens sync --check` runs and a generated file is missing or differs from the generator output, THE SYSTEM SHALL write nothing, print `Blocked by Warden charter-drift: <file> differs from wardens sync output. Ask a human to run wardens sync and commit the result.` for each such file and exit 2.
+- WHEN `wardens sync --check` finds no difference, THE SYSTEM SHALL exit 0.
+- WHEN `pnpm check` runs, THE SYSTEM SHALL run `wardens sync --check` as part of the `wardens` package `check` script.
+- WHEN a pull request is opened or updated, THE CI job `charter-drift` SHALL run `wardens sync --check` and fail on drift.
+- IF `wardens sync` (without `--check`) runs while `PANOPTICON_AGENT` is set, THEN THE SYSTEM SHALL write nothing, print `Blocked by Warden charter-drift: wardens sync writes protected configs and is for humans. Ask Krzysztof to run wardens sync.` and exit 2.
+- IF The Charter fails validation, THEN `wardens sync` and `wardens sync --check` SHALL write nothing and exit 2 with the `engine` message.
+
+### Generated tool configs
+
+- THE generated `.claude/settings.json` SHALL contain `PreToolUse` with matcher `^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$`, `PostToolUse` with matcher `^(Edit|Write)$` and `Stop`, each calling the Wardens bundle with `onFailure: "block"` and a `timeout`.
+- THE generated `.claude/settings.json` SHALL contain `permissions.deny` for The Charter, the known `.env` variants, `secrets/**`, the generated paths, `NotebookEdit` and every `commands.deny` pattern; `permissions.ask` for every `paths.protected.ask` glob; and `permissions.allow` for every `commands.allow` pattern.
+- THE generated `.claude/settings.json` SHALL set `env.PANOPTICON_AGENT` to `claude`.
+- THE generated `.cursor/hooks.json` SHALL contain `version: 1` and the events `sessionStart`, `preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `afterFileEdit` and `stop`, each with `failClosed: true` and a `timeout`; `preToolUse` SHALL use matcher `^(Shell|Read|Write|Delete|MCP:.*)$` and `stop` SHALL set `loop_limit: 3`.
+- THE generated `lefthook.yml` SHALL keep the current `pre-commit` (Biome, Ruff) and `pre-push` (`pnpm check`) commands and SHALL add a `commit-msg` command that runs `agent-trailer`.
+
+### `generated-files-guard`
+
+- WHEN an agent edits, writes or deletes a path matching `paths.generated`, THE SYSTEM SHALL deny via `generated-files-guard` with the next action `Run uv run export-openapi to regenerate it`.
+- WHEN an agent edits `packages/contracts/README.md`, THE SYSTEM SHALL NOT object via `generated-files-guard`.
+- WHEN an agent runs `uv run export-openapi`, THE SYSTEM SHALL NOT object via `generated-files-guard`.
+
+### Post-edit audit
+
+- WHEN Claude Code `PostToolUse` reports an `Edit` or `Write` of a path that `protected-paths` (deny list only), `scope-guard` or `generated-files-guard` would have denied, THE SYSTEM SHALL return `decision: "block"` with a C-30 reason whose next action is `Revert <path> with git checkout -- <path>`.
+- WHEN Claude Code `PostToolUse` reports an edit of a path on `paths.protected.ask`, THE SYSTEM SHALL NOT object, because a human may have approved it.
+- WHEN Cursor `afterFileEdit` fires, THE SYSTEM SHALL run the same audit, append the verdict to the JSONL log and print `{}`.
+
+### `definition-of-done`
+
+- WHEN an agent session stops (Claude Code `Stop`; Cursor `stop` with `status: "completed"`) and the worktree changed since the last green run, THE SYSTEM SHALL run `pnpm check` from the worktree root.
+- WHEN `pnpm check` is red and the session has fewer than 3 consecutive red stops, THE SYSTEM SHALL keep the agent working (Claude Code `decision: "block"`; Cursor `followup_message`) with a C-30 message naming the failed tasks, followed by at most 60 lines of `pnpm check` output.
+- WHEN `pnpm check` is red for the 3rd consecutive stop in one session, THE SYSTEM SHALL let the session stop and tell the agent `Blocked by Warden definition-of-done: pnpm check is still red after 3 attempts. Label the issue needs:human.`
+- WHEN `pnpm check` is green, THE SYSTEM SHALL let the session stop, store the worktree fingerprint as the last green state and reset the session's red streak.
+- WHEN the worktree fingerprint equals the last green fingerprint, THE SYSTEM SHALL let the session stop without running `pnpm check`.
+- WHEN `HEAD` equals its merge-base with `origin/main` and `git status --porcelain` is empty, THE SYSTEM SHALL let the session stop without running `pnpm check`.
+- WHEN Cursor `stop` arrives with `status` `aborted` or `error`, THE SYSTEM SHALL let the session stop without running `pnpm check`.
+- IF `pnpm check` does not finish within 840 seconds, or the rule fails internally, THEN THE SYSTEM SHALL treat the stop as red, with rule id `definition-of-done` or `engine`.
+
+### `agent-trailer`
+
+- WHEN `wardens check agent-trailer <message-file>` runs in an agent session and the commit message has no trailer matching `^Agent: (claude|cursor) \(.+\)$`, THE SYSTEM SHALL print `Blocked by Warden agent-trailer: agent commit has no Agent: trailer. Add "Agent: <tool> (<model>)" as the last trailer and commit again.` and exit 2.
+- WHEN the trailer names a tool other than the detected agent, THE SYSTEM SHALL fail the same way.
+- WHEN no agent marker is present, THE SYSTEM SHALL exit 0 without inspecting the message.
+- WHEN lefthook runs `commit-msg`, THE SYSTEM SHALL run `agent-trailer` from the TypeScript source, so a missing bundle does not block human commits.
+
+### Cursor session environment
+
+- WHEN Cursor `sessionStart` fires, THE SYSTEM SHALL return `{"env": {"PANOPTICON_AGENT": "cursor"}}`.
+
+### `wardens doctor` and `wardens-test`
+
+- WHEN `wardens doctor` runs, THE SYSTEM SHALL report each check in Plan (Doctor) as `ok`, `warn` or `fail`, exit 0 when no check fails and exit 2 otherwise.
+- WHEN a generated hook entry lacks `onFailure: "block"` (Claude Code) or `failClosed: true` (Cursor), or lacks a `timeout`, THE `fail-closed` check SHALL fail.
+- WHEN `wardens doctor` runs a generated hook command with the bundle path replaced by a missing file, THE `break-hook` check SHALL fail unless the command exits non-zero.
+- WHEN `wardens doctor` runs the real bundle with an invalid Charter or with malformed stdin, THE `break-hook` check SHALL fail unless the engine returns a deny in the tool's format.
+- WHEN the JSONL log holds a line with `foreign: true`, or two lines from different tools for the same session, event and target within 2 seconds, THE `duplicates` check SHALL warn `Cursor is running the Claude Code hooks too. Disable third-party hooks in Cursor settings.`
+- WHEN a pull request is opened or updated, THE CI job `wardens-test` SHALL build the bundle, run `pnpm --filter wardens test` and run `wardens doctor --ci`.
+
+### Messages and logging
+
+- THE SYSTEM SHALL use the C-30 format for the first line of every new deny, block and drift message.
+- WHEN a hook for a new event finishes, THE SYSTEM SHALL append exactly one JSONL line to `.panopticon/wardens.log.jsonl`, as in the core spec, and SHALL NOT log `pnpm check` output.
+
+## Plan
+
+### Approach
+
+The engine already has the shape this issue needs: a normalized event, rules that see only that event, a renderer per tool and a fail-closed wrapper. This issue adds:
+
+1. Engine support for the new events and rules: Claude Code `PostToolUse` and `Stop`; Cursor `afterFileEdit`, `stop` and `sessionStart`. The rules are `generated-files-guard`, the post-edit audit, `definition-of-done` and `agent-trailer`.
+2. `wardens sync` and `wardens sync --check`, which render the three files from The Charter.
+3. `wardens doctor`, and the CI jobs.
+
+The generated configs call the bundle. If the configs landed before the engine understood `Stop`, every stop would hit an unmapped event and deny. So Task 2 (engine) must merge before Task 3 (sync and generated files).
+
+### Settled conflicts
+
+| Topic | Settlement |
+| --- | --- |
+| `PreToolUse` matcher | Issue #7 writes `Bash\|Edit\|Write\|mcp__.*`. The core spec maps `Read` (for `secret-read-guard`) and `PowerShell`. The matcher adds both. Without `Read`, Claude Code reads would rely on `permissions.deny` alone, which cannot express the `.env.example` exception. |
+| Matcher anchoring | Unanchored regexes match substrings (for example `Read` inside `ReadMcpResourceTool`), and an unmapped tool makes the engine deny with `engine`. Both tools get anchored matchers. |
+| `.env.*` in `permissions.deny` | Claude Code permission rules have no negation, so `Read(**/.env.*)` would also block `.env.example` (ADR-0013 exception). Sync expands `.env.*` into a fixed list of known variants. The hook covers every other variant through `secret-read-guard`. |
+| `PostToolUse` / `afterFileEdit` purpose | ADR-0005 lists these hooks but gives them no rule. They become an audit that catches an edit the pre-hook should have denied (a bypassed or failed pre-hook). They cannot undo the edit. Claude Code shows the reason next to the tool result. Cursor documents no output for `afterFileEdit`, so it only logs. |
+| Interactive bit | A static settings file cannot tell an interactive session from `claude -p`. Sync does not set `PANOPTICON_INTERACTIVE`. A human who wants an `ask` path to prompt instead of being denied exports `PANOPTICON_INTERACTIVE=1` before starting the session. `wardens/AGENTS.md` documents this. |
+| DoD gate list | C-12 says `pnpm check` covers the whole Definition of Done. The rule runs `pnpm check`, not a per-gate command list. A unit test maps each Charter `quality_gates.definition_of_done` id to a Turborepo task (`lint`→`lint`, `typecheck`→`typecheck`, `test:affected`→`test`, `contract:drift`→`contract:check`) and asserts each task is in `turbo.json` `check.dependsOn`. An unknown gate id fails that test. |
+| Loop limit | ADR-0009 escalates after 3 failed `Stop` hooks. The rule stops blocking after 3 consecutive red stops. In v1 the limit is a constant in the engine, not a Charter key. Claude Code's own cap is 8 continuations. Cursor gets `loop_limit: 3` as a second line. |
+| Agent detection | A git hook cannot see which tool started it. Claude Code gets `env.PANOPTICON_AGENT=claude` from settings. Cursor gets `PANOPTICON_AGENT=cursor` from the `sessionStart` hook output. `CLAUDECODE=1` is a fallback marker if the implementation confirms Claude Code sets it. The model is not known to a git hook, so the agent writes the trailer and `agent-trailer` only checks it. |
+| Who runs `wardens sync` | `AGENTS.md` says humans run it; its output is in protected paths. The engine refuses a writing sync when `PANOPTICON_AGENT` is set. Rings 2 and 3 (`charter-drift`, CODEOWNERS, `risk:high` on `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/**`) are the backstop. Bootstrap: the Task 3 PR is the first sync. It runs before any settings file exists, so the variable is unset. |
+| JSON headers | JSON has no comments, and unknown keys may be rejected by either tool. The generated JSON files carry no "generated" header. `lefthook.yml` gets a YAML comment header. Drift is caught by `charter-drift`, not by a header. |
+| Third-party hook import | The Cursor third-party-hooks reference returned 404 on 2026-11-04. ADR-0005 already accepts that turning off the import is an editor setting that `doctor` checks rather than guarantees. |
+
+### Generated files
+
+All three files are a pure function of The Charter plus fixed templates in `wardens/src/sync/`. Keys are emitted in the order shown. Arrays keep Charter order, with duplicates dropped after their first occurrence. JSON uses two-space indent and a trailing newline.
+
+#### Glob to permission-rule conversion
+
+| Charter glob | Permission specifier |
+| --- | --- |
+| No `/` (basename rule, core spec) | `**/<glob>` |
+| Contains `/` | `/<glob>` (relative to the project root) |
+| `.env.*` | Expanded to the known variants below; the original is not emitted |
+| `!*.example` | Dropped (no negation in permission rules) |
+
+Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.development.local`, `.env.test`, `.env.test.local`, `.env.production`, `.env.production.local`, `.env.staging`.
+
+`Read(...)` deny also blocks `Edit` on the same path (Claude Code docs), so secrets get only `Read` rules. `Write(...)` path rules never match in Claude Code; sync uses `Edit(...)` for write protection.
+
+#### `.claude/settings.json` (normative for Charter v1 as on `main`)
+
+```json
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "PANOPTICON_AGENT": "claude"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm turbo run *)",
+      "Bash(pnpm check*)",
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff *)"
+    ],
+    "ask": [
+      "Edit(/docs/constitution.md)",
+      "Edit(**/AGENTS.md)",
+      "Edit(**/CLAUDE.md)",
+      "Edit(/apps/api/migrations/**)",
+      "Edit(**/.env.example)"
+    ],
+    "deny": [
+      "Edit(**/panopticon.charter.yaml)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.development)",
+      "Read(**/.env.development.local)",
+      "Read(**/.env.test)",
+      "Read(**/.env.test.local)",
+      "Read(**/.env.production)",
+      "Read(**/.env.production.local)",
+      "Read(**/.env.staging)",
+      "Read(/secrets/**)",
+      "Edit(/packages/api-client/src/**)",
+      "Edit(/packages/contracts/openapi.json)",
+      "NotebookEdit",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push +*)",
+      "Bash(kubectl * --context prod*)",
+      "Bash(npm publish*)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(curl * | zsh)",
+      "Bash(curl * | sudo sh)",
+      "Bash(curl * | sudo bash)",
+      "Bash(curl * | sudo zsh)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | zsh)",
+      "Bash(wget * | sudo sh)",
+      "Bash(wget * | sudo bash)",
+      "Bash(wget * | sudo zsh)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git merge --no-verify*)",
+      "Bash(LEFTHOOK=0 *)",
+      "Bash(git -c core.hooksPath=*)",
+      "Bash(git config core.hooksPath*)",
+      "Bash(wardens worktree remove * --force*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/wardens/dist/wardens.mjs\" hook --tool claude --event PreToolUse",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/wardens/dist/wardens.mjs\" hook --tool claude --event PostToolUse",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/wardens/dist/wardens.mjs\" hook --tool claude --event Stop",
+            "timeout": 900,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `Bash(...)` permission rules are a second line. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
+
+`onFailure` needs Claude Code v2.1.295 or later (docs, 2026-11-04). `doctor` warns on an older `claude`.
+
+#### `.cursor/hooks.json`
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event sessionStart",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event preToolUse",
+        "matcher": "^(Shell|Read|Write|Delete|MCP:.*)$",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event beforeShellExecution",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event beforeMCPExecution",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event beforeReadFile",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event afterFileEdit",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "stop": [
+      {
+        "command": "node wardens/dist/wardens.mjs hook --tool cursor --event stop",
+        "timeout": 900,
+        "loop_limit": 3,
+        "failClosed": true
+      }
+    ]
+  }
+}
+```
+
+Cursor runs project hooks from the project root (docs), so the bundle path is relative. Project hooks run only in a trusted workspace; `doctor` cannot check that.
+
+#### `lefthook.yml`
+
+```yaml
+# Generated by `wardens sync` from panopticon.charter.yaml (ADR-0003). Do not edit.
+
+pre-commit:
+  commands:
+    biome:
+      glob: "*.{js,jsx,ts,tsx,json,jsonc,css,yml,yaml}"
+      run: pnpm exec biome check --write --no-errors-on-unmatched --files-ignore-unknown=true -- {staged_files}
+      stage_fixed: true
+    ruff:
+      glob: "*.py"
+      run: uv run --frozen ruff check --fix {staged_files} && uv run --frozen ruff format {staged_files}
+      stage_fixed: true
+
+commit-msg:
+  commands:
+    agent-trailer:
+      run: node --experimental-strip-types wardens/src/cli.ts check agent-trailer {1}
+
+pre-push:
+  commands:
+    check:
+      run: pnpm check
+```
+
+`commit-msg` runs from source, like the package `check` script, so a fresh worktree without a built bundle can still commit. It needs `node_modules`, which every worktree setup installs.
+
+### Engine changes
+
+#### Normalized event
+
+The core spec's event gains these fields. All are null when they do not apply. The schema stays `.strict()`.
+
+| Field | Type | Source |
+| --- | --- | --- |
+| `phase` | `"pre"` \| `"post"` \| null | `pre` for the core spec rows, `post` for `PostToolUse` and `afterFileEdit`, null otherwise |
+| `stop_status` | `"completed"` \| `"aborted"` \| `"error"` \| null | Cursor `stop.status`; Claude Code `Stop` is always `completed` |
+| `foreign` | boolean | true when a `--tool claude` invocation receives a payload that has `cursor_version` |
+
+`action` gains `stop` and `session_start`.
+
+New mapping rows. Any other combination still denies with rule `engine`.
+
+| Tool | Event | Condition | Action | Path |
+| --- | --- | --- | --- | --- |
+| claude | `PostToolUse` | `tool_name` `Edit` | edit | `tool_input.file_path` |
+| claude | `PostToolUse` | `tool_name` `Write` | write | `tool_input.file_path` |
+| claude | `Stop` | — | stop | null |
+| cursor | `afterFileEdit` | — | edit | `file_path` (absolute; made repo-relative by the core spec's path preparation) |
+| cursor | `stop` | — | stop | null |
+| cursor | `sessionStart` | — | session_start | null |
+
+Adapters drop `tool_response`, `edits`, `last_assistant_message` and `transcript_path` before the event is built, like the core spec drops file contents.
+
+#### Rules
+
+| Rule | Actions | Behaviour |
+| --- | --- | --- |
+| `generated-files-guard` | edit, write, delete (pre) | Path matches `paths.generated` (same glob rules as the core spec) → deny. |
+| post-edit audit | edit, write (post) | Runs the deny side of `protected-paths` (deny list only), `scope-guard` and `generated-files-guard`. Any deny → Claude Code `decision: "block"` with the C-30 line from the denying rule and next action `Revert <path> with git checkout -- <path>`. `ask` matches are ignored. |
+| `definition-of-done` | stop | See below. |
+| session env | session_start | Always allow. Cursor output `{"env": {"PANOPTICON_AGENT": "cursor"}}`. |
+
+Precedence among pre-edit rules, same severity: `protected-paths`, `secret-read-guard`, `generated-files-guard`, `command-guard`, `scope-guard`.
+
+Messages:
+
+- `Blocked by Warden generated-files-guard: packages/contracts/openapi.json is generated. Run uv run export-openapi to regenerate it.`
+- `Blocked by Warden scope-guard: infra/main.tf was edited outside allowed_paths for this task. Revert infra/main.tf with git checkout -- infra/main.tf.`
+
+#### `definition-of-done`
+
+State lives in `<toplevel>/.panopticon/dod-state.json` (gitignored with `.panopticon/`):
+
+```json
+{
+  "last_green": "sha256:…",
+  "sessions": { "sess_abc": { "red_streak": 1 } }
+}
+```
+
+Fingerprint: SHA-256 over `git rev-parse HEAD`, `git status --porcelain=v1 -z --untracked-files=all`, `git diff HEAD --binary`, and the bytes of each untracked file in path order. `.panopticon/` is gitignored and never part of it.
+
+Order of decisions on a stop event:
+
+1. Cursor `stop_status` not `completed` → allow.
+2. `HEAD` equals `git merge-base HEAD origin/main` and porcelain status is empty → allow (nothing to deliver; covers planning sessions in the primary checkout). If `origin/main` does not resolve, skip this step.
+3. Fingerprint equals `last_green` → allow.
+4. Run `pnpm check` in the toplevel with `TURBO_TELEMETRY_DISABLED=1`, a 840-second timeout, and stdout and stderr captured together.
+5. Green → write `last_green`, set `red_streak` to 0, allow.
+6. Red or timeout → increment `red_streak`. If it is now 3 or more → allow, with the needs:human message (Claude Code: `hookSpecificOutput.additionalContext`; Cursor: `followup_message` is not sent, `{}`). Otherwise → block.
+
+Rendering:
+
+| Verdict | Claude Code `Stop` | Cursor `stop` |
+| --- | --- | --- |
+| allow | exit 0, empty stdout | exit 0, `{}` |
+| block | exit 0, `{"decision": "block", "reason": "<C-30 line>\n\n<output tail>"}` | exit 0, `{"followup_message": "<C-30 line>\n\n<output tail>"}` |
+| limit reached | exit 0, `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "<needs:human line>"}}` | exit 0, `{}` |
+
+Failed tasks come from Turborepo's `Failed:` summary lines; if none can be parsed, the message says `pnpm check is red`. The output tail is the last 60 lines and at most 4,000 characters. It goes only to the agent, never to the JSONL log (C-18, C-19). The JSONL line for a stop records `rule`, `decision` (`deny` for block, `allow` otherwise), `duration_ms` and the C-30 line.
+
+An engine failure while evaluating a stop renders as a block with the `engine` message and counts toward the streak, so a broken rule cannot trap the agent for more than 3 stops.
+
+#### `agent-trailer`
+
+`wardens check agent-trailer <message-file>`:
+
+1. Agent marker: `PANOPTICON_AGENT` is `claude` or `cursor`; else `CLAUDECODE=1` means `claude` (only if Task 2 confirms Claude Code sets it; otherwise drop this fallback). No marker → exit 0.
+2. Parse trailers with `git interpret-trailers --parse <message-file>`.
+3. Require at least one trailer matching `^Agent: (claude|cursor) \(.+\)$` whose tool equals the marker. `Agent: claude (sonnet, high)` passes.
+4. Otherwise print the C-30 message and exit 2. Append one JSONL line with `tool` set to the marker, `event` `commit-msg`, `action` `commit` (an `action` value used only by this check).
+
+Ring 2 for C-27 (checking trailers on PR commits in CI) belongs to `pr-check` and is out of scope.
+
+### `wardens sync` CLI
+
+- `wardens sync`: validate The Charter, render, write the three files. Exit 0, 2 on error. Refuse when `PANOPTICON_AGENT` is set.
+- `wardens sync --check`: render in memory and compare. Exit 0 or 2. Never writes. Allowed in agent sessions.
+- The renderer is pure (`render(charter) → Map<path, string>`), so the tests and `doctor` use it without touching disk.
+- The `wardens` package `check` script becomes `node --experimental-strip-types src/cli.ts check charter-validate && node --experimental-strip-types src/cli.ts sync --check`.
+
+### Doctor
+
+`wardens doctor [--ci] [--json]` runs these checks from the git toplevel:
+
+| Id | Check | Result on problem |
+| --- | --- | --- |
+| `drift` | Generated files equal `render(charter)` | fail |
+| `fail-closed` | Every hook in `.claude/settings.json` has `onFailure: "block"` and `timeout` > 0; every hook in `.cursor/hooks.json` has `failClosed: true` and `timeout` > 0 | fail |
+| `coverage` | Each subscribed event and matcher alternative has a mapping row; each mapping row the generated configs should cover is subscribed | fail |
+| `break-hook` | (a) Each generated hook command, run with the bundle path replaced by a missing file and a sample payload, exits non-zero. (b) The real bundle, run against a temp git repo with an invalid Charter, returns a deny in the tool's format. (c) The real bundle with stdin `not json` returns a deny. | fail |
+| `bundle` | `wardens/dist/wardens.mjs` exists and its embedded source hash (written by tsup at build time) equals the hash of `wardens/src/**` | fail when missing; warn when stale (`Run pnpm --filter wardens build.`) |
+| `duplicates` | JSONL log: any `foreign: true` line in the last 7 days, or lines from both tools with the same `session_id`, `event` class and target within 2 s | warn |
+| `disable-all-hooks` | `.claude/settings.local.json` or `~/.claude/settings.json` sets `disableAllHooks: true` | warn |
+| `claude-version` | `claude --version` ≥ 2.1.295 when `claude` is on `PATH` | warn |
+
+`--ci` skips `duplicates`, `disable-all-hooks` and `claude-version`, which depend on the developer's machine. Output: one line per check, `ok|warn|fail <id>: <message>`. With `--json`, one JSON array.
+
+`break-hook` (a) proves only that our command fails when the bundle is missing. It does not prove Claude Code or Cursor then blocks; that depends on `onFailure` and `failClosed`, which `fail-closed` checks. The manual test in Task 3 closes this gap once with real tools.
+
+### CI
+
+Both jobs are added to `.github/workflows/check.yml` after PR #12 (issue #5) merges, using the same Dev Container image as the `check` job. Actions stay pinned to commit SHAs with `permissions: contents: read` (ADR-0014).
+
+- `charter-drift`: install, then `node --experimental-strip-types wardens/src/cli.ts sync --check`.
+- `wardens-test`: install, `pnpm --filter wardens build`, `pnpm --filter wardens test`, `node wardens/dist/wardens.mjs doctor --ci`.
+
+Making them required checks in the `main` ruleset is a human step after merge, and is out of scope.
+
+### Rollout (Krzysztof)
+
+After Task 3 merges, every Claude Code and Cursor session in the repository runs fail-closed hooks. A session whose worktree has no built bundle is blocked on every tool call.
+
+1. In the primary checkout and every open worktree: `pnpm install && pnpm --filter wardens build`.
+2. Add `pnpm --filter wardens build` to `.devcontainer/devcontainer.json` `postCreateCommand` (ADR-0005 already requires the bundle on create). This is a protected path, so it goes in Task 3's PR with your approval.
+3. In Cursor settings, turn off loading third-party (Claude Code) hooks, and trust the workspace.
+4. Run `pnpm exec lefthook install` again so `commit-msg` is installed.
+5. Run `wardens doctor` locally. Expect `ok` for everything except possibly `claude-version`.
+
+### Known limitations
+
+- Shell writes (`echo x > file`, generators) are not edits. `scope-guard` and `generated-files-guard` do not see them. The `contract:check` drift check in `pnpm check` and CI catches hand-made contract changes; `charter-drift` catches hand-made config changes.
+- Cursor `Grep` and `Task` are not subscribed (unmapped). Cursor `Grep` can read file contents without `beforeReadFile`.
+- `PostToolUse` runs after the edit. The audit reports and the agent must revert; nothing is undone automatically.
+- The DoD fingerprint ignores ignored files. An edit to a gitignored file does not trigger a new run.
+- Cursor `sessionStart` output `env` and its exact `stop` input are from a summarized part of the Cursor docs (**unverified**). Task 2 must record real payloads before relying on them.
+- `CLAUDECODE=1` as a marker is **unverified**; see `agent-trailer`.
+
+### Affected packages
+
+- `wardens/**` (engine, sync templates, doctor, tests, fixtures, `package.json`, `AGENTS.md`)
+- `.claude/settings.json`, `.cursor/hooks.json`, `lefthook.yml` (generated)
+- `.github/workflows/check.yml`
+- `.devcontainer/devcontainer.json` (`postCreateCommand` only)
+- `pnpm-lock.yaml`, `pnpm-workspace.yaml` (catalog) only if a dependency is needed. None is expected.
+
+No product API, contract, client or migration. No Charter change.
+
+### ADRs needed
+
+None. This spec follows ADR-0003, ADR-0004, ADR-0005 and ADR-0013 and records the settlements above. The decision log gets one row for the settled conflicts when the spec is accepted.
+
+## Tasks
+
+Each task below becomes its own `agent:ready` issue, linked to #7 as the parent. The last PR closes #7.
+
+1. **This spec.** Land `docs/specs/2026-11-04-wardens-sync.md` at `status: draft`. Krzysztof sets `status: ready`.
+   **Allowed paths:** `docs/specs/2026-11-04-wardens-sync.md`
+
+2. **Engine: new events and rules.** Normalized-event fields, the new mapping rows, `generated-files-guard`, the post-edit audit, `definition-of-done` with its state file, the Cursor `sessionStart` env, `wardens check agent-trailer`, the JSONL additions, and tests for each EARS criterion above. Record Cursor `stop`, `afterFileEdit` and `sessionStart` payloads from a real session, and confirm `CLAUDECODE` in a real Claude Code Bash call; if either cannot be done, stop with `needs:human` instead of inventing a payload. No configs are generated yet.
+   **Allowed paths:** `wardens/**`
+   **Depends on:** 1
+
+3. **`wardens sync` and generated configs.** The renderer, `sync` and `sync --check`, the package `check` script change, the first generated `.claude/settings.json`, `.cursor/hooks.json` and `lefthook.yml`, the CI job `charter-drift`, the `postCreateCommand` build step, and a manual test in a real Claude Code session and a real Cursor session: with the bundle renamed, an `Edit` is blocked (record the result in the PR). `risk:high`.
+   **Allowed paths:** `wardens/**`, `.claude/settings.json`, `.cursor/hooks.json`, `lefthook.yml`, `.github/workflows/check.yml`, `.devcontainer/devcontainer.json`
+   **Depends on:** 2, and PR #12 merged
+
+4. **`wardens doctor` and `wardens-test`.** The doctor checks above, the tsup source-hash banner, and the CI job `wardens-test`. Closes #7.
+   **Allowed paths:** `wardens/**`, `.github/workflows/check.yml`
+   **Depends on:** 3
+
+Expected size: Task 2 is the largest. If its PR passes 600 changed lines, split `definition-of-done` into its own PR under the same issue.
+
+## Open questions
+
+1. **Loop limit in The Charter.** v1 keeps the DoD limit (3) as an engine constant tied to ADR-0009. Should it be a Charter key (for example `quality_gates.dod_loop_limit`) instead? Moving it would be a Charter change by Krzysztof plus a schema change.
+2. **`NotebookEdit` deny.** The repository has no notebooks, and `NotebookEdit` path rules never match in Claude Code, so sync denies the tool outright. Confirm, or leave it unhandled.
+3. **`Bash(...)` permission rules from `commands.deny` and `commands.allow`.** They duplicate `command-guard` with looser matching. Keep them as a second line (proposed), or emit only the path rules the issue names?
