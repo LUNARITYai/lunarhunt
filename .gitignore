@@ -1,0 +1,40 @@
+# pnpm / Node
+node_modules/
+
+# Next.js
+.next/
+
+# Build output (packages, tsup, Turborepo)
+dist/
+
+# Turborepo
+.turbo/
+
+# TypeScript
+*.tsbuildinfo
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets. The committed template stays tracked (ADR-0013).
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+
+# OS
+.DS_Store
+
+# Claude Code task worktrees (ADR-0012)
+.claude/worktrees/
