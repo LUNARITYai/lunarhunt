@@ -1,4 +1,5 @@
 import { type Charter, loadCharterAt } from "./charter.ts";
+import { type DodDeps, stopEngineFailure } from "./dod.ts";
 import {
   type NormalizedEvent,
   normalizeHook,
@@ -34,6 +35,7 @@ export type EngineDeps = {
   now: () => number;
   cwd: () => string;
   env: NodeJS.ProcessEnv;
+  dod?: DodDeps;
 };
 
 const defaultDeps: EngineDeps = {
@@ -87,6 +89,14 @@ function evaluateLifecycle(ctx: RuleContext): Verdict | null {
       return objection ? objectionVerdict(objection) : allowVerdict();
     }
   } catch (err) {
+    if (ctx.event.action === "stop") {
+      return stopEngineFailure(
+        ctx.root,
+        ctx.event.session_id,
+        engineDeny(err instanceof EngineFailure ? err.what : "a rule threw")
+          .message ?? "",
+      );
+    }
     return caught(err);
   }
   return null;
@@ -350,12 +360,25 @@ export function runHook(
     toplevel: string | null,
     event: NormalizedEvent | null,
   ): RunResult => {
+    const denied =
+      message === CHARTER_INVALID_MESSAGE
+        ? engineDeny(CHARTER_INVALID_MESSAGE)
+        : engineDeny(message);
+    const isStop = eventName === "Stop" || eventName === "stop";
     const verdict = commit({
       toplevel,
       verdict:
-        message === CHARTER_INVALID_MESSAGE
-          ? engineDeny(CHARTER_INVALID_MESSAGE)
-          : engineDeny(message),
+        isStop && toplevel
+          ? stopEngineFailure(
+              toplevel,
+              typeof raw?.session_id === "string"
+                ? raw.session_id
+                : typeof raw?.conversation_id === "string"
+                  ? raw.conversation_id
+                  : null,
+              denied.message ?? "",
+            )
+          : denied,
       event,
       tool: hintedTool,
       eventName,
@@ -408,6 +431,7 @@ export function runHook(
       charter: policy.charter,
       task: policy.task,
       root: toplevel,
+      ...(deps.dod ? { dod: deps.dod } : {}),
     }),
     event: normalized.event,
     tool: hintedTool,

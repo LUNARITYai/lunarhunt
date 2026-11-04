@@ -185,6 +185,7 @@ describe("hook contract fixtures", () => {
       const result = runHook(meta.tool, meta.event, JSON.stringify(stdin), {
         cwd: () => root,
         env: {},
+        dod: { runCheck: () => ({ status: "green", output: "" }) },
       });
       expect(result.exitCode).toBe(0);
       const logPath = join(root, ".panopticon/wardens.log.jsonl");

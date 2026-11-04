@@ -1,7 +1,9 @@
+import { defaultRunCheck, definitionOfDone } from "./dod.ts";
+import { gitTracked } from "./git.ts";
 import { generatedFilesGuard, protectedDeny, scopeGuard } from "./guards.ts";
 import { wardenMessage } from "./messages.ts";
 import type { Objection, RuleContext } from "./rules.ts";
-import { allowVerdict, type Verdict } from "./verdict.ts";
+import type { Verdict } from "./verdict.ts";
 
 const AUDIT_WHAT: Record<string, (path: string) => string> = {
   "protected-paths": (path) => `${path} was edited but is deny for agents`,
@@ -31,14 +33,16 @@ export function postEditAudit(ctx: RuleContext): Objection | null {
       message: wardenMessage(
         objection.rule,
         what(path),
-        `Revert ${path} with git checkout -- ${path}`,
+        gitTracked(ctx.root, path)
+          ? `Revert ${path} with git checkout -- ${path}`
+          : `Delete ${path}`,
       ),
     };
   }
   return null;
 }
 
-/** Seam for `definition-of-done` (part B). Until then a stop is always allowed. */
-export function evaluateStop(_ctx: RuleContext): Verdict {
-  return allowVerdict();
+/** `definition-of-done`: keeps the agent working while `pnpm check` is red. */
+export function evaluateStop(ctx: RuleContext): Verdict {
+  return definitionOfDone(ctx, ctx.dod ?? { runCheck: defaultRunCheck });
 }

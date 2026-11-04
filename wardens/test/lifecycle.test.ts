@@ -6,6 +6,7 @@ import { runHook } from "../src/engine.ts";
 import { normalizeHook } from "../src/event.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
 import { runAgentTrailer } from "../src/trailer.ts";
+import { trackedRepo } from "./dod-support.ts";
 import { cliPath, tempRepo, writeRepoFile } from "./support.ts";
 
 type Line = Record<string, unknown>;
@@ -17,12 +18,14 @@ function lines(root: string): Line[] {
     .map((line) => JSON.parse(line) as Line);
 }
 
+const GREEN = { runCheck: () => ({ status: "green" as const, output: "" }) };
+
 function claude(root: string, event: string, payload: Record<string, unknown>) {
   return runHook(
     "claude",
     event,
     JSON.stringify({ session_id: "s1", cwd: root, ...payload }),
-    { cwd: () => root, env: {} },
+    { cwd: () => root, env: {}, dod: GREEN },
   );
 }
 
@@ -31,7 +34,7 @@ function cursor(root: string, event: string, payload: Record<string, unknown>) {
     "cursor",
     event,
     JSON.stringify({ conversation_id: "c1", cwd: root, ...payload }),
-    { cwd: () => root, env: {} },
+    { cwd: () => root, env: {}, dod: GREEN },
   );
 }
 
@@ -91,6 +94,7 @@ describe("generated-files-guard", () => {
 describe("post-edit audit", () => {
   const revert = (path: string) =>
     `Revert ${path} with git checkout -- ${path}.`;
+  const remove = (path: string) => `Delete ${path}.`;
 
   it("blocks a Claude PostToolUse edit that scope-guard would have denied", () => {
     const root = tempRepo();
@@ -102,8 +106,26 @@ describe("post-edit audit", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       decision: "block",
-      reason: `Blocked by Warden scope-guard: infra/main.tf was edited outside allowed_paths for this task. ${revert("infra/main.tf")}`,
+      reason: `Blocked by Warden scope-guard: infra/main.tf was edited outside allowed_paths for this task. ${remove("infra/main.tf")}`,
     });
+  });
+
+  it("names git checkout for a tracked path and Delete for an untracked one", () => {
+    const root = trackedRepo({ "infra/main.tf": "x\n" });
+    const tracked = JSON.parse(
+      claude(root, "PostToolUse", {
+        tool_name: "Edit",
+        tool_input: { file_path: "infra/main.tf" },
+      }).stdout,
+    );
+    expect(tracked.reason).toContain(revert("infra/main.tf"));
+    const fresh = JSON.parse(
+      claude(root, "PostToolUse", {
+        tool_name: "Write",
+        tool_input: { file_path: "infra/new.tf" },
+      }).stdout,
+    );
+    expect(fresh.reason).toContain(remove("infra/new.tf"));
   });
 
   it("blocks protected deny paths and generated paths with a revert next action", () => {
@@ -120,10 +142,10 @@ describe("post-edit audit", () => {
     const b = JSON.parse(generated.stdout);
     expect(a.reason).toMatch(MESSAGE_PATTERN);
     expect(a.reason).toContain("Warden protected-paths");
-    expect(a.reason).toContain(revert("panopticon.charter.yaml"));
+    expect(a.reason).toContain(remove("panopticon.charter.yaml"));
     expect(b.reason).toMatch(MESSAGE_PATTERN);
     expect(b.reason).toContain("Warden generated-files-guard");
-    expect(b.reason).toContain(revert("packages/contracts/openapi.json"));
+    expect(b.reason).toContain(remove("packages/contracts/openapi.json"));
   });
 
   it("does not object to an edit of a paths.protected.ask path", () => {

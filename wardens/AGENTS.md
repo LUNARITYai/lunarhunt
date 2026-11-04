@@ -7,6 +7,6 @@ TypeScript Wardens engine (ADR-0005). Ring 0 loads The Charter, normalizes Claud
 - `pnpm --filter wardens build` writes one file, `dist/wardens.mjs`. Do not commit it.
 - This issue does not install hooks. `wardens sync` is a later issue.
 - Tests pass an explicit git root or a temporary repository. They must not read a developer `.panopticon/task.json`.
-- Lifecycle events: Claude `PostToolUse` and Cursor `afterFileEdit` run the post-edit audit, `Stop`/`stop` call the `evaluateStop` seam in `src/lifecycle.ts` (allow until `definition-of-done` lands), Cursor `sessionStart` sets `PANOPTICON_AGENT=cursor`.
+- Lifecycle events: Claude `PostToolUse` and Cursor `afterFileEdit` run the post-edit audit, `Stop`/`stop` call the `evaluateStop` seam in `src/lifecycle.ts` (`definition-of-done`; tests inject `dod: { runCheck }` into `runHook` so the real `pnpm check` never runs), Cursor `sessionStart` sets `PANOPTICON_AGENT=cursor`.
 - Fixtures with `provisional: true` and `source: "documented"` (Cursor `stop`, `afterFileEdit`, `sessionStart`) were not recorded. Replace each with a recording from `cursor-agent`.
 - `wardens check agent-trailer <message-file>` judges an agent commit when `PANOPTICON_AGENT` or `CLAUDECODE=1` is set; tests pass `env` explicitly.
