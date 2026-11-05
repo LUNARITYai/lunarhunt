@@ -1,27 +1,35 @@
 {
   "_meta": {
-    "source": "claude-docs",
-    "provisional": true,
+    "source": "recorded-claude-session",
+    "provisional": false,
     "tool": "claude",
     "event": "PreToolUse",
-    "note": "Shape from Claude Code hooks docs (MCP tools and mcp_server.name), 2026-11-04.",
+    "note": "Recorded from claude -p on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "mcp",
       "path": null,
       "command": null,
-      "mcp_server": "memory",
+      "mcp_server": "fixture",
       "decision": "allow",
       "rule": "none"
     }
   },
   "stdin": {
-    "session_id": "abc123",
+    "session_id": "d96ef531-3325-449c-9a06-02a71c928841",
     "transcript_path": "transcript.jsonl",
     "cwd": "__WORKTREE__",
+    "prompt_id": "f2aebab5-687f-45c8-a326-d72a65c30b2b",
+    "permission_mode": "acceptEdits",
+    "effort": {
+      "level": "high"
+    },
     "hook_event_name": "PreToolUse",
-    "tool_name": "mcp__memory__create_entities",
+    "tool_name": "mcp__fixture__ping",
     "tool_input": {},
-    "mcp_server": { "name": "memory", "source": "project" },
-    "tool_use_id": "toolu_mcp"
+    "tool_use_id": "toolu_01P8KuLVt8P8fRy2VubGXcES",
+    "mcp_server": {
+      "name": "fixture",
+      "source": "dynamic"
+    }
   }
 }

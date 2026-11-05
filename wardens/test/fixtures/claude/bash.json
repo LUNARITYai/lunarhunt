@@ -1,32 +1,34 @@
 {
   "_meta": {
-    "source": "claude-docs",
-    "provisional": true,
+    "source": "recorded-claude-session",
+    "provisional": false,
     "tool": "claude",
     "event": "PreToolUse",
-    "note": "Shape from Claude Code hooks docs (PreToolUse Bash example), 2026-11-04. Command swapped for an allow case.",
+    "note": "Recorded from claude -p on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "shell",
       "path": null,
-      "command": "echo ok | cat",
+      "command": "echo ok",
       "mcp_server": null,
       "decision": "allow",
       "rule": "none"
     }
   },
   "stdin": {
-    "session_id": "abc123",
+    "session_id": "d96ef531-3325-449c-9a06-02a71c928841",
     "transcript_path": "transcript.jsonl",
     "cwd": "__WORKTREE__",
-    "permission_mode": "default",
+    "prompt_id": "f2aebab5-687f-45c8-a326-d72a65c30b2b",
+    "permission_mode": "acceptEdits",
+    "effort": {
+      "level": "high"
+    },
     "hook_event_name": "PreToolUse",
     "tool_name": "Bash",
     "tool_input": {
-      "command": "echo ok | cat",
-      "description": "Show a pipeline",
-      "timeout": 120000,
-      "run_in_background": false
+      "command": "echo ok",
+      "description": "Print ok"
     },
-    "tool_use_id": "toolu_01ABC123"
+    "tool_use_id": "toolu_01GvSHv1GEUo3PCxDTBa9HnB"
   }
 }

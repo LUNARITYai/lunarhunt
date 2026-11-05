@@ -1,10 +1,10 @@
 {
   "_meta": {
-    "source": "claude-docs",
-    "provisional": true,
+    "source": "recorded-claude-session",
+    "provisional": false,
     "tool": "claude",
     "event": "Stop",
-    "note": "Shape from Claude Code hooks docs (Stop), 2026-11-04.",
+    "note": "Recorded from claude -p on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "stop",
       "path": null,
@@ -15,11 +15,18 @@
     }
   },
   "stdin": {
-    "session_id": "abc123",
+    "session_id": "d96ef531-3325-449c-9a06-02a71c928841",
     "transcript_path": "transcript.jsonl",
     "cwd": "__WORKTREE__",
+    "prompt_id": "f2aebab5-687f-45c8-a326-d72a65c30b2b",
+    "permission_mode": "acceptEdits",
+    "effort": {
+      "level": "high"
+    },
     "hook_event_name": "Stop",
     "stop_hook_active": false,
-    "last_assistant_message": "SENTINEL_CONTENT_9f3a"
+    "last_assistant_message": "All five steps ran: I read `notes.txt`, changed \"fixture\" to \"edited\" in it, wrote `out.txt` with \"hello\", ran `echo ok` (it printed `ok`), and called `mcp__fixture__ping` (it returned `pong`).",
+    "background_tasks": [],
+    "session_crons": []
   }
 }
