@@ -350,6 +350,29 @@ describe("a # the shell reads differently from the tokenizer", () => {
     }
   });
 
+  it("fails closed when a real comment meets shell syntax that can change #", () => {
+    const parse = "the command could not be parsed safely";
+    for (const command of [
+      "echo a # it's\necho $\u007bx:- #}; git push --force origin main; echo 'x' # it's",
+      "echo a # it's\necho $\u007bx:- #}; npm publish; echo 'x' # it's",
+      "echo a # c\necho $\u007bx#pat}",
+      "echo a # c\necho $[1 #]",
+      "echo a # c\necho $(( 1 #))",
+      "echo a # c\ncase x in x) git push --force;; esac",
+    ]) {
+      expect(bash(f, command), command).toContain(parse);
+    }
+  });
+
+  it("keeps plain comments and quoted # working", () => {
+    for (const command of [
+      "pnpm check # run the checks",
+      "git log --grep='#12'",
+    ]) {
+      expect(allowed(bash(f, command)), command).toBe(true);
+    }
+  });
+
   it("still hits secret-read-guard", () => {
     for (const command of ["cat .env # c", "echo x #; cat .env"]) {
       expect(bash(f, command), command).toContain("secret-read-guard");

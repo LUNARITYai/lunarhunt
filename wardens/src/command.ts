@@ -6,9 +6,24 @@ const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
  * Every deny-side consumer must hold for BOTH (deny if either matches, yields a
  * candidate, or is unparseable), so a `#` the shell reads differently from us
  * cannot hide a command.
+ *
+ * The union is not enough when a real comment and a literal `#` are mixed
+ * (`echo a # it's` then `echo ${x:- #}; git push --force`): neither reading
+ * sees the push. So a command whose comment-aware scan found a comment AND that
+ * holds shell syntax able to change what `#` means (see `special`, taken from either reading) is treated as
+ * unparseable. This is intentionally conservative; false positives are accepted.
  */
 export function tokenizeAll(command: string): Pipeline[] {
-  return [tokenize(command, true), tokenize(command, false)];
+  const aware = tokenize(command, true);
+  const plain = tokenize(command, false);
+  if (
+    aware.ok &&
+    aware.comment &&
+    (aware.special || (plain.ok && plain.special))
+  ) {
+    return [{ ok: false }, { ok: false }];
+  }
+  return [aware, plain];
 }
 
 export type ArgToken = { text: string; value: boolean };
@@ -36,6 +51,8 @@ export type Pipeline =
       comment: boolean;
       /** The command held an unquoted newline outside a heredoc body, followed by more text. */
       newline: boolean;
+      /** Shell syntax that can change what a `#` means: `$`, `(`, `)`, `{`, `}`, `[`, `]` outside single quotes, or a `case` word. */
+      special: boolean;
     }
   | { ok: false };
 
@@ -136,6 +153,7 @@ export function tokenize(command: string, comments = true): Pipeline {
     pipes,
     comment: scanned.comment,
     newline: scanned.newline,
+    special: scanned.special,
   };
 }
 
@@ -208,10 +226,12 @@ function scan(
   segments: RawSegment[];
   comment: boolean;
   newline: boolean;
+  special: boolean;
 } | null {
   const segments: RawSegment[] = [];
   let comment = false;
   let newline = false;
+  let special = false;
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
@@ -227,6 +247,9 @@ function scan(
   const flushWord = (): void => {
     if (!wordStarted) {
       return;
+    }
+    if (buf === "case") {
+      special = true;
     }
     if (wordMeta) {
       metas.push(words.length);
@@ -295,6 +318,7 @@ function scan(
       }
       if (ch === "$") {
         wordExpand = true;
+        special = true;
       }
       buf += ch;
       wordStarted = true;
@@ -414,6 +438,9 @@ function scan(
     ) {
       wordExpand = true;
     }
+    if (/[$(){}[\]]/.test(ch)) {
+      special = true;
+    }
     buf += ch;
     wordStarted = true;
     if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
@@ -433,7 +460,7 @@ function scan(
     meta: metas,
     expand: expands,
   });
-  return { segments, comment, newline };
+  return { segments, comment, newline, special };
 }
 
 function prepare(

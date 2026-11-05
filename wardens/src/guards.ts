@@ -218,7 +218,7 @@ export function commandGuard(ctx: RuleContext): Objection | null {
       "command-guard",
       "deny",
       "the command could not be parsed safely",
-      "Retry with a simpler command",
+      "Retry without shell comments or with a simpler command",
     );
   }
   for (const pipeline of parsed) {
