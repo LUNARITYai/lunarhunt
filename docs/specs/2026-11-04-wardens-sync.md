@@ -34,7 +34,7 @@ The tool facts below were read from the Claude Code hooks, settings and permissi
 - WHEN `wardens sync --check` finds no difference, THE SYSTEM SHALL exit 0.
 - WHEN `pnpm check` runs, THE SYSTEM SHALL run `wardens sync --check` as part of the `wardens` package `check` script.
 - WHEN a pull request is opened or updated, THE CI job `charter-drift` SHALL run `wardens sync --check` and fail on drift.
-- IF `wardens sync` (without `--check`) runs while `PANOPTICON_AGENT` is set, THEN THE SYSTEM SHALL write nothing, print `Blocked by Warden charter-drift: wardens sync writes protected configs and is for humans. Ask Krzysztof to run wardens sync.` and exit 2.
+- IF `wardens sync` (without `--check`) runs while an agent marker is set (see `agent-trailer`), THEN THE SYSTEM SHALL write nothing, print `Blocked by Warden charter-drift: wardens sync writes protected configs and is for humans. Ask Krzysztof to run wardens sync.` and exit 2.
 - IF The Charter fails validation, THEN `wardens sync` and `wardens sync --check` SHALL write nothing and exit 2 with the `engine` message.
 
 ### Generated tool configs
@@ -118,8 +118,8 @@ The generated configs call the bundle. If the configs landed before the engine u
 | Interactive bit | A static settings file cannot tell an interactive session from `claude -p`. Sync does not set `PANOPTICON_INTERACTIVE`. A human who wants an `ask` path to prompt instead of being denied exports `PANOPTICON_INTERACTIVE=1` before starting the session. `wardens/AGENTS.md` documents this. |
 | DoD gate list | C-12 says `pnpm check` covers the whole Definition of Done. The rule runs `pnpm check`, not a per-gate command list. A unit test maps each Charter `quality_gates.definition_of_done` id to a Turborepo task (`lint`→`lint`, `typecheck`→`typecheck`, `test:affected`→`test`, `contract:drift`→`contract:check`) and asserts each task is in `turbo.json` `check.dependsOn`. An unknown gate id fails that test. |
 | Loop limit | ADR-0009 escalates after 3 failed `Stop` hooks. The rule stops blocking after 3 consecutive red stops. In v1 the limit is a constant in the engine, not a Charter key; it moves into The Charter with the ADR-0009 escalation work (Decisions, item 1). Claude Code's own cap is 8 continuations. Cursor gets `loop_limit: 3` as a second line. |
-| Agent detection | A git hook cannot see which tool started it. Claude Code gets `env.PANOPTICON_AGENT=claude` from settings. Cursor gets `PANOPTICON_AGENT=cursor` from the `sessionStart` hook output. `CLAUDECODE=1` is a fallback marker if the implementation confirms Claude Code sets it. The model is not known to a git hook, so the agent writes the trailer and `agent-trailer` only checks it. |
-| Who runs `wardens sync` | `AGENTS.md` says humans run it; its output is in protected paths. The engine refuses a writing sync when `PANOPTICON_AGENT` is set. Rings 2 and 3 (`charter-drift`, CODEOWNERS, `risk:high` on `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/**`) are the backstop. Bootstrap: the Task 3 PR is the first sync. It runs before any settings file exists, so the variable is unset. |
+| Agent detection | A git hook cannot see which tool started it. Claude Code gets `env.PANOPTICON_AGENT=claude` from settings. Cursor does not pass the `sessionStart` hook's `env` output to agent shells (recorded 2026-11-05 with `cursor-agent` 2026.10.22 and 2026.11.05, both `-p` and interactive), so Cursor is detected by `CURSOR_AGENT`, which Cursor sets in agent shells. Claude Code also sets `CLAUDECODE=1` in its Bash tool (confirmed 2026-11-04). `PANOPTICON_AGENT` stays the explicit marker and wins when set. The model is not known to a git hook, so the agent writes the trailer and `agent-trailer` only checks it. |
+| Who runs `wardens sync` | `AGENTS.md` says humans run it; its output is in protected paths. The engine refuses a writing sync when an agent marker is set. Rings 2 and 3 (`charter-drift`, CODEOWNERS, `risk:high` on `.claude/**`, `.cursor/**`, `lefthook.yml`, `.github/**`) are the backstop. Bootstrap: the Task 3 PR is the first sync. It runs before any settings file exists, so the variable is unset. |
 | JSON headers | JSON has no comments, and unknown keys may be rejected by either tool. The generated JSON files carry no "generated" header. `lefthook.yml` gets a YAML comment header. Drift is caught by `charter-drift`, not by a header. |
 | Which bundle the hooks run | The draft ran `wardens/dist/wardens.mjs` from the session's own worktree. That has two problems. (1) A fresh task worktree (`git worktree add`, `claude --worktree`, `agent -w`) has no bundle and no `node_modules`, so every tool call is blocked, including the `pnpm install` and build that would fix it; `postCreateCommand` only helps inside the Dev Container. (2) An agent whose task allows `wardens/**` could weaken a rule and rebuild, and its own session would then run the weaker Warden until CI catches it. The hooks therefore run the primary checkout's bundle, which a human builds from `main` (Decisions, item 4). The bundle has no runtime dependencies, so the worktree needs no `node_modules` for the hooks. The engine still loads The Charter and `task.json` from the session's worktree. |
 | Third-party hook import | The Cursor third-party-hooks reference returned 404 on 2026-11-04. ADR-0005 already accepts that turning off the import is an editor setting that `doctor` checks rather than guarantees. |
@@ -437,7 +437,7 @@ An engine failure while evaluating a stop renders as a block with the `engine` m
 
 `wardens check agent-trailer <message-file>`:
 
-1. Agent marker: `PANOPTICON_AGENT` is `claude` or `cursor`; else `CLAUDECODE=1` means `claude` (only if Task 2 confirms Claude Code sets it; otherwise drop this fallback). No marker → exit 0.
+1. Agent marker: `PANOPTICON_AGENT` is `claude` or `cursor`; else `CLAUDECODE=1` means `claude`; else a non-empty `CURSOR_AGENT` means `cursor`. No marker → exit 0.
 2. Parse trailers with `git interpret-trailers --parse <message-file>`.
 3. Require at least one trailer matching `^Agent: (claude|cursor) \(.+\)$` whose tool equals the marker. `Agent: claude (sonnet, high)` passes.
 4. Otherwise print the C-30 message and exit 2. Append one JSONL line with `tool` set to the marker, `event` `commit-msg`, `action` `commit` (an `action` value used only by this check).
@@ -446,7 +446,7 @@ Ring 2 for C-27 (checking trailers on PR commits in CI) belongs to `pr-check` an
 
 ### `wardens sync` CLI
 
-- `wardens sync`: validate The Charter, render, write the three files. Exit 0, 2 on error. Refuse when `PANOPTICON_AGENT` is set.
+- `wardens sync`: validate The Charter, render, write the three files. Exit 0, 2 on error. Refuse when an agent marker is set (`agent-trailer` step 1).
 - `wardens sync --check`: render in memory and compare. Exit 0 or 2. Never writes. Allowed in agent sessions.
 - The renderer is pure (`render(charter) → Map<path, string>`), so the tests and `doctor` use it without touching disk.
 - The `wardens` package `check` script becomes `node --experimental-strip-types src/cli.ts check charter-validate && node --experimental-strip-types src/cli.ts sync --check`.
@@ -495,8 +495,9 @@ After Task 3 merges, every Claude Code and Cursor session in the repository runs
 - Cursor `Grep` and `Task` are not subscribed (unmapped). Cursor `Grep` can read file contents without `beforeReadFile`.
 - `PostToolUse` runs after the edit. The audit reports and the agent must revert; nothing is undone automatically.
 - The DoD fingerprint ignores ignored files. An edit to a gitignored file does not trigger a new run.
-- Cursor `sessionStart` output `env` and its exact `stop` input are from a summarized part of the Cursor docs (**unverified**). Task 2 must record real payloads before relying on them.
-- `CLAUDECODE=1` as a marker is **unverified**; see `agent-trailer`.
+- Cursor `sessionStart` output `env` does not reach agent shells (recorded 2026-11-05). The engine still returns it, so a later Cursor that honours it needs no change, but detection relies on `CURSOR_AGENT`.
+- Whether Cursor IDE also sets `CURSOR_AGENT` in its integrated terminal panel is **unverified**. If it does, a human commit from that panel needs an `Agent:` trailer. The Task 3 manual test checks it.
+- Cursor `stop` fires only in interactive sessions, not with `cursor-agent -p`. Interrupting a run sends two `stop` events 1 ms apart, `aborted` then `error`, with the same `generation_id`; both are allowed without a DoD run.
 - Hooks enforce the Wardens built in the primary checkout. A Wardens change is live only after it merges and Krzysztof pulls and rebuilds there; a Wardens PR is tested with `pnpm --filter wardens test` and explicit runs of its own bundle, not by its own session's hooks. If the primary checkout is on another branch or its bundle is stale, sessions run that code; `doctor` reports a stale bundle.
 - Shell commands can still write anywhere the user can, including the primary checkout. `worktree-guard` (ADR-0012 follow-up) narrows this.
 
@@ -525,7 +526,7 @@ Each task below becomes its own `agent:ready` issue, linked to #7 as the parent.
    **Allowed paths:** `wardens/**`
    **Depends on:** 1
 
-3. **`wardens sync` and generated configs.** The renderer, `sync` and `sync --check`, the package `check` script change, the first generated `.claude/settings.json`, `.cursor/hooks.json` and `lefthook.yml`, the CI job `charter-drift`, the `postCreateCommand` build step, and a manual test in a real Claude Code session and a real Cursor session started in a task worktree: with the primary checkout's bundle renamed, an `Edit` is blocked (record the result in the PR). Task 2 must be merged and built in the primary checkout first. `risk:high`.
+3. **`wardens sync` and generated configs.** The renderer, `sync` and `sync --check`, the package `check` script change, the first generated `.claude/settings.json`, `.cursor/hooks.json` and `lefthook.yml`, the CI job `charter-drift`, the `postCreateCommand` build step, and a manual test in a real Claude Code session and a real Cursor session started in a task worktree: with the primary checkout's bundle renamed, an `Edit` is blocked (record the result in the PR). The same test runs `echo "CURSOR_AGENT=$CURSOR_AGENT"` in the Cursor IDE terminal panel and records whether it is set. Task 2 must be merged and built in the primary checkout first. `risk:high`.
    **Allowed paths:** `wardens/**`, `.claude/settings.json`, `.cursor/hooks.json`, `lefthook.yml`, `.github/workflows/check.yml`, `.devcontainer/devcontainer.json`
    **Depends on:** 2, and PR #12 merged
 
