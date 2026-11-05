@@ -25,7 +25,7 @@ function errorCode(err: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function nearestExistingReal(absolute: string): Located {
+export function nearestExistingReal(absolute: string): Located {
   const pending: string[] = [];
   let current = absolute;
   for (;;) {
@@ -94,4 +94,20 @@ export function resolveRepoPath(
     return { ok: false, reason: "escape" };
   }
   return { ok: true, path: rel.split(sep).join("/") };
+}
+
+/**
+ * Absolute path with `..` collapsed and the symlinks of the longest existing
+ * prefix resolved (`/tmp` -> `/private/tmp` on macOS). Null when unresolvable.
+ */
+export function resolveAbsolutePath(
+  candidate: string,
+  cwd: string,
+): string | null {
+  const normalized = candidate.replaceAll("\\", "/");
+  const absolute = isAbsolute(normalized)
+    ? resolve(normalized)
+    : resolve(cwd, normalized);
+  const located = nearestExistingReal(absolute);
+  return located.ok ? located.path : null;
 }

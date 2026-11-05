@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { Charter } from "./charter.ts";
+import { externalAllows } from "./external.ts";
 import { resolveRepoPath } from "./paths.ts";
 
 export const normalizedEventSchema = z.strictObject({
@@ -25,6 +27,8 @@ export const normalizedEventSchema = z.strictObject({
   phase: z.enum(["pre", "post"]).nullable(),
   stop_status: z.enum(["completed", "aborted", "error"]).nullable(),
   foreign: z.boolean(),
+  /** True when `path` is an absolute path outside the worktree that `paths.external` allows. */
+  external: z.boolean().optional(),
 });
 
 export type NormalizedEvent = z.infer<typeof normalizedEventSchema>;
@@ -332,6 +336,8 @@ export function normalizeHook(input: {
   fallbackCwd: string;
   toplevel: string;
   env: NodeJS.ProcessEnv;
+  /** Charter `paths.external` and home dir; without a charter every outside path is denied. */
+  external?: { charter: Charter; home: string };
 }): NormalizeSuccess | NormalizeFailure {
   if (input.tool !== "claude" && input.tool !== "cursor") {
     return { ok: false, message: "the hook event is not mapped" };
@@ -342,12 +348,28 @@ export function normalizeHook(input: {
   }
   const cwd = asString(input.payload.cwd) ?? input.fallbackCwd;
   let path = mapped.mapped.path;
+  let external = false;
   if (path !== null) {
     const resolved = resolveRepoPath(path, cwd, input.toplevel);
-    if (!resolved.ok) {
-      return { ok: false, message: "path escapes the worktree" };
+    if (resolved.ok) {
+      path = resolved.path;
+    } else {
+      const allowed =
+        resolved.reason === "escape" && input.external
+          ? externalAllows(
+              input.external.charter.paths.external,
+              mapped.mapped.action,
+              path,
+              cwd,
+              input.external.home,
+            )
+          : null;
+      if (allowed === null) {
+        return { ok: false, message: "path escapes the worktree" };
+      }
+      path = allowed;
+      external = true;
     }
-    path = resolved.path;
   }
   const parsed = normalizedEventSchema.safeParse({
     tool: input.tool,
@@ -369,6 +391,7 @@ export function normalizeHook(input: {
           : stopStatusOf(input.payload.status)
         : null,
     foreign: input.tool === "claude" && "cursor_version" in input.payload,
+    ...(external ? { external } : {}),
   });
   if (!parsed.success) {
     return { ok: false, message: "the hook event is not mapped" };
