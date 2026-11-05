@@ -8,7 +8,7 @@ import {
   type ToolName,
 } from "./event.ts";
 import { EngineFailure } from "./failures.ts";
-import { gitToplevel } from "./git.ts";
+import { gitToplevel, siblingToplevel } from "./git.ts";
 import { evaluateStop, postEditAudit } from "./lifecycle.ts";
 import { appendFallback, appendVerdict, type LogLine, logLine } from "./log.ts";
 import {
@@ -29,6 +29,7 @@ import {
 import { type BundleProbe, staleWarning } from "./stale.ts";
 import { loadTask, type TaskState } from "./task.ts";
 import { allowVerdict, checkExitCode, type Verdict } from "./verdict.ts";
+import { crossWorktreeDeny } from "./worktree-guard.ts";
 
 export type RunResult = {
   exitCode: 0 | 2;
@@ -489,6 +490,28 @@ export function runHook(
     external: { charter: policy.charter, home: deps.home ?? homedir() },
   });
   if (!normalized.ok) {
+    if (
+      normalized.escape &&
+      policy.charter.worktree?.required_for_agents &&
+      siblingToplevel(cwd, normalized.escape.absolute) !== null
+    ) {
+      return hookBody(
+        hintedTool,
+        eventName,
+        commit({
+          toplevel,
+          verdict: objectionVerdict(
+            crossWorktreeDeny(normalized.escape.absolute),
+          ),
+          event: null,
+          tool: hintedTool,
+          eventName,
+          startedAt,
+          deps,
+        }),
+        raw,
+      );
+    }
     return fail(normalized.message, toplevel, null);
   }
 

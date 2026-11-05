@@ -616,9 +616,34 @@ function isMessageFlag(word: string, command: string): boolean {
  * stays a candidate and counts as a write.
  */
 export function secretCandidates(segment: Segment): PathCandidate[] {
-  return collectCandidates(segment).filter(
-    (candidate) => !isDevicePath(candidate.path),
-  );
+  return collectCandidates(segment)
+    .filter((candidate) => !isDevicePath(candidate.path))
+    .map(({ path, write }) => ({ path, write }));
+}
+
+/**
+ * Paths a segment writes by its own syntax: redirect targets for any command,
+ * plus every path argument of a command that is a writer by definition
+ * (rm, mkdir, touch, tee, cp, mv...). Positional arguments of other commands
+ * are not listed: `gh pr view 12` or `git log origin/main` write nothing.
+ * The command word and device paths are never targets.
+ */
+export function writeTargets(segment: Segment): string[] {
+  const command = segment.argv[0] ?? "";
+  const writer =
+    WRITE_ALL.has(command) ||
+    command === "cp" ||
+    command === "mv" ||
+    command === "ln";
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.write &&
+        !isDevicePath(candidate.path) &&
+        (candidate.origin === "redirect" ||
+          (writer && candidate.origin === "arg")),
+    )
+    .map((candidate) => candidate.path);
 }
 
 /** Standard streams and descriptors: exact match only, so `/dev/../etc` and `/dev/sda` stay candidates. */
@@ -628,8 +653,12 @@ function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 
-function collectCandidates(segment: Segment): PathCandidate[] {
-  const found: PathCandidate[] = [];
+type Origin = "head" | "redirect" | "arg";
+
+function collectCandidates(
+  segment: Segment,
+): Array<PathCandidate & { origin: Origin }> {
+  const found: Array<PathCandidate & { origin: Origin }> = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
   const readOnly = READ_ONLY.has(command);
@@ -657,7 +686,7 @@ function collectCandidates(segment: Segment): PathCandidate[] {
       }
       const value = word.slice(eq + 1);
       if (value.length > 0) {
-        found.push({ path: value, write: !readOnly });
+        found.push({ path: value, write: !readOnly, origin: "arg" });
       }
     }
     const redirect = REDIRECT.exec(word);
@@ -666,23 +695,23 @@ function collectCandidates(segment: Segment): PathCandidate[] {
       if (target === "") {
         const next = argv[index + 1];
         if (next && next.length > 0) {
-          found.push({ path: next, write: true });
+          found.push({ path: next, write: true, origin: "redirect" });
           index += 1;
         }
       } else if (!target.startsWith("&")) {
-        found.push({ path: target, write: true });
+        found.push({ path: target, write: true, origin: "redirect" });
       }
       continue;
     }
     if (word === "<") {
       const next = argv[index + 1];
       if (next && next.length > 0) {
-        found.push({ path: next, write: false });
+        found.push({ path: next, write: false, origin: "arg" });
       }
       continue;
     }
     if (word.startsWith("<") && word.length > 1) {
-      found.push({ path: word.slice(1), write: false });
+      found.push({ path: word.slice(1), write: false, origin: "arg" });
       continue;
     }
     if (!word.startsWith("-")) {
@@ -690,7 +719,7 @@ function collectCandidates(segment: Segment): PathCandidate[] {
         index === 0 ||
         writeAll ||
         (!readOnly && (!copyLike || hasTarget || index === lastPositional));
-      found.push({ path: word, write });
+      found.push({ path: word, write, origin: index === 0 ? "head" : "arg" });
     }
   }
   return found;

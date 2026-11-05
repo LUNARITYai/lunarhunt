@@ -4,8 +4,11 @@ import { generatedFilesGuard, protectedDeny, scopeGuard } from "./guards.ts";
 import { wardenMessage } from "./messages.ts";
 import type { Objection, RuleContext } from "./rules.ts";
 import type { Verdict } from "./verdict.ts";
+import { worktreeGuard } from "./worktree-guard.ts";
 
 const AUDIT_WHAT: Record<string, (path: string) => string> = {
+  "worktree-guard": (path) =>
+    `${path} was edited in the primary checkout or on a protected branch`,
   "protected-paths": (path) => `${path} was edited but is deny for agents`,
   "scope-guard": (path) =>
     `${path} was edited outside allowed_paths for this task`,
@@ -21,7 +24,12 @@ export function postEditAudit(ctx: RuleContext): Objection | null {
   if (ctx.event.external) {
     return null;
   }
-  for (const rule of [protectedDeny, generatedFilesGuard, scopeGuard]) {
+  for (const rule of [
+    worktreeGuard,
+    protectedDeny,
+    generatedFilesGuard,
+    scopeGuard,
+  ]) {
     const objection = rule(ctx);
     if (!objection) {
       continue;

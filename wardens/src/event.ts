@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Charter } from "./charter.ts";
 import { externalAllows } from "./external.ts";
-import { resolveRepoPath } from "./paths.ts";
+import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 
 export const normalizedEventSchema = z.strictObject({
   tool: z.enum(["claude", "cursor"]),
@@ -35,7 +35,12 @@ export type NormalizedEvent = z.infer<typeof normalizedEventSchema>;
 export type Action = NormalizedEvent["action"];
 export type ToolName = NormalizedEvent["tool"];
 
-export type NormalizeFailure = { ok: false; message: string };
+export type NormalizeFailure = {
+  ok: false;
+  message: string;
+  /** Set when a mutation target lies outside the worktree and is not an allowed external path. */
+  escape?: { absolute: string };
+};
 export type NormalizeSuccess = { ok: true; event: NormalizedEvent };
 
 type Mapped = {
@@ -368,7 +373,16 @@ export function normalizeHook(input: {
             )
           : null;
       if (allowed === null) {
-        return { ok: false, message: "path escapes the worktree" };
+        const mutation =
+          mapped.mapped.action === "edit" ||
+          mapped.mapped.action === "write" ||
+          mapped.mapped.action === "delete";
+        const absolute = resolveAbsolutePath(path, cwd);
+        return {
+          ok: false,
+          message: "path escapes the worktree",
+          ...(mutation && absolute !== null ? { escape: { absolute } } : {}),
+        };
       }
       path = allowed;
       external = true;
