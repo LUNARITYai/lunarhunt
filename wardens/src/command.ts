@@ -616,6 +616,19 @@ function isMessageFlag(word: string, command: string): boolean {
  * stays a candidate and counts as a write.
  */
 export function secretCandidates(segment: Segment): PathCandidate[] {
+  return collectCandidates(segment).filter(
+    (candidate) => !isDevicePath(candidate.path),
+  );
+}
+
+/** Standard streams and descriptors: exact match only, so `/dev/../etc` and `/dev/sda` stay candidates. */
+const DEVICE_PATH = /^\/dev\/(?:null|stdout|stderr|stdin|fd\/[0-9]+)$/;
+
+function isDevicePath(path: string): boolean {
+  return DEVICE_PATH.test(path);
+}
+
+function collectCandidates(segment: Segment): PathCandidate[] {
   const found: PathCandidate[] = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
