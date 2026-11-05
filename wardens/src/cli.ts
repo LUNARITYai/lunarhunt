@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { type Charter, loadCharterAt } from "./charter.ts";
+import { runDoctor } from "./doctor.ts";
 import { type RunResult, runCheck, runHook } from "./engine.ts";
 import { resolveRole } from "./engines.ts";
 import { gitToplevel } from "./git.ts";
@@ -115,6 +116,20 @@ async function main(): Promise<void> {
       if (result.stderr.length > 0) {
         process.stderr.write(result.stderr);
       }
+      process.exitCode = result.exitCode;
+    });
+
+  program
+    .command("doctor")
+    .description("self-test the Wardens setup")
+    .option("--ci", "skip checks that depend on the developer's machine")
+    .option("--json", "print one JSON array")
+    .action((opts: { ci?: boolean; json?: boolean }) => {
+      const result = runDoctor({
+        ci: opts.ci === true,
+        json: opts.json === true,
+      });
+      process.stdout.write(result.stdout);
       process.exitCode = result.exitCode;
     });
 
