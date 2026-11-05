@@ -11,10 +11,18 @@ export function normativeCharter(): string {
   return readFileSync(join(repoRoot, "panopticon.charter.yaml"), "utf8");
 }
 
-export function tempRepo(): string {
+/** The normative Charter without `worktree:`, so `worktree-guard` is off for tests that edit in a primary-checkout temp repo. */
+export function charterWithoutWorktree(): string {
+  return normativeCharter().replace(/^worktree:[\s\S]*?(?=^\S)/m, "");
+}
+
+export function tempRepo(options: { worktree?: boolean } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "wardens-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
-  writeFileSync(join(dir, "panopticon.charter.yaml"), normativeCharter());
+  writeFileSync(
+    join(dir, "panopticon.charter.yaml"),
+    options.worktree ? normativeCharter() : charterWithoutWorktree(),
+  );
   return dir;
 }
 

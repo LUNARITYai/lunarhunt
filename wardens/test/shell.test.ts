@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { secretCandidates, tokenize } from "../src/command.ts";
 import { runHook } from "../src/engine.ts";
-import { normativeCharter, tempRepo } from "./support.ts";
+import { charterWithoutWorktree, tempRepo } from "./support.ts";
 
 function real(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -22,7 +22,7 @@ function fixture(): Fixture {
   const root = tempRepo();
   const readDir = real("wardens-shell-read-");
   const writeDir = real("wardens-shell-write-");
-  const doc = parse(normativeCharter());
+  const doc = parse(charterWithoutWorktree());
   doc.paths.external = { read: [`${readDir}/**`], write: [`${writeDir}/**`] };
   writeFileSync(join(root, "panopticon.charter.yaml"), stringify(doc));
   return { root, home: real("wardens-shell-home-"), readDir, writeDir };
@@ -293,7 +293,7 @@ describe("paths.external in shell", () => {
 
   it("denies external shell paths without a paths.external key", () => {
     const f = fixture();
-    const doc = parse(normativeCharter());
+    const doc = parse(charterWithoutWorktree());
     writeFileSync(join(f.root, "panopticon.charter.yaml"), stringify(doc));
     expect(bash(f, `cat ${join(f.readDir, "a.txt")}`)).toContain(
       "path escapes the worktree",
