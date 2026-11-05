@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "PANOPTICON_AGENT": "claude"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm turbo run *)",
+      "Bash(pnpm check*)",
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff *)"
+    ],
+    "ask": [
+      "Edit(/docs/constitution.md)",
+      "Edit(**/AGENTS.md)",
+      "Edit(**/CLAUDE.md)",
+      "Edit(/apps/api/migrations/**)",
+      "Edit(**/.env.example)"
+    ],
+    "deny": [
+      "Edit(**/panopticon.charter.yaml)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.development)",
+      "Read(**/.env.development.local)",
+      "Read(**/.env.test)",
+      "Read(**/.env.test.local)",
+      "Read(**/.env.production)",
+      "Read(**/.env.production.local)",
+      "Read(**/.env.staging)",
+      "Read(/secrets/**)",
+      "Edit(/packages/api-client/src/**)",
+      "Edit(/packages/contracts/openapi.json)",
+      "NotebookEdit",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push +*)",
+      "Bash(kubectl * --context prod*)",
+      "Bash(npm publish*)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(curl * | zsh)",
+      "Bash(curl * | sudo sh)",
+      "Bash(curl * | sudo bash)",
+      "Bash(curl * | sudo zsh)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | zsh)",
+      "Bash(wget * | sudo sh)",
+      "Bash(wget * | sudo bash)",
+      "Bash(wget * | sudo zsh)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git merge --no-verify*)",
+      "Bash(LEFTHOOK=0 *)",
+      "Bash(git -c core.hooksPath=*)",
+      "Bash(git config core.hooksPath*)",
+      "Bash(wardens worktree remove * --force*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool claude --event PreToolUse",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool claude --event PostToolUse",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool claude --event Stop",
+            "timeout": 900,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
