@@ -1,34 +1,43 @@
 {
   "_meta": {
-    "source": "claude-docs",
-    "provisional": true,
+    "source": "recorded-claude-session",
+    "provisional": false,
     "tool": "claude",
     "event": "PostToolUse",
-    "note": "Shape from Claude Code hooks docs (PostToolUse Write), 2026-11-04. The write is in scope, so the audit allows.",
+    "note": "Recorded from claude -p on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "write",
-      "path": "wardens/src/new.ts",
+      "path": "out.txt",
       "command": null,
       "mcp_server": null,
-      "decision": "allow",
-      "rule": "none"
+      "decision": "deny",
+      "rule": "scope-guard"
     }
   },
   "stdin": {
-    "session_id": "abc123",
+    "session_id": "d96ef531-3325-449c-9a06-02a71c928841",
     "transcript_path": "transcript.jsonl",
     "cwd": "__WORKTREE__",
+    "prompt_id": "f2aebab5-687f-45c8-a326-d72a65c30b2b",
+    "permission_mode": "acceptEdits",
+    "effort": {
+      "level": "high"
+    },
     "hook_event_name": "PostToolUse",
     "tool_name": "Write",
     "tool_input": {
-      "file_path": "__WORKTREE__/wardens/src/new.ts",
-      "content": "SENTINEL_CONTENT_9f3a"
+      "file_path": "__WORKTREE__/out.txt",
+      "content": "hello"
     },
     "tool_response": {
-      "filePath": "__WORKTREE__/wardens/src/new.ts",
-      "success": true,
-      "content": "SENTINEL_CONTENT_9f3a"
+      "type": "create",
+      "filePath": "__WORKTREE__/out.txt",
+      "content": "hello",
+      "structuredPatch": [],
+      "originalFile": null,
+      "userModified": false
     },
-    "tool_use_id": "toolu_post_write"
+    "tool_use_id": "toolu_01MEff6v3kWoVf92LbPPd3rH",
+    "duration_ms": 1
   }
 }

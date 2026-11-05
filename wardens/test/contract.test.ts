@@ -123,20 +123,19 @@ function leakedStrings(value: unknown): string[] {
 const fixtures = [...load("claude"), ...load("cursor")];
 
 describe("hook contract fixtures", () => {
-  it("covers every mapping-table row and has only recorded, non-provisional Cursor fixtures", () => {
+  it("covers every mapping-table row and has only recorded, non-provisional fixtures", () => {
     const covered = new Set<string>();
     for (const { name, raw, fixture } of fixtures) {
       expect(raw, name).not.toContain("/Users/");
       expect(raw, name).not.toContain("@");
       expect(raw, name).not.toContain("/tmp/wardens-cursor-record");
       const meta = fixture._meta;
-      if (name.startsWith("cursor/")) {
-        expect(meta.provisional, name).toBe(false);
-        expect(meta.source, name).toBe("recorded-cursor-session");
-      } else {
-        expect(meta.source, name).toBe("claude-docs");
-        expect(meta.provisional, name).toBe(true);
-      }
+      expect(meta.provisional, name).toBe(false);
+      expect(meta.source, name).toBe(
+        name.startsWith("cursor/")
+          ? "recorded-cursor-session"
+          : "recorded-claude-session",
+      );
       covered.add(`${meta.tool}|${meta.event}|${meta.expect.action}`);
     }
     for (const [tool, event, action] of REQUIRED_ROWS) {
