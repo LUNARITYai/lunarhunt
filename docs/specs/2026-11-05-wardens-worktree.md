@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 issue: "#38"
 adrs: ["0003", "0004", "0005", "0010", "0012", "0013"]
 ---
@@ -151,7 +151,9 @@ Tasks 3 and 4 can run in parallel: different files, both depend only on 2.
 
 ## Decisions (Krzysztof)
 
-1. **Charter values.** Proposed:
+All four were accepted as proposed on 2026-11-05: the Charter values in item 1, the `commands.deny` additions in item 2, the task database off in phase 0, and detached `HEAD` as read-only.
+
+1. **Charter values.** Accepted:
 
    ```yaml
    worktree:
@@ -173,5 +175,5 @@ Tasks 3 and 4 can run in parallel: different files, both depend only on 2.
 
    `pnpm --filter wardens build` is not a setup step any more: hooks run the primary bundle (#27), and `pnpm check` does not need a worktree bundle.
 2. **`commands.deny` additions** against scope widening through issue bodies: `gh issue edit * --body*`, `gh issue edit * -b *`, `gh issue edit * --body-file*`. OVERSEER then cannot fix issue bodies; it comments instead.
-3. **Task database.** Off in phase 0 (above), or on now?
-4. **Detached `HEAD` as read-only.** Confirm. The alternative is giving OVERSEER its own `overseer/<date>` branch.
+3. **Task database.** Off in phase 0: `resources.database` stays unset.
+4. **Detached `HEAD` as read-only.** Confirmed. OVERSEER plans from a detached worktree.
