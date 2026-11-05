@@ -488,6 +488,7 @@ After Task 3 merges, every Claude Code and Cursor session in the repository runs
 3. In Cursor settings, turn off loading third-party (Claude Code) hooks, and trust the workspace.
 4. Run `pnpm exec lefthook install` again so `commit-msg` is installed.
 5. Run `wardens doctor` locally. Expect `ok` for everything except possibly `claude-version`.
+6. After a Charter schema change, rebuild the primary bundle before any worktree gets the new Charter. Otherwise the old bundle rejects the new Charter and all sessions there are blocked; `doctor` `bundle` reports it.
 
 ### Known limitations
 
@@ -496,7 +497,10 @@ After Task 3 merges, every Claude Code and Cursor session in the repository runs
 - `PostToolUse` runs after the edit. The audit reports and the agent must revert; nothing is undone automatically.
 - The DoD fingerprint ignores ignored files. An edit to a gitignored file does not trigger a new run.
 - Cursor `sessionStart` output `env` does not reach agent shells (recorded 2026-11-05). The engine still returns it, so a later Cursor that honours it needs no change, but detection relies on `CURSOR_AGENT`.
-- Whether Cursor IDE also sets `CURSOR_AGENT` in its integrated terminal panel is **unverified**. If it does, a human commit from that panel needs an `Agent:` trailer. The Task 3 manual test checks it.
+- `CURSOR_AGENT` is empty in the Cursor IDE terminal panel (verified 2026-11-05, #30), so a human commit from that panel needs no `Agent:` trailer.
+- Task scope is the Charter `allowed_paths` intersected with `task.json`. Paths outside the Charter `allowed_paths` are human-only, whatever the issue lists.
+- Under live Wardens, shell commands cannot reference paths outside the worktree, `paths.external` included, and `command-guard` denies heredocs. Use Write or Edit for files.
+- A session whose cwd is not a git worktree (for example after its own worktree was removed) is blocked on every tool call: the git toplevel cannot be resolved. `Stop` and `stop` are allowed and logged to `<os.tmpdir()>/panopticon/wardens.log.jsonl` (#32, #33). The next action that works without tools: move the session into an existing worktree (`EnterWorktree`) or restart it in the primary checkout.
 - Cursor `stop` fires only in interactive sessions, not with `cursor-agent -p`. Interrupting a run sends two `stop` events 1 ms apart, `aborted` then `error`, with the same `generation_id`; both are allowed without a DoD run.
 - Hooks enforce the Wardens built in the primary checkout. A Wardens change is live only after it merges and Krzysztof pulls and rebuilds there; a Wardens PR is tested with `pnpm --filter wardens test` and explicit runs of its own bundle, not by its own session's hooks. If the primary checkout is on another branch or its bundle is stale, sessions run that code; `doctor` reports a stale bundle.
 - Shell commands can still write anywhere the user can, including the primary checkout. `worktree-guard` (ADR-0012 follow-up) narrows this.
