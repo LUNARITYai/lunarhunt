@@ -45,3 +45,41 @@ jobs:
             --env CI=true \
             lunarhunt-devcontainer:ci \
             bash -euo pipefail -c 'pnpm install --frozen-lockfile && uv sync --frozen --all-groups && pnpm check'
+
+  # Fails when a generated tool config differs from `wardens sync` output (ADR-0003).
+  charter-drift:
+    name: charter-drift
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Same image as the `check` job.
+      - name: Build Dev Container image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          load: true
+          push: false
+          tags: lunarhunt-devcontainer:ci
+          cache-from: type=gha,scope=devcontainer
+          cache-to: type=gha,scope=devcontainer,mode=max
+
+      - name: Charter drift
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/workspaces/lunarhunt" \
+            --workdir /workspaces/lunarhunt \
+            --env HOME=/tmp/ci-home \
+            --env CI=true \
+            lunarhunt-devcontainer:ci \
+            bash -euo pipefail -c 'pnpm install --frozen-lockfile && node --experimental-strip-types wardens/src/cli.ts sync --check'
