@@ -6,6 +6,8 @@ export type Verdict = {
   message: string | null;
   replacement: string | null;
   rendered: Decision;
+  /** Extra text for the agent only (for example `pnpm check` output). Never logged. */
+  detail?: string;
 };
 
 export function allowVerdict(): Verdict {

@@ -1,4 +1,5 @@
 import type { Charter } from "./charter.ts";
+import type { DodDeps } from "./dod.ts";
 import type { NormalizedEvent } from "./event.ts";
 import {
   commandGuard,
@@ -15,6 +16,8 @@ export type RuleContext = {
   charter: Charter;
   task: TaskState;
   root: string;
+  /** Injected by tests so `pnpm check` never runs for real. */
+  dod?: DodDeps;
 };
 
 export type Objection = {

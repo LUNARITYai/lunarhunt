@@ -39,14 +39,25 @@ function renderLifecycle(
   verdict: Verdict,
 ): string | null {
   const allowed = verdict.decision === "allow";
+  const reason = verdict.detail
+    ? `${verdict.message}\n\n${verdict.detail}`
+    : verdict.message;
+  if (tool === "claude" && event === "Stop" && allowed && verdict.message) {
+    return json({
+      hookSpecificOutput: {
+        hookEventName: "Stop",
+        additionalContext: verdict.message,
+      },
+    });
+  }
   if (tool === "claude" && (event === "PostToolUse" || event === "Stop")) {
-    return allowed ? "" : json({ decision: "block", reason: verdict.message });
+    return allowed ? "" : json({ decision: "block", reason });
   }
   if (tool === "cursor" && event === "sessionStart") {
     return json(allowed ? { env: { PANOPTICON_AGENT: "cursor" } } : {});
   }
   if (tool === "cursor" && event === "stop") {
-    return json(allowed ? {} : { followup_message: verdict.message });
+    return json(allowed ? {} : { followup_message: reason });
   }
   if (tool === "cursor" && event === "afterFileEdit") {
     return json({});

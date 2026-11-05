@@ -16,3 +16,19 @@ export function gitToplevel(cwd: string): string | null {
     return null;
   }
 }
+
+/** True when `path` (repo-relative or absolute) is tracked by git in `root`. */
+export function gitTracked(root: string, path: string): boolean {
+  try {
+    execFileSync(
+      "git",
+      ["-C", root, "ls-files", "--error-unmatch", "--", path],
+      {
+        stdio: "ignore",
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
