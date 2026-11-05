@@ -230,6 +230,11 @@ function scan(command: string): RawSegment[] | null {
         if (next === undefined) {
           return null;
         }
+        if (next === "\n") {
+          // Line continuation: the shell deletes both characters.
+          index += 1;
+          continue;
+        }
         if (next === "\\" || next === '"') {
           buf += next;
           wordStarted = true;
@@ -260,6 +265,11 @@ function scan(command: string): RawSegment[] | null {
       const next = command[index + 1];
       if (next === undefined) {
         return null;
+      }
+      if (next === "\n") {
+        // Line continuation: the shell deletes both characters and the word stays open.
+        index += 1;
+        continue;
       }
       buf += next;
       wordStarted = true;
@@ -346,6 +356,8 @@ function scan(command: string): RawSegment[] | null {
     }
     if (
       /[$}{*?[]/.test(ch) ||
+      // A tilde expands only at the start of a word, and only `~` alone or `~/`
+      // is safe: `~user`, `~+` and `~-` name other directories.
       (ch === "~" &&
         !wordStarted &&
         !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))

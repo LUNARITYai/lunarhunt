@@ -95,7 +95,6 @@ const GIT_FLAGS: Record<string, readonly string[]> = {
     "--tags",
     "-n",
     "--no-tags",
-    "-a",
     "--all",
     "--dry-run",
   ],
@@ -112,6 +111,23 @@ const GIT_FLAGS: Record<string, readonly string[]> = {
     "--reverse",
     "--no-merges",
     "--max-count=*",
+    "-p",
+    "--patch",
+    "-w",
+    "--no-color",
+    "--color=*",
+    "--all",
+    "--since=*",
+    "--until=*",
+    "--author=*",
+    "--grep=*",
+    "--decorate=*",
+    "--abbrev-commit",
+    "--date=*",
+    "--follow",
+    "--first-parent",
+    "-S*",
+    "-G*",
     "--",
   ],
   diff: [
@@ -124,6 +140,13 @@ const GIT_FLAGS: Record<string, readonly string[]> = {
     "--staged",
     "--quiet",
     "--exit-code",
+    "-p",
+    "--patch",
+    "-w",
+    "--ignore-all-space",
+    "--no-color",
+    "--color=*",
+    "--word-diff",
     "--",
   ],
   show: [
@@ -132,6 +155,13 @@ const GIT_FLAGS: Record<string, readonly string[]> = {
     "--name-status",
     "--format=*",
     "--pretty=*",
+    "-s",
+    "--no-patch",
+    "-p",
+    "--patch",
+    "--no-color",
+    "--color=*",
+    "--decorate",
     "--",
   ],
   status: ["-s", "--short", "-b", "--branch", "-sb", "--porcelain*"],
@@ -183,10 +213,17 @@ function gitAllowed(argv: string[]): boolean {
     return false;
   }
   const rest = argv.slice(2);
-  const set = GIT_FLAGS[sub];
+  // The only mutating form: move HEAD of the primary checkout to origin/main.
+  if (sub === "switch") {
+    return (
+      rest.length === 2 && rest[0] === "--detach" && rest[1] === "origin/main"
+    );
+  }
+  // Exact subcommand name (`fetch-pack`, `diff-tree`, `log-x` are different
+  // commands) and default deny: no flag set means not read-only.
+  const set = Object.hasOwn(GIT_FLAGS, sub) ? GIT_FLAGS[sub] : undefined;
   if (set === undefined) {
-    // Not a read-only subcommand with a flag set; the Charter pattern alone decides.
-    return true;
+    return false;
   }
   if (sub === "worktree" && rest[0] !== "list") {
     return false;
@@ -206,19 +243,85 @@ function gitAllowed(argv: string[]): boolean {
   return true;
 }
 
-const RG_EXEC = ["--pre", "--pre-glob", "--hostname-bin", "--search-zip"];
+/**
+ * ripgrep flags an OVERSEER uses to read. Everything else is denied, so
+ * `--pre`, `--hostname-bin`, `--search-zip` and abbreviations never pass.
+ * `RG_VALUE` flags take the next word as their value.
+ */
+const RG_FLAGS = new Set([
+  "-i",
+  "--ignore-case",
+  "-S",
+  "--smart-case",
+  "-s",
+  "--case-sensitive",
+  "-n",
+  "--line-number",
+  "-N",
+  "-l",
+  "--files-with-matches",
+  "-c",
+  "--count",
+  "-w",
+  "--word-regexp",
+  "-F",
+  "--fixed-strings",
+  "-v",
+  "--invert-match",
+  "-o",
+  "--only-matching",
+  "--hidden",
+  "-u",
+  "-uu",
+  "--no-ignore",
+  "--files",
+  "--json",
+  "--no-heading",
+  "--heading",
+  "-U",
+  "--multiline",
+  "-P",
+  "--pcre2",
+]);
+const RG_VALUE = new Set(["-g", "-t", "-T", "-e"]);
+const RG_PREFIX = [
+  "--glob=",
+  "--iglob=",
+  "--type=",
+  "--type-not=",
+  "--regexp=",
+  "--context=",
+  "--after-context=",
+  "--before-context=",
+  "--color=",
+  "--sort=",
+  "--max-depth=",
+  "--max-count=",
+];
 
 function rgAllowed(args: string[]): boolean {
-  return !args.some((word) => {
-    if (word.startsWith("--")) {
-      const name = word.split("=")[0] ?? word;
-      if (name.length >= 4 && RG_EXEC.some((long) => long.startsWith(name))) {
-        return true;
-      }
-      return RG_EXEC.some((long) => name.startsWith(long));
+  for (let index = 0; index < args.length; index += 1) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      return true;
     }
-    return /^-[A-Za-z]*z[A-Za-z]*$/.test(word);
-  });
+    if (!word.startsWith("-") || word === "-") {
+      continue;
+    }
+    if (RG_VALUE.has(word)) {
+      index += 1;
+      continue;
+    }
+    if (
+      RG_FLAGS.has(word) ||
+      RG_PREFIX.some((prefix) => word.startsWith(prefix)) ||
+      /^-[ABCm]\d+$/.test(word)
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -250,7 +353,7 @@ function flagsAllowed(
         argv.length === 3 &&
         (first === "-w" || first === "--worktree") &&
         second !== undefined &&
-        /^[A-Za-z0-9._-]+$/.test(second) &&
+        /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(second) &&
         !second.includes("..")
       );
     case "wardens":
@@ -377,11 +480,15 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   }
   const home = ctx.home ?? homedir();
   for (const [position, segment] of pipeline.segments.entries()) {
+    if (Object.keys(segment.env).length > 0 || segment.expand.length > 0) {
+      return false;
+    }
     // The tokenizer leaves an empty segment after a quoted heredoc body.
     if (segment.argv.length === 0 && segment.meta.length === 0) {
       continue;
     }
-    if (Object.keys(segment.env).length > 0 || segment.expand.length > 0) {
+    // A raw newline or carriage return in a word is never data we can vouch for.
+    if (segment.argv.some((word) => /[\n\r]/.test(word))) {
       return false;
     }
     const skip = redirectsAllowed(ctx, segment, home);
