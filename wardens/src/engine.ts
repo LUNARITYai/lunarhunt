@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { type Charter, loadCharterAt } from "./charter.ts";
 import { type DodDeps, stopEngineFailure } from "./dod.ts";
 import {
@@ -36,6 +37,8 @@ export type EngineDeps = {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   dod?: DodDeps;
+  /** Home dir for `~/` in `paths.external`; tests inject it. */
+  home?: string;
 };
 
 const defaultDeps: EngineDeps = {
@@ -112,6 +115,10 @@ export function evaluateRules(
   }
   let winner: Objection | null = null;
   for (const id of RULE_IDS) {
+    // Repo-relative rules do not apply to an allowed external path.
+    if (ctx.event.external && id !== "secret-read-guard") {
+      continue;
+    }
     let objection: Objection | null;
     try {
       objection = rules[id](ctx);
@@ -133,6 +140,9 @@ export function evaluateRule(
   ctx: RuleContext,
   rules: Record<RuleId, Rule> = RULES,
 ): Verdict {
+  if (ctx.event.external && id !== "secret-read-guard") {
+    return allowVerdict();
+  }
   try {
     const objection = rules[id](ctx);
     if (!objection) {
@@ -419,6 +429,7 @@ export function runHook(
     fallbackCwd,
     toplevel,
     env: deps.env,
+    external: { charter: policy.charter, home: deps.home ?? homedir() },
   });
   if (!normalized.ok) {
     return fail(normalized.message, toplevel, null);

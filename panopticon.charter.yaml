@@ -53,6 +53,15 @@ paths:
     - ".env.*"
     - "!*.example"
     - "secrets/**"
+  external:
+    read:
+      - "~/.claude/projects/*lunarhunt*/memory/**"
+      - "/private/tmp/claude-*/*lunarhunt*/**"
+      - "/tmp/claude-*/*lunarhunt*/**"
+    write:
+      - "~/.claude/projects/*lunarhunt*/memory/**"
+      - "/private/tmp/claude-*/*lunarhunt*/**"
+      - "/tmp/claude-*/*lunarhunt*/**"
 
 commands:
   deny:

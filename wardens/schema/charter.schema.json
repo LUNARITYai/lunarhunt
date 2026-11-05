@@ -175,6 +175,20 @@
         "secrets_deny_read": {
           "type": "array",
           "items": { "$ref": "#/$defs/glob" }
+        },
+        "external": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/glob" }
+            },
+            "write": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/glob" }
+            }
+          }
         }
       }
     },

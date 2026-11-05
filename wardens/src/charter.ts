@@ -25,6 +25,36 @@ const NEGATION_LISTS = new Set([
 
 const glob = z.string().min(1);
 
+const MAGIC = /[*?[\]{}()!+@]/;
+
+/** Reason an `paths.external` glob is not acceptable, or null. */
+export function externalGlobError(value: string): string | null {
+  let rest: string;
+  if (value.startsWith("~/")) {
+    rest = value.slice(2);
+  } else if (value.startsWith("/")) {
+    rest = value.slice(1);
+  } else {
+    return "must be absolute or start with ~/";
+  }
+  const segments = rest.split("/").filter((part) => part.length > 0);
+  if (segments.includes("..")) {
+    return "must not contain ..";
+  }
+  const first = segments[0];
+  if (first === undefined || MAGIC.test(first)) {
+    return "is too broad: the first path segment must be literal";
+  }
+  return null;
+}
+
+const externalGlob = glob.superRefine((value, ctx) => {
+  const error = externalGlobError(value);
+  if (error) {
+    ctx.addIssue({ code: "custom", message: `external glob ${error}` });
+  }
+});
+
 const engineSchema = z.string().min(1).refine(isEngineName, {
   message: "unknown engine",
 });
@@ -105,6 +135,12 @@ export const charterSchema = z.strictObject({
     }),
     generated: z.array(glob),
     secrets_deny_read: z.array(glob),
+    external: z
+      .strictObject({
+        read: z.array(externalGlob).optional(),
+        write: z.array(externalGlob).optional(),
+      })
+      .optional(),
   }),
   commands: z.strictObject({
     deny: z.array(z.string().min(1)),

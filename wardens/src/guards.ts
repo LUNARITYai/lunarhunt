@@ -6,7 +6,7 @@ import {
   tokenize,
 } from "./command.ts";
 import { EngineFailure } from "./failures.ts";
-import { anyGlob, denyListMatches } from "./globs.ts";
+import { anyGlob, basename, denyListMatches } from "./globs.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -245,9 +245,11 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
     if (ctx.event.path === null) {
       return secretDeny("an unknown path");
     }
-    return denyListMatches(secrets, ctx.event.path)
-      ? secretDeny(ctx.event.path)
-      : null;
+    // An external path is absolute: only its basename can match a secret pattern.
+    const target = ctx.event.external
+      ? basename(ctx.event.path)
+      : ctx.event.path;
+    return denyListMatches(secrets, target) ? secretDeny(ctx.event.path) : null;
   }
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
