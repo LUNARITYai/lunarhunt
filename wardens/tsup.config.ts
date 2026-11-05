@@ -12,7 +12,9 @@ export default defineConfig({
   format: ["esm"],
   target: "node26",
   outDir: "dist",
-  clean: true,
+  // Never clean: scripts/build.ts builds into a temp dir and renames the bundle in.
+  clean: false,
+  define: { "process.env.WARDENS_BUNDLE_HASH": JSON.stringify(sourceHash) },
   splitting: false,
   sourcemap: false,
   bundle: true,

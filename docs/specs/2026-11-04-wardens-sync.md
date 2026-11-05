@@ -39,7 +39,7 @@ The tool facts below were read from the Claude Code hooks, settings and permissi
 
 ### Generated tool configs
 
-- THE generated `.claude/settings.json` SHALL contain `PreToolUse` with matcher `^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$`, `PostToolUse` with matcher `^(Edit|Write)$` and `Stop`, each calling the Wardens bundle with `onFailure: "block"` and a `timeout`.
+- THE generated `.claude/settings.json` SHALL contain `SessionStart` (no matcher, `timeout` 10), `PreToolUse` with matcher `^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$`, `PostToolUse` with matcher `^(Edit|Write)$` and `Stop`, each calling the Wardens bundle with `onFailure: "block"` and a `timeout`.
 - THE generated `.claude/settings.json` SHALL contain `permissions.deny` for The Charter, the known `.env` variants, `secrets/**`, the generated paths, `NotebookEdit` and every `commands.deny` pattern; `permissions.ask` for every `paths.protected.ask` glob; and `permissions.allow` for every `commands.allow` pattern.
 - THE generated `.claude/settings.json` SHALL set `env.PANOPTICON_AGENT` to `claude`.
 - THE generated `.cursor/hooks.json` SHALL contain `version: 1` and the events `sessionStart`, `preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `afterFileEdit` and `stop`, each with `failClosed: true` and a `timeout`; `preToolUse` SHALL use matcher `^(Shell|Read|Write|Delete|MCP:.*)$` and `stop` SHALL set `loop_limit: 3`.
@@ -80,6 +80,17 @@ The tool facts below were read from the Claude Code hooks, settings and permissi
 ### Cursor session environment
 
 - WHEN Cursor `sessionStart` fires, THE SYSTEM SHALL return `{"env": {"PANOPTICON_AGENT": "cursor"}}`.
+
+### Bundle freshness (#43)
+
+- WHEN `git pull` (merge or rebase) updates `main` in the primary checkout, THE generated `lefthook.yml` hooks `post-merge` and `post-rewrite` SHALL run `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed between `ORIG_HEAD` and `HEAD`, and then `pnpm --filter wardens build` if anything under `wardens/` or the lockfile changed (the bundle inlines its dependencies, so a lockfile change can make it stale while the source hash stays equal).
+- IF `ORIG_HEAD` cannot be resolved, THEN the hooks SHALL treat the lockfile and `wardens/` as changed.
+- IF the hook runs in a linked worktree (`git rev-parse --git-dir` differs from `--git-common-dir`) or on a branch other than `main`, THEN it SHALL do nothing and exit 0.
+- WHEN `post-rewrite` runs for an amend, THE hook SHALL do nothing.
+- THE hooks SHALL be plain shell, so they work before dependencies are installed, and SHALL exit 0 when the install or the build fails, after printing the failure and `Run pnpm install && pnpm --filter wardens build in the primary checkout.`
+- WHEN `pnpm --filter wardens build` runs, THE previous `wardens/dist/wardens.mjs` SHALL stay in place until the new bundle is complete, and the new bundle SHALL replace it with an atomic rename from a temporary directory inside `wardens/dist/`. IF the build fails, THEN the previous bundle SHALL stay untouched.
+- WHEN Claude Code `SessionStart` or Cursor `sessionStart` fires and the running bundle's embedded source hash differs from the hash of `<primary>/wardens/src/**`, THE SYSTEM SHALL allow and log the warning `Wardens bundle is stale. Run pnpm --filter wardens build in the primary checkout.` For Claude Code it SHALL also return the warning as `hookSpecificOutput.additionalContext`; for Cursor it SHALL keep the `env` output only.
+- WHEN the hashes match, the bundle has no embedded hash (TypeScript source) or the check fails for any reason, THE SYSTEM SHALL allow with no warning and, for Claude Code, empty output.
 
 ### `wardens doctor` and `wardens-test`
 
@@ -217,6 +228,18 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool claude --event SessionStart",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$",
@@ -351,7 +374,58 @@ pre-push:
   commands:
     check:
       run: pnpm check
+
+post-merge:
+  commands:
+    rebuild-wardens:
+      run: |
+        gd=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || exit 0
+        common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+        if [ "$gd" != "$common" ]; then exit 0; fi
+        if [ "$(git branch --show-current)" != main ]; then exit 0; fi
+        if changed=$(git diff --name-only ORIG_HEAD HEAD -- 2>/dev/null); then
+          lock=0; wd=0
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then lock=1; fi
+          if printf '%s\n' "$changed" | grep -q '^wardens/'; then wd=1; fi
+        else
+          lock=1; wd=1
+        fi
+        next='Run pnpm install && pnpm --filter wardens build in the primary checkout.'
+        if [ "$lock" = 1 ]; then
+          if ! pnpm install --frozen-lockfile; then echo "wardens: pnpm install failed. $next"; exit 0; fi
+        fi
+        if [ "$lock" = 1 ] || [ "$wd" = 1 ]; then
+          if ! pnpm --filter wardens build; then echo "wardens: bundle build failed. $next"; exit 0; fi
+        fi
+        exit 0
+
+post-rewrite:
+  commands:
+    rebuild-wardens:
+      run: |
+        if [ "{1}" != rebase ]; then exit 0; fi
+        gd=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || exit 0
+        common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+        if [ "$gd" != "$common" ]; then exit 0; fi
+        if [ "$(git branch --show-current)" != main ]; then exit 0; fi
+        if changed=$(git diff --name-only ORIG_HEAD HEAD -- 2>/dev/null); then
+          lock=0; wd=0
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then lock=1; fi
+          if printf '%s\n' "$changed" | grep -q '^wardens/'; then wd=1; fi
+        else
+          lock=1; wd=1
+        fi
+        next='Run pnpm install && pnpm --filter wardens build in the primary checkout.'
+        if [ "$lock" = 1 ]; then
+          if ! pnpm install --frozen-lockfile; then echo "wardens: pnpm install failed. $next"; exit 0; fi
+        fi
+        if [ "$lock" = 1 ] || [ "$wd" = 1 ]; then
+          if ! pnpm --filter wardens build; then echo "wardens: bundle build failed. $next"; exit 0; fi
+        fi
+        exit 0
 ```
+
+The `post-merge` and `post-rewrite` hooks are plain shell on purpose: after a pull the dependencies may not be installed yet. `ORIG_HEAD` is the pre-pull `HEAD` for merge and rebase pulls (tested with real pulls); when it is missing, everything counts as changed. `post-rewrite` receives `rebase` or `amend` as `{1}` and ignores amends.
 
 `commit-msg` runs from the worktree's source, like the package `check` script, so it needs no bundle. It needs `node_modules`, which every worktree setup installs before the first commit. Unlike the agent hooks, it runs the worktree's own code; an agent that edits `wardens/src/trailer.ts` can weaken it in its own worktree. Ring 2 (`pr-check`, C-27) is the backstop for trailers.
 
@@ -376,6 +450,7 @@ New mapping rows. Any other combination still denies with rule `engine`.
 | claude | `PostToolUse` | `tool_name` `Edit` | edit | `tool_input.file_path` |
 | claude | `PostToolUse` | `tool_name` `Write` | write | `tool_input.file_path` |
 | claude | `Stop` | — | stop | null |
+| claude | `SessionStart` | — | session_start | null |
 | cursor | `afterFileEdit` | — | edit | `file_path` (absolute; made repo-relative by the core spec's path preparation) |
 | cursor | `stop` | — | stop | null |
 | cursor | `sessionStart` | — | session_start | null |
@@ -389,7 +464,7 @@ Adapters drop `tool_response`, `edits`, `last_assistant_message` and `transcript
 | `generated-files-guard` | edit, write, delete (pre) | Path matches `paths.generated` (same glob rules as the core spec) → deny. |
 | post-edit audit | edit, write (post) | Runs the deny side of `protected-paths` (deny list only), `scope-guard` and `generated-files-guard`. Any deny → Claude Code `decision: "block"` with the C-30 line from the denying rule and next action `Revert <path> with git checkout -- <path>`, or `Delete <path>` when the path is untracked (`git checkout` cannot restore a file that git does not track). `ask` matches are ignored. |
 | `definition-of-done` | stop | See below. |
-| session env | session_start | Always allow. Cursor output `{"env": {"PANOPTICON_AGENT": "cursor"}}`. |
+| session env | session_start | Always allow. Cursor output `{"env": {"PANOPTICON_AGENT": "cursor"}}`. When the running bundle is stale (Bundle freshness), the verdict carries the stale warning: Claude Code adds it as `additionalContext`, Cursor only logs it. |
 
 Precedence among pre-edit rules, same severity: `protected-paths`, `secret-read-guard`, `generated-files-guard`, `command-guard`, `scope-guard`.
 
@@ -483,7 +558,7 @@ Making them required checks in the `main` ruleset is a human step after merge, a
 
 After Task 3 merges, every Claude Code and Cursor session in the repository runs fail-closed hooks against the primary checkout's bundle. If that bundle is missing, every session is blocked on every tool call. Task worktrees need nothing.
 
-1. In the primary checkout, on an up-to-date `main`: `pnpm install && pnpm --filter wardens build`. Repeat the build after every pull that changes `wardens/**`; `wardens doctor` warns when the bundle is stale.
+1. In the primary checkout, on an up-to-date `main`: `pnpm install && pnpm --filter wardens build`. After every pull in the primary checkout the `post-merge` and `post-rewrite` hooks reinstall and rebuild when the lockfile or `wardens/**` changed (#43); if that fails they print the next action, and `wardens doctor` and the `SessionStart` warning report a stale bundle.
 2. Add `pnpm --filter wardens build` to `.devcontainer/devcontainer.json` `postCreateCommand` (ADR-0005 already requires the bundle on create). This is a protected path, so it goes in Task 3's PR with your approval.
 3. In Cursor settings, turn off loading third-party (Claude Code) hooks, and trust the workspace.
 4. Run `pnpm exec lefthook install` again so `commit-msg` is installed.

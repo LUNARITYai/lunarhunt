@@ -148,6 +148,9 @@ function mapLifecycle(
   if (tool === "claude" && event === "Stop") {
     return noPath("stop");
   }
+  if (tool === "claude" && event === "SessionStart") {
+    return noPath("session_start");
+  }
   if (tool === "cursor" && event === "afterFileEdit") {
     const path = asString(payload.file_path);
     if (!path) {

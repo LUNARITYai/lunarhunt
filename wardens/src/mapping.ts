@@ -62,6 +62,7 @@ export const MAPPING_ROWS: readonly MappingRow[] = [
     sample: { tool_name: "Write", tool_input: { file_path: "README.md" } },
   },
   { tool: "claude", event: "Stop", matcher: null, sample: {} },
+  { tool: "claude", event: "SessionStart", matcher: null, sample: {} },
   { tool: "cursor", event: "sessionStart", matcher: null, sample: {} },
   {
     tool: "cursor",

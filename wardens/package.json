@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "node --experimental-strip-types src/cli.ts check charter-validate && node --experimental-strip-types src/cli.ts sync --check",
-    "build": "tsup"
+    "build": "node --experimental-strip-types scripts/build.ts"
   },
   "dependencies": {
     "ajv": "catalog:",

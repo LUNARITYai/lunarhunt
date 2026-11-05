@@ -26,6 +26,7 @@ import {
   type RuleContext,
   type RuleId,
 } from "./rules.ts";
+import { type BundleProbe, staleWarning } from "./stale.ts";
 import { loadTask, type TaskState } from "./task.ts";
 import { allowVerdict, checkExitCode, type Verdict } from "./verdict.ts";
 
@@ -41,6 +42,8 @@ export type EngineDeps = {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   dod?: DodDeps;
+  /** Bundle hash probe for the stale check; tests inject it. */
+  bundle?: BundleProbe;
   /** Home dir for `~/` in `paths.external`; tests inject it. */
   home?: string;
   /** Base dir of the fallback log used without a git toplevel; tests inject it. */
@@ -88,7 +91,10 @@ function objectionVerdict(objection: Objection): Verdict {
 function evaluateLifecycle(ctx: RuleContext): Verdict | null {
   try {
     if (ctx.event.action === "session_start") {
-      return allowVerdict();
+      const warning = staleWarning(ctx.root, ctx.bundle);
+      return warning
+        ? { ...allowVerdict(), rule: "bundle-stale", message: warning }
+        : allowVerdict();
     }
     if (ctx.event.action === "stop") {
       return evaluateStop(ctx);
@@ -495,6 +501,7 @@ export function runHook(
       root: toplevel,
       home: deps.home ?? homedir(),
       ...(deps.dod ? { dod: deps.dod } : {}),
+      ...(deps.bundle ? { bundle: deps.bundle } : {}),
     }),
     event: normalized.event,
     tool: hintedTool,

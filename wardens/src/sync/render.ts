@@ -1,4 +1,5 @@
 import type { Charter } from "../charter.ts";
+import { postPullYaml } from "./post-merge.ts";
 
 /** Paths written by `wardens sync`, relative to the git toplevel. */
 export const CLAUDE_SETTINGS_PATH = ".claude/settings.json";
@@ -98,6 +99,7 @@ function claudeSettings(charter: Charter): string {
     env: { PANOPTICON_AGENT: "claude" },
     permissions: permissions(charter),
     hooks: {
+      SessionStart: [{ hooks: [claudeHook("SessionStart", 10)] }],
       PreToolUse: [
         {
           matcher: "^(Bash|PowerShell|Read|Edit|Write|mcp__.*)$",
@@ -172,7 +174,8 @@ pre-push:
   commands:
     check:
       run: pnpm check
-`;
+
+${postPullYaml()}`;
 
 /** Pure function of The Charter plus fixed templates: repo-relative path to file content. */
 export function render(charter: Charter): Map<string, string> {
