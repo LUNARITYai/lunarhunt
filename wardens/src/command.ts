@@ -13,14 +13,20 @@ const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
  * start or inside a word, since the shell also starts a comment after `(` or
  * `)`) AND shell syntax able to change what `#` means (see `special`) is
  * treated as unparseable. Both flags are taken from either reading. This is
- * intentionally conservative; false positives are accepted.
+ * intentionally conservative; false positives are accepted. Two more classes are
+ * closed rather than chased one by one: any unquoted `#` together with a
+ * backslash-newline continuation, and a `#` right after an operator character
+ * (`&`, `!`, `|`, `;`, `<`, `>`, `(`, `)`, `{`), as in zsh `&!#`.
  */
 export function tokenizeAll(command: string): Pipeline[] {
   const aware = tokenize(command, true);
   const plain = tokenize(command, false);
   const hash = aware.ok && (aware.hash || (plain.ok && plain.hash));
   const special = aware.ok && (aware.special || (plain.ok && plain.special));
-  if (hash && special) {
+  const continued =
+    aware.ok && (aware.continuation || (plain.ok && plain.continuation));
+  const adjacent = aware.ok && (aware.adjacent || (plain.ok && plain.adjacent));
+  if ((hash && (special || continued)) || adjacent) {
     return [{ ok: false }, { ok: false }];
   }
   return [aware, plain];
@@ -55,6 +61,10 @@ export type Pipeline =
       special: boolean;
       /** The command held an unquoted `#` anywhere in a word, at its start or inside it. */
       hash: boolean;
+      /** The command held an unquoted or double-quoted backslash-newline continuation. */
+      continuation: boolean;
+      /** An unquoted `#` followed one of `& ! | ; < > ( ) {`. */
+      adjacent: boolean;
     }
   | { ok: false };
 
@@ -157,6 +167,8 @@ export function tokenize(command: string, comments = true): Pipeline {
     newline: scanned.newline,
     special: scanned.special,
     hash: scanned.hash,
+    continuation: scanned.continuation,
+    adjacent: scanned.adjacent,
   };
 }
 
@@ -231,12 +243,16 @@ function scan(
   newline: boolean;
   special: boolean;
   hash: boolean;
+  continuation: boolean;
+  adjacent: boolean;
 } | null {
   const segments: RawSegment[] = [];
   let comment = false;
   let newline = false;
   let special = false;
   let hash = false;
+  let continuation = false;
+  let adjacent = false;
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
@@ -299,6 +315,7 @@ function scan(
         }
         if (next === "\n") {
           // Line continuation: the shell deletes both characters.
+          continuation = true;
           index += 1;
           continue;
         }
@@ -336,6 +353,7 @@ function scan(
       }
       if (next === "\n") {
         // Line continuation: the shell deletes both characters and the word stays open.
+        continuation = true;
         index += 1;
         continue;
       }
@@ -353,6 +371,9 @@ function scan(
       quote = "double";
       wordStarted = true;
       continue;
+    }
+    if (ch === "#" && /[&!|;<>(){]/.test(command[index - 1] ?? "")) {
+      adjacent = true;
     }
     if (comments && ch === "#" && !wordStarted) {
       // A comment runs to the next newline (not consumed). Nothing inside it is
@@ -428,6 +449,10 @@ function scan(
         wordMeta = true;
         continue;
       }
+      // zsh `&!` and `&|` background and disown: also a separator, two characters.
+      if (command[index + 1] === "!" || command[index + 1] === "|") {
+        index += 1;
+      }
       endSegment(false);
       continue;
     }
@@ -474,7 +499,15 @@ function scan(
     meta: metas,
     expand: expands,
   });
-  return { segments, comment, newline, special, hash };
+  return {
+    segments,
+    comment,
+    newline,
+    special,
+    hash,
+    continuation,
+    adjacent,
+  };
 }
 
 function prepare(

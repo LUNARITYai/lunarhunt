@@ -377,6 +377,30 @@ describe("a # the shell reads differently from the tokenizer", () => {
     }
   });
 
+  it("fails closed for operator-adjacent # and # with a continuation", () => {
+    for (const command of [
+      "echo a &!# x \\\ngit push --force origin main",
+      "echo a &|# x \\\nnpm publish",
+      "echo a &! # x \\\ngit push --force",
+      "ls # c \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("splits zsh &! and &| like &", () => {
+    for (const command of [
+      "echo a &! git push --force",
+      "echo a &| npm publish",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("keeps a continuation without # working", () => {
+    expect(allowed(bash(f, "pnpm --filter wardens \\\ntest"))).toBe(true);
+  });
+
   it("keeps plain comments and quoted # working", () => {
     for (const command of [
       "pnpm check # run the checks",
