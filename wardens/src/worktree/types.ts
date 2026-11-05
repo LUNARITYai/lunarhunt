@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { wardenMessage } from "../messages.ts";
 
 export type Result = { exitCode: 0 | 2; stdout: string; stderr: string };
 
@@ -23,14 +24,26 @@ export const realDeps: Deps = {
     });
     return { status: res.status ?? 1, stdout: res.stdout ?? "" };
   },
+  // Step output goes to stderr so stdout carries only the worktree path.
   step: (command, cwd) =>
-    spawnSync("sh", ["-c", command], { cwd, stdio: "inherit" }).status ?? 1,
+    spawnSync("sh", ["-c", command], { cwd, stdio: ["ignore", 2, 2] }).status ??
+    1,
 };
+
+/** C-30 engine message with a specific next action for a human. */
+export function msg(what: string, next: string): string {
+  return wardenMessage("engine", what.replace(/[\s.]+$/, ""), next);
+}
+
+/** First line only, so multi-line git stderr cannot break the C-30 format. */
+export function firstLine(text: string): string {
+  return text.split("\n")[0]?.trim() ?? "";
+}
 
 export function fail(stderr: string): Result {
   return { exitCode: 2, stdout: "", stderr: `${stderr}\n` };
 }
 
-export function ok(stdout = ""): Result {
-  return { exitCode: 0, stdout, stderr: "" };
+export function ok(stdout = "", stderr = ""): Result {
+  return { exitCode: 0, stdout, stderr };
 }

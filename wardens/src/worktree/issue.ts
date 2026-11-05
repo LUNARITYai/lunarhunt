@@ -14,17 +14,21 @@ const TYPE_BY_LABEL: Record<string, string> = {
 
 const BRANCH_TYPES = new Set(Object.values(TYPE_BY_LABEL));
 
-/** Branch type from the first known `type:*` label, or null. */
-export function typeFromLabels(labels: string[]): string | null {
-  for (const label of labels) {
-    if (label.startsWith("type:")) {
-      const mapped = TYPE_BY_LABEL[label.slice("type:".length)];
-      if (mapped !== undefined) {
-        return mapped;
-      }
-    }
+/** The branch type from the single `type:*` label, or an error text. */
+export function typeFromLabels(
+  labels: string[],
+): { type: string } | { error: string } {
+  const typed = labels.filter((l) => l.startsWith("type:"));
+  if (typed.length === 0) {
+    return { error: "has no type:* label (missing field: type label)" };
   }
-  return null;
+  if (typed.length > 1) {
+    return { error: `has several type:* labels (${typed.join(", ")})` };
+  }
+  const mapped = TYPE_BY_LABEL[(typed[0] ?? "").slice("type:".length)];
+  return mapped === undefined
+    ? { error: `has an unknown type label ${typed[0]}` }
+    : { type: mapped };
 }
 
 /** Lowercase kebab slug, at most `max` characters, no edge dashes. */
@@ -37,15 +41,59 @@ export function slugify(text: string, max: number): string {
     .replace(/-+$/, "");
 }
 
-/** Non-empty lines of the `### Allowed paths` section, trimmed, backticks and bullets stripped. */
-export function allowedPaths(body: string): string[] {
-  const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^###\s+Allowed paths\s*$/i.test(l));
-  if (start === -1) {
-    return [];
+const FENCE = /^\s*(```|~~~)/;
+const HEADING = /^###\s+Allowed paths\s*$/i;
+
+function badEntry(entry: string): string | null {
+  if (entry.startsWith("!")) {
+    return "starts with !";
   }
-  const out: string[] = [];
-  for (const line of lines.slice(start + 1)) {
+  if (entry.startsWith("/") || /^[A-Za-z]:/.test(entry)) {
+    return "is absolute";
+  }
+  if (entry.split(/[\\/]/).includes("..")) {
+    return "contains ..";
+  }
+  return null;
+}
+
+/**
+ * Entries of the single `### Allowed paths` section: non-empty lines, trimmed,
+ * backticks and bullets stripped, fenced blocks skipped. Errors name the field.
+ */
+export function allowedPaths(
+  body: string,
+): { paths: string[] } | { error: string } {
+  const lines = body.split(/\r?\n/);
+  const headings: number[] = [];
+  let fenced = false;
+  lines.forEach((line, i) => {
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+    } else if (!fenced && HEADING.test(line)) {
+      headings.push(i);
+    }
+  });
+  if (headings.length === 0) {
+    return {
+      error: "has no Allowed paths section (missing field: Allowed paths)",
+    };
+  }
+  if (headings.length > 1) {
+    return {
+      error: `has ${headings.length} Allowed paths headings, expected exactly one`,
+    };
+  }
+  const paths: string[] = [];
+  fenced = false;
+  for (const line of lines.slice((headings[0] ?? 0) + 1)) {
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) {
+      continue;
+    }
     if (/^#{1,3}\s/.test(line)) {
       break;
     }
@@ -53,11 +101,21 @@ export function allowedPaths(body: string): string[] {
       .replace(/`/g, "")
       .replace(/^\s*[-*]\s+/, "")
       .trim();
-    if (cleaned.length > 0 && cleaned !== "_No response_") {
-      out.push(cleaned);
+    if (cleaned.length === 0 || cleaned === "_No response_") {
+      continue;
     }
+    const bad = badEntry(cleaned);
+    if (bad !== null) {
+      return { error: `has an Allowed paths entry that ${bad}: ${cleaned}` };
+    }
+    paths.push(cleaned);
   }
-  return out;
+  return paths.length === 0
+    ? {
+        error:
+          "has an empty Allowed paths section (missing field: Allowed paths)",
+      }
+    : { paths };
 }
 
 export type BranchInfo = { type: string; issue: number; slug: string };
@@ -67,7 +125,9 @@ export function parseBranch(branch: string | null): BranchInfo | null {
   if (branch === null) {
     return null;
   }
-  const match = /^([a-z]+)\/([1-9][0-9]*)-([a-z0-9][a-z0-9-]*)$/.exec(branch);
+  const match = /^([a-z]+)\/([1-9][0-9]{0,8})-([a-z0-9][a-z0-9-]*)$/.exec(
+    branch,
+  );
   if (!match || !BRANCH_TYPES.has(match[1] ?? "")) {
     return null;
   }

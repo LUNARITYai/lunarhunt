@@ -1,11 +1,17 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join, sep } from "node:path";
 import type { WorktreeConfig } from "../charter.ts";
-import { engineMessage, wardenMessage } from "../messages.ts";
 import { loadTask } from "../task.ts";
 import { listWorktrees } from "./git.ts";
 import { parseBranch } from "./issue.ts";
-import { type Deps, fail, ok, type Result } from "./types.ts";
+import { type Deps, fail, msg, ok, type Result } from "./types.ts";
 
 export type TaskInfo = {
   issue: number;
@@ -29,10 +35,9 @@ export function portCollision(
     const otherIssue =
       task.kind === "ok" ? task.issue : parseBranch(entry.branch)?.issue;
     if (otherIssue !== undefined && otherIssue % 1000 === issue % 1000) {
-      return wardenMessage(
-        "engine",
-        `worktrees ${selfName} (issue ${issue}) and ${basename(entry.path)} (issue ${otherIssue}) share ports because issue % 1000 is equal`,
-        "Remove one of them with wardens worktree remove or ask Krzysztof",
+      return msg(
+        `worktrees ${selfName} (issue ${issue}) and ${basename(entry.path)} (issue ${otherIssue}) would share ports because issue % 1000 is equal`,
+        `Remove one of them with wardens worktree remove ${basename(entry.path)} or pick another issue`,
       );
     }
   }
@@ -57,6 +62,36 @@ function setValue(text: string, values: Record<string, string>): string {
     : `${body}${body.endsWith("\n") ? "" : "\n"}${missing.join("\n")}\n`;
 }
 
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Replaces `path` with a new regular file; refuses to follow a symlink there. */
+function writeFresh(path: string, text: string, mode: number): void {
+  if (isSymlink(path)) {
+    throw new Error(`${path} is a symlink`);
+  }
+  rmSync(path, { force: true });
+  writeFileSync(path, text, { flag: "wx", mode });
+}
+
+/** Template text, read only when it resolves to a regular file inside `wt`. */
+function readTemplate(wt: string, template: string): string | null {
+  try {
+    const real = realpathSync(join(wt, template));
+    if (!real.startsWith(realpathSync(wt) + sep)) {
+      return null;
+    }
+    return readFileSync(real, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Setup inside `wt`: task.json, `setup.steps`, `.env`, `setup.ok` (last).
  * Reads no file from the primary checkout; `.env` comes from the template
@@ -70,8 +105,9 @@ export function setupWorktree(
 ): Result {
   if (cfg.resources.database !== undefined) {
     return fail(
-      engineMessage(
-        "the task database is not implemented in phase 0, unset worktree.resources.database",
+      msg(
+        "the task database is not implemented in phase 0",
+        "Unset worktree.resources.database in the Charter",
       ),
     );
   }
@@ -80,52 +116,81 @@ export function setupWorktree(
   if (collision !== null) {
     return fail(collision);
   }
-  const marker = join(wt, ".panopticon", "setup.ok");
-  rmSync(marker, { force: true });
-  mkdirSync(join(wt, ".panopticon"), { recursive: true });
-  const taskJson = {
-    issue: task.issue,
-    branch: task.branch,
-    slug: task.slug,
-    allowed_paths: task.allowedPaths,
-  };
-  writeFileSync(
-    join(wt, ".panopticon", "task.json"),
-    `${JSON.stringify(taskJson, null, 2)}\n`,
-  );
+  const template = readTemplate(wt, cfg.setup.env_template);
+  if (template === null) {
+    return fail(
+      msg(
+        `the env template ${cfg.setup.env_template} is missing, unreadable or outside the worktree`,
+        "Restore the template file and run wardens worktree setup again",
+      ),
+    );
+  }
+  const dir = join(wt, ".panopticon");
+  try {
+    if (isSymlink(dir)) {
+      throw new Error(`${dir} is a symlink`);
+    }
+    mkdirSync(dir, { recursive: true });
+    rmSync(join(dir, "setup.ok"), { force: true });
+    writeFresh(
+      join(dir, "task.json"),
+      `${JSON.stringify(
+        {
+          issue: task.issue,
+          branch: task.branch,
+          slug: task.slug,
+          allowed_paths: task.allowedPaths,
+        },
+        null,
+        2,
+      )}\n`,
+      0o644,
+    );
+  } catch {
+    return fail(
+      msg(
+        "task.json could not be written safely (symlink or write error)",
+        "Remove the .panopticon entry in the worktree and run wardens worktree setup again",
+      ),
+    );
+  }
   if (loadTask(wt).kind !== "ok") {
     return fail(
-      engineMessage("the issue's Allowed paths do not make a valid task.json"),
+      msg(
+        "the issue's Allowed paths do not make a valid task.json",
+        "Fix the Allowed paths section of the issue and run wardens worktree setup --refresh",
+      ),
     );
   }
   for (const step of cfg.setup.steps) {
     if (deps.step(step, wt) !== 0) {
       return fail(
-        wardenMessage(
-          "engine",
+        msg(
           `setup step failed: ${step}`,
           "Fix the cause and run wardens worktree setup again",
         ),
       );
     }
   }
-  let template: string;
+  const offset = task.issue % 1000;
   try {
-    template = readFileSync(join(wt, cfg.setup.env_template), "utf8");
+    writeFresh(
+      join(wt, ".env"),
+      setValue(template, {
+        TASK_ISSUE: String(task.issue),
+        WEB_PORT: String(cfg.resources.ports.web + offset),
+        API_PORT: String(cfg.resources.ports.api + offset),
+      }),
+      0o600,
+    );
+    writeFresh(join(dir, "setup.ok"), "", 0o644);
   } catch {
     return fail(
-      engineMessage(`the env template ${cfg.setup.env_template} is unreadable`),
+      msg(
+        ".env or setup.ok could not be written safely (symlink or write error)",
+        "Remove the .env entry in the worktree and run wardens worktree setup again",
+      ),
     );
   }
-  const offset = task.issue % 1000;
-  writeFileSync(
-    join(wt, ".env"),
-    setValue(template, {
-      TASK_ISSUE: String(task.issue),
-      WEB_PORT: String(cfg.resources.ports.web + offset),
-      API_PORT: String(cfg.resources.ports.api + offset),
-    }),
-  );
-  writeFileSync(marker, "");
   return ok();
 }

@@ -127,11 +127,12 @@ async function main(): Promise<void> {
     .argument("[arg]", "issue number for new, name for remove")
     .option("--slug <slug>", "slug for new")
     .option("--force", "remove or prune despite uncommitted or unpushed work")
+    .option("--refresh", "setup: re-read Allowed paths from the issue")
     .action(
       (
         sub: string,
         arg: string | undefined,
-        opts: { slug?: string; force?: boolean },
+        opts: { slug?: string; force?: boolean; refresh?: boolean },
       ) => {
         const result = runWorktree({ sub, arg, ...opts });
         if (result.stdout.length > 0) {

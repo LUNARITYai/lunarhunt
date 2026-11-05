@@ -5,16 +5,49 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { type Deps, runWorktree } from "../src/worktree/index.ts";
+import { MESSAGE_PATTERN } from "../src/messages.ts";
+import {
+  type Deps,
+  type Result,
+  runWorktree as runWorktreeRaw,
+  type WorktreeArgs,
+} from "../src/worktree/index.ts";
 import { cliPath, normativeCharter } from "./support.ts";
 
-type Issue = { title: string; labels: string[]; body: string };
+type Issue = {
+  title: string;
+  labels: string[];
+  body: string;
+  state?: string;
+  url?: string;
+};
+
+const bases: string[] = [];
+const failures: string[] = [];
+
+afterAll(() => {
+  for (const dir of bases) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Records every failing stderr so one test can check the C-30 format. */
+function runWorktree(args: WorktreeArgs, deps: Deps): Result {
+  const res = runWorktreeRaw(args, deps);
+  if (res.exitCode !== 0) {
+    failures.push(res.stderr);
+  }
+  return res;
+}
 
 const BODY = [
   "### Goal",
@@ -45,6 +78,9 @@ type Fixture = {
   primary: string;
   issues: Map<number, Issue>;
   prs: Map<string, string>;
+  prHead: Map<string, string>;
+  prBase: Map<string, string>;
+  ghFail: { on: boolean };
   steps: { command: string; cwd: string }[];
   failStep: { command: string | null };
   deps: (over?: Partial<Deps>) => Deps;
@@ -54,9 +90,11 @@ function fixture(
   transform?: (charter: Record<string, unknown>) => void,
 ): Fixture {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "wardens-wt-")));
+  bases.push(base);
   const origin = join(base, "origin");
   mkdirSync(origin);
   sh(origin, "init", "-q", "-b", "main");
+  sh(origin, "config", "commit.gpgsign", "false");
   sh(origin, "config", "user.email", "t@example.com");
   sh(origin, "config", "user.name", "t");
   const charter = parse(normativeCharter()) as Record<string, unknown>;
@@ -74,18 +112,25 @@ function fixture(
   sh(origin, "commit", "-q", "-m", "init");
   const primary = join(base, "primary");
   execFileSync("git", ["clone", "-q", origin, primary]);
+  sh(primary, "config", "commit.gpgsign", "false");
   sh(primary, "config", "user.email", "t@example.com");
   sh(primary, "config", "user.name", "t");
   writeFileSync(join(primary, ".env"), "SECRET=hunter2-primary\n");
 
   const issues = new Map<number, Issue>();
   const prs = new Map<string, string>();
+  const prHead = new Map<string, string>();
+  const prBase = new Map<string, string>();
   const steps: { command: string; cwd: string }[] = [];
   const failStep: { command: string | null } = { command: null };
+  const ghFail = { on: false };
   const deps = (over: Partial<Deps> = {}): Deps => ({
     env: {},
     cwd: primary,
     gh: (args) => {
+      if (ghFail.on) {
+        return { status: 1, stdout: "" };
+      }
       if (args[0] === "issue") {
         const issue = issues.get(Number(args[2]));
         return issue
@@ -95,14 +140,34 @@ function fixture(
                 title: issue.title,
                 body: issue.body,
                 labels: issue.labels.map((name) => ({ name })),
+                state: issue.state ?? "OPEN",
+                url: issue.url ?? `https://github.com/o/r/issues/${args[2]}`,
               }),
             }
           : { status: 1, stdout: "" };
       }
-      const state = prs.get(String(args[3]));
+      const branch = String(args[3]);
+      const state = prs.get(branch);
+      if (state === undefined || (args[5] === "merged" && state !== "MERGED")) {
+        return { status: 0, stdout: "[]" };
+      }
+      let head = prHead.get(branch);
+      if (head === undefined) {
+        try {
+          head = sh(primary, "rev-parse", `refs/heads/${branch}`);
+        } catch {
+          head = "0".repeat(40);
+        }
+      }
       return {
         status: 0,
-        stdout: JSON.stringify(state ? [{ state }] : []),
+        stdout: JSON.stringify([
+          {
+            state,
+            headRefOid: head,
+            baseRefName: prBase.get(branch) ?? "main",
+          },
+        ]),
       };
     },
     step: (command, cwd) => {
@@ -111,7 +176,17 @@ function fixture(
     },
     ...over,
   });
-  return { primary, issues, prs, steps, failStep, deps };
+  return {
+    primary,
+    issues,
+    prs,
+    prHead,
+    prBase,
+    steps,
+    failStep,
+    ghFail,
+    deps,
+  };
 }
 
 function wtPath(f: Fixture, name: string): string {
@@ -123,7 +198,9 @@ describe("wardens worktree new", () => {
     const f = fixture();
     f.issues.set(1042, FEATURE);
     const res = runWorktree({ sub: "new", arg: "1042" }, f.deps());
-    expect(res.stderr).toBe("");
+    expect(res.stderr).toBe(
+      "granted allowed_paths: wardens/**, docs/specs/**\n",
+    );
     expect(res.exitCode).toBe(0);
     const name = "1042-wardens-worktree-cli-for-the-humans-who";
     const wt = wtPath(f, name);
@@ -245,7 +322,7 @@ describe("wardens worktree setup (standalone)", () => {
   it("derives issue, slug and type from the branch name", () => {
     const f = fixture();
     f.issues.set(77, FEATURE);
-    const wt = join(f.primary, ".claude", "worktrees", "manual");
+    const wt = join(f.primary, ".claude", "worktrees", "77-tidy-up");
     sh(
       f.primary,
       "worktree",
@@ -257,7 +334,9 @@ describe("wardens worktree setup (standalone)", () => {
       "origin/main",
     );
     const res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
-    expect(res.stderr).toBe("");
+    expect(res.stderr).toBe(
+      "granted allowed_paths: wardens/**, docs/specs/**\n",
+    );
     expect(res.exitCode).toBe(0);
     const task = JSON.parse(
       readFileSync(join(wt, ".panopticon", "task.json"), "utf8"),
@@ -452,6 +531,369 @@ describe("wardens worktree prune", () => {
   });
 });
 
+function manualWorktree(f: Fixture, name: string, branch: string): string {
+  const wt = wtPath(f, name);
+  sh(f.primary, "worktree", "add", "-q", "-b", branch, wt, "origin/main");
+  return wt;
+}
+
+describe("hardening: new", () => {
+  it("rejects loose issue numbers before calling gh", () => {
+    const f = fixture();
+    const calls: string[][] = [];
+    for (const arg of ["1e3", "0x10", " 5 ", "0", "-3", "1234567890", ""]) {
+      const res = runWorktree(
+        { sub: "new", arg },
+        f.deps({
+          gh: (args) => {
+            calls.push(args);
+            return { status: 1, stdout: "" };
+          },
+        }),
+      );
+      expect(res.exitCode).toBe(2);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("requires an open issue that is not a pull request", () => {
+    const f = fixture();
+    f.issues.set(1, { ...FEATURE, state: "CLOSED" });
+    f.issues.set(2, { ...FEATURE, url: "https://github.com/o/r/pull/2" });
+    expect(runWorktree({ sub: "new", arg: "1" }, f.deps()).stderr).toContain(
+      "not open",
+    );
+    expect(runWorktree({ sub: "new", arg: "2" }, f.deps()).stderr).toContain(
+      "not an issue",
+    );
+    expect(existsSync(join(f.primary, ".claude", "worktrees"))).toBe(false);
+  });
+
+  it("rejects several or unknown type labels", () => {
+    const f = fixture();
+    f.issues.set(3, { ...FEATURE, labels: ["type:bug", "type:chore"] });
+    f.issues.set(4, { ...FEATURE, labels: ["type:wat"] });
+    expect(runWorktree({ sub: "new", arg: "3" }, f.deps()).stderr).toContain(
+      "several type:* labels",
+    );
+    expect(runWorktree({ sub: "new", arg: "4" }, f.deps()).stderr).toContain(
+      "unknown type label type:wat",
+    );
+    expect(existsSync(join(f.primary, ".claude", "worktrees"))).toBe(false);
+  });
+
+  it("maps chore, docs and spike labels", () => {
+    const f = fixture();
+    const cases = [
+      ["type:chore", "chore"],
+      ["type:docs", "docs"],
+      ["type:spike", "spike"],
+    ] as const;
+    cases.forEach(([label, type], i) => {
+      const n = 100 + i;
+      f.issues.set(n, { ...FEATURE, labels: [label] });
+      expect(
+        runWorktree({ sub: "new", arg: String(n), slug: "s" }, f.deps())
+          .exitCode,
+      ).toBe(0);
+      expect(sh(wtPath(f, `${n}-s`), "rev-parse", "--abbrev-ref", "HEAD")).toBe(
+        `${type}/${n}-s`,
+      );
+    });
+  });
+
+  it("rejects bad Allowed paths and creates nothing", () => {
+    const f = fixture();
+    const bodies = [
+      "### Allowed paths\na/**\n### Goal\nx\n### Allowed paths\nb/**",
+      "### Allowed paths\n../outside/**",
+      "### Allowed paths\n/etc/**",
+      "### Allowed paths\n!wardens/**",
+      "### Allowed paths\n`a/../b`",
+    ];
+    bodies.forEach((body, i) => {
+      f.issues.set(200 + i, { ...FEATURE, body });
+      const res = runWorktree({ sub: "new", arg: String(200 + i) }, f.deps());
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("Allowed paths");
+    });
+    expect(existsSync(join(f.primary, ".claude", "worktrees"))).toBe(false);
+    expect(sh(f.primary, "branch", "--list")).not.toContain("feat/");
+  });
+
+  it("ignores a fake heading and entries inside fenced blocks", () => {
+    const f = fixture();
+    const body = [
+      "### Goal",
+      "```",
+      "### Allowed paths",
+      "evil/**",
+      "```",
+      "### Allowed paths",
+      "good/**",
+      "```",
+      "fenced/**",
+      "```",
+      "",
+      "### Next",
+    ].join("\n");
+    f.issues.set(210, { ...FEATURE, body });
+    const res = runWorktree({ sub: "new", arg: "210", slug: "s" }, f.deps());
+    expect(res.exitCode).toBe(0);
+    const task = JSON.parse(
+      readFileSync(
+        join(wtPath(f, "210-s"), ".panopticon", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.allowed_paths).toEqual(["good/**"]);
+  });
+
+  it("writes .env with mode 0600", () => {
+    const f = fixture();
+    f.issues.set(220, FEATURE);
+    runWorktree({ sub: "new", arg: "220", slug: "s" }, f.deps());
+    expect(statSync(join(wtPath(f, "220-s"), ".env")).mode & 0o777).toBe(0o600);
+  });
+
+  it("detects a port collision through the branch-name fallback", () => {
+    const f = fixture();
+    manualWorktree(f, "5-a", "feat/5-a");
+    f.issues.set(1005, FEATURE);
+    const res = runWorktree({ sub: "new", arg: "1005", slug: "b" }, f.deps());
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("5-a");
+    expect(res.stderr).toContain("1005-b");
+  });
+});
+
+describe("hardening: standalone setup", () => {
+  it("detects a port collision", () => {
+    const f = fixture();
+    manualWorktree(f, "6-a", "feat/6-a");
+    const wt = manualWorktree(f, "1006-b", "feat/1006-b");
+    f.issues.set(1006, FEATURE);
+    const res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("6-a");
+    expect(res.stderr).toContain("1006-b");
+  });
+
+  it("requires the directory prefix to match the branch issue", () => {
+    const f = fixture();
+    const wt = manualWorktree(f, "99-x", "feat/77-x");
+    f.issues.set(77, FEATURE);
+    const res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("does not start with 77-");
+    expect(existsSync(join(wt, ".panopticon"))).toBe(false);
+  });
+
+  it("keeps a valid task.json unless --refresh, and prints the grant", () => {
+    const f = fixture();
+    f.issues.set(78, FEATURE);
+    runWorktree({ sub: "new", arg: "78", slug: "k" }, f.deps());
+    const wt = wtPath(f, "78-k");
+    f.issues.set(78, { ...FEATURE, body: "### Allowed paths\n**" });
+    let res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(0);
+    expect(res.stderr).toBe(
+      "granted allowed_paths: wardens/**, docs/specs/**\n",
+    );
+    const file = join(wt, ".panopticon", "task.json");
+    expect(JSON.parse(readFileSync(file, "utf8")).allowed_paths).toEqual([
+      "wardens/**",
+      "docs/specs/**",
+    ]);
+    res = runWorktree({ sub: "setup", refresh: true }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(0);
+    expect(res.stderr).toBe("granted allowed_paths: **\n");
+    expect(JSON.parse(readFileSync(file, "utf8")).allowed_paths).toEqual([
+      "**",
+    ]);
+  });
+
+  it("refuses to write through symlinks and checks the template first", () => {
+    const f = fixture();
+    f.issues.set(79, FEATURE);
+    runWorktree({ sub: "new", arg: "79", slug: "l" }, f.deps());
+    const wt = wtPath(f, "79-l");
+    const target = join(f.primary, "..", "victim.txt");
+    writeFileSync(target, "keep");
+    rmSync(join(wt, ".env"));
+    symlinkSync(target, join(wt, ".env"));
+    let res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain(".env");
+    expect(readFileSync(target, "utf8")).toBe("keep");
+    rmSync(join(wt, ".env"));
+    f.steps.length = 0;
+    rmSync(join(wt, ".env.example"));
+    symlinkSync(target, join(wt, ".env.example"));
+    res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("env template");
+    expect(f.steps).toEqual([]);
+  });
+});
+
+describe("hardening: remove and prune", () => {
+  function made(issue: number, slug: string) {
+    const f = fixture();
+    f.issues.set(issue, FEATURE);
+    runWorktree({ sub: "new", arg: String(issue), slug }, f.deps());
+    return { f, name: `${issue}-${slug}`, branch: `feat/${issue}-${slug}` };
+  }
+
+  it("fails closed when git cannot verify the worktree", () => {
+    const { f, name } = made(50, "gone");
+    rmSync(wtPath(f, name), { recursive: true, force: true });
+    const res = runWorktree({ sub: "remove", arg: name }, f.deps());
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("could not verify");
+  });
+
+  it("does not delete a branch whose tip differs from the merged PR head", () => {
+    const { f, name, branch } = made(51, "t");
+    const wt = wtPath(f, name);
+    sh(wt, "commit", "-q", "--allow-empty", "-m", "after merge");
+    f.prs.set(branch, "MERGED");
+    f.prHead.set(branch, "1".repeat(40));
+    const res = runWorktree(
+      { sub: "remove", arg: name, force: true },
+      f.deps(),
+    );
+    expect(res.exitCode).toBe(0);
+    expect(sh(f.primary, "branch", "--list", branch)).toContain(branch);
+  });
+
+  it("does not delete a branch merged into another base", () => {
+    const { f, name, branch } = made(52, "b");
+    f.prs.set(branch, "MERGED");
+    f.prBase.set(branch, "develop");
+    sh(wtPath(f, name), "commit", "-q", "--allow-empty", "-m", "w");
+    const res = runWorktree(
+      { sub: "remove", arg: name, force: true },
+      f.deps(),
+    );
+    expect(res.exitCode).toBe(0);
+    expect(sh(f.primary, "branch", "--list", branch)).toContain(branch);
+  });
+
+  it("never deletes a branch that does not match the convention", () => {
+    const f = fixture();
+    manualWorktree(f, "91-dev", "develop");
+    const res = runWorktree({ sub: "remove", arg: "91-dev" }, f.deps());
+    expect(res.exitCode).toBe(0);
+    expect(sh(f.primary, "branch", "--list", "develop")).toContain("develop");
+  });
+
+  it("treats a squash-merged tip as pushed, so prune needs no --force", () => {
+    const { f, name, branch } = made(53, "q");
+    const wt = wtPath(f, name);
+    sh(wt, "commit", "-q", "--allow-empty", "-m", "work");
+    f.prs.set(branch, "MERGED");
+    const res = runWorktree({ sub: "prune" }, f.deps());
+    expect(res.stdout).toContain(`removed ${name}, deleted branch ${branch}`);
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it("only acts on task worktrees under the location root", () => {
+    const f = fixture();
+    manualWorktree(f, "agent-x", "worktree-agent-x");
+    const outside = join(f.primary, "..", "outside-wt");
+    sh(
+      f.primary,
+      "worktree",
+      "add",
+      "-q",
+      "-b",
+      "feat/60-o",
+      outside,
+      "origin/main",
+    );
+    f.prs.set("worktree-agent-x", "MERGED");
+    f.prs.set("feat/60-o", "MERGED");
+    const res = runWorktree({ sub: "prune" }, f.deps());
+    expect(res.stdout).toContain("kept agent-x: not a task worktree");
+    expect(res.stdout).toContain("kept outside-wt: not a task worktree");
+    const rm = runWorktree({ sub: "remove", arg: "agent-x" }, f.deps());
+    expect(rm.exitCode).toBe(2);
+    expect(rm.stderr).toContain("not a task worktree");
+  });
+
+  it("refuses from inside the worktree without suggesting --force", () => {
+    const { f, name } = made(54, "i");
+    const wt = wtPath(f, name);
+    f.prs.set(`feat/${name}`, "MERGED");
+    const rm = runWorktree({ sub: "remove", arg: name }, f.deps({ cwd: wt }));
+    expect(rm.exitCode).toBe(2);
+    expect(rm.stderr).not.toContain("--force");
+    const pr = runWorktree({ sub: "prune" }, f.deps({ cwd: wt }));
+    expect(pr.stdout).toContain("kept");
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it("keeps an unmerged branch's unpushed commits unless --force", () => {
+    const { f, name } = made(55, "u");
+    sh(wtPath(f, name), "commit", "-q", "--allow-empty", "-m", "w");
+    expect(runWorktree({ sub: "remove", arg: name }, f.deps()).exitCode).toBe(
+      2,
+    );
+    expect(
+      runWorktree({ sub: "remove", arg: name, force: true }, f.deps()).exitCode,
+    ).toBe(0);
+  });
+
+  it("still removes when resources.database is set", () => {
+    const f = fixture((c) => {
+      const wt = c.worktree as { resources: Record<string, unknown> };
+      wt.resources.database = "lunarhunt_t{issue}";
+    });
+    manualWorktree(f, "70-d", "feat/70-d");
+    const res = runWorktree({ sub: "remove", arg: "70-d" }, f.deps());
+    expect(res.exitCode).toBe(0);
+  });
+});
+
+describe("gh failures and agents", () => {
+  it("shows a gh failure as unknown, not none, and prune keeps it", () => {
+    const f = fixture();
+    manualWorktree(f, "80-g", "feat/80-g");
+    f.ghFail.on = true;
+    expect(runWorktree({ sub: "list" }, f.deps()).stdout).toContain(
+      "PR unknown (gh failed)",
+    );
+    const res = runWorktree({ sub: "prune" }, f.deps());
+    expect(res.stdout).toContain("kept 80-g: PR unknown (gh failed)");
+  });
+
+  it("refuses with CURSOR_AGENT set", () => {
+    const f = fixture();
+    const res = runWorktree(
+      { sub: "new", arg: "1" },
+      f.deps({ env: { CURSOR_AGENT: "1" } }),
+    );
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("worktree-guard");
+  });
+
+  it("sends setup step output to stderr, not stdout", () => {
+    const types = join(process.cwd(), "src", "worktree", "types.ts");
+    const res = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "-e",
+        `import(${JSON.stringify(types)}).then((m) => process.exit(m.realDeps.step("echo from-step", ".")))`,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("from-step");
+  });
+});
+
 describe("worktree section absent", () => {
   it("refuses every subcommand with an engine message", () => {
     const f = fixture((c) => {
@@ -462,6 +904,16 @@ describe("worktree section absent", () => {
       expect(res.exitCode).toBe(2);
       expect(res.stderr).toContain("Blocked by Warden engine:");
       expect(res.stderr).toContain("worktree: section");
+    }
+  });
+});
+
+describe("message format", () => {
+  it("every failing stderr starts with a C-30 line", () => {
+    expect(failures.length).toBeGreaterThan(10);
+    for (const stderr of failures) {
+      const first = stderr.split("\n")[0] ?? "";
+      expect(first, stderr).toMatch(MESSAGE_PATTERN);
     }
   });
 });
