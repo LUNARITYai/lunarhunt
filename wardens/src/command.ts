@@ -13,7 +13,72 @@ export type Pipeline =
   | { ok: true; segments: Segment[]; pipes: boolean[] }
   | { ok: false };
 
-type RawSegment = { words: string[]; pipeAfter: boolean };
+type RawSegment = { words: string[]; pipeAfter: boolean; heredoc: boolean };
+
+/**
+ * A quoted heredoc body is data only for a command that treats stdin as text.
+ * Consumer allowlist: the command word that receives the heredoc must be one
+ * of these. Interpreters and exec wrappers would execute the body, so a
+ * pipeline with a heredoc is unparseable (denied) when any word of any other
+ * segment, or any later word of the receiver, names one of them (also by
+ * path, e.g. `/bin/sh`).
+ */
+const HEREDOC_CONSUMERS = new Set(["git", "gh", "cat", "tee"]);
+const EXECUTORS = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "python",
+  "node",
+  "deno",
+  "bun",
+  "ruby",
+  "perl",
+  "php",
+  "awk",
+  "gawk",
+  "eval",
+  "source",
+  ".",
+  "exec",
+  "xargs",
+  "env",
+  "sudo",
+  "doas",
+  "nohup",
+  "time",
+  "timeout",
+  "nice",
+  "command",
+  "builtin",
+  "busybox",
+  "ssh",
+]);
+
+function commandName(word: string): string {
+  return word.slice(word.lastIndexOf("/") + 1);
+}
+
+function isExecutor(word: string): boolean {
+  const name = commandName(word);
+  return EXECUTORS.has(name) || /^(python|ruby|perl|php)[\d.]*$/.test(name);
+}
+
+function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
+  if (!raw.some((segment) => segment.heredoc)) {
+    return true;
+  }
+  return prepared.every((segment, index) => {
+    const head = segment.argv[0] ?? "";
+    if (raw[index]?.heredoc && !HEREDOC_CONSUMERS.has(head)) {
+      return false;
+    }
+    return !segment.argv.slice(raw[index]?.heredoc ? 1 : 0).some(isExecutor);
+  });
+}
 
 export function tokenize(command: string): Pipeline {
   const raw = scan(command);
@@ -21,12 +86,79 @@ export function tokenize(command: string): Pipeline {
     return { ok: false };
   }
   const segments = raw.map((segment) => prepare(segment.words));
+  if (!heredocSafe(raw, segments)) {
+    return { ok: false };
+  }
   const pipes = raw.slice(0, -1).map((segment) => segment.pipeAfter);
   return { ok: true, segments, pipes };
 }
 
+type Heredoc = { delimiter: string; stripTabs: boolean };
+
+/**
+ * Parse the delimiter of a heredoc whose `<<` starts at `at`. Only a fully
+ * quoted delimiter (`<<'X'`, `<<"X"`, `<<-'X'`) is accepted: its body is not
+ * expanded, so it is data. An unquoted or oddly quoted delimiter returns null,
+ * because the body would expand `$(...)` and backticks.
+ */
+function parseHeredocStart(
+  command: string,
+  at: number,
+): { heredoc: Heredoc; next: number } | null {
+  let index = at + 2;
+  const stripTabs = command[index] === "-";
+  if (stripTabs) {
+    index += 1;
+  }
+  while (command[index] === " " || command[index] === "\t") {
+    index += 1;
+  }
+  const quote = command[index];
+  if (quote !== "'" && quote !== '"') {
+    return null;
+  }
+  const close = command.indexOf(quote, index + 1);
+  if (close === -1) {
+    return null;
+  }
+  const delimiter = command.slice(index + 1, close);
+  if (delimiter.length === 0 || /[\n\\`$'"]/.test(delimiter)) {
+    return null;
+  }
+  const after = command[close + 1];
+  if (after !== undefined && !/[ \t\n;|&]/.test(after)) {
+    return null;
+  }
+  return { heredoc: { delimiter, stripTabs }, next: close };
+}
+
+/** Index of the newline that ends the body of `heredoc` (or the command end); null when it is not terminated. */
+function skipHeredocBody(
+  command: string,
+  from: number,
+  heredoc: Heredoc,
+): number | null {
+  let lineStart = from;
+  while (lineStart <= command.length) {
+    const newline = command.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? command.length : newline;
+    const raw = command.slice(lineStart, lineEnd);
+    const line = heredoc.stripTabs ? raw.replace(/^\t+/, "") : raw;
+    if (line === heredoc.delimiter) {
+      return lineEnd;
+    }
+    if (newline === -1) {
+      return null;
+    }
+    lineStart = newline + 1;
+  }
+  return null;
+}
+
 function scan(command: string): RawSegment[] | null {
   const segments: RawSegment[] = [];
+  const pending: Heredoc[] = [];
+  let heredoc = false;
   let words: string[] = [];
   let buf = "";
   let wordStarted = false;
@@ -43,8 +175,9 @@ function scan(command: string): RawSegment[] | null {
 
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
-    segments.push({ words, pipeAfter });
+    segments.push({ words, pipeAfter, heredoc });
     words = [];
+    heredoc = false;
   };
 
   for (let index = 0; index < command.length; index += 1) {
@@ -79,6 +212,10 @@ function scan(command: string): RawSegment[] | null {
         wordStarted = true;
         continue;
       }
+      // Double quotes still expand command substitution.
+      if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
+        return null;
+      }
       buf += ch;
       wordStarted = true;
       continue;
@@ -107,6 +244,36 @@ function scan(command: string): RawSegment[] | null {
       flushWord();
       continue;
     }
+    if (ch === "<" && command[index + 1] === "<") {
+      if (command[index + 2] === "<") {
+        buf += "<<<";
+        wordStarted = true;
+        index += 2;
+        continue;
+      }
+      const start = parseHeredocStart(command, index);
+      if (!start) {
+        return null;
+      }
+      flushWord();
+      pending.push(start.heredoc);
+      heredoc = true;
+      index = start.next;
+      continue;
+    }
+    if (ch === "\n" && pending.length > 0) {
+      endSegment(false);
+      let end = index;
+      for (const heredoc of pending.splice(0)) {
+        const found = skipHeredocBody(command, end + 1, heredoc);
+        if (found === null) {
+          return null;
+        }
+        end = found;
+      }
+      index = end;
+      continue;
+    }
     if (ch === "\n" || ch === ";") {
       endSegment(false);
       continue;
@@ -132,11 +299,11 @@ function scan(command: string): RawSegment[] | null {
     wordStarted = true;
   }
 
-  if (quote !== null) {
+  if (quote !== null || pending.length > 0) {
     return null;
   }
   flushWord();
-  segments.push({ words, pipeAfter: false });
+  segments.push({ words, pipeAfter: false, heredoc });
   return segments;
 }
 
@@ -385,31 +552,132 @@ export function rewriteCommand(
   return null;
 }
 
-/** Paths a shell segment might read. Best effort: no variable expansion and no `sh -c`. */
-export function secretCandidates(segment: Segment): string[] {
-  const found: string[] = [];
+export type PathCandidate = { path: string; write: boolean };
+
+/**
+ * Options whose value is message-like text, never a path. Long options are
+ * unambiguous for every command. Short ones depend on the command, because
+ * `ls -m` or `cp -t` take no message: `-m` for git; `-b`, `-t`, `-n` for gh
+ * (body, title, notes). Combined short flags (`git commit -am msg`) count for git.
+ * `-F -` and `--body-file -` need no entry: `-` is never a path candidate.
+ */
+const MESSAGE_LONG = new Set([
+  "--message",
+  "--body",
+  "--title",
+  "--notes",
+  "--subject",
+  "--description",
+]);
+const MESSAGE_SHORT: Record<string, ReadonlySet<string>> = {
+  git: new Set(["-m"]),
+  gh: new Set(["-b", "-t", "-n"]),
+};
+
+/** Commands that only read their path arguments. Any other command's paths count as writes (strict). */
+const READ_ONLY = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "ls",
+  "grep",
+  "rg",
+  "wc",
+  "file",
+  "stat",
+  "diff",
+  "jq",
+  "bat",
+  "tree",
+  "du",
+  "sha256sum",
+  "md5sum",
+  "source",
+  ".",
+]);
+
+/** Commands whose every path argument is written. */
+const WRITE_ALL = new Set(["rm", "rmdir", "mkdir", "touch", "tee", "truncate"]);
+const REDIRECT = /^(?:\d*|&)(>>|>\||>)(.*)$/;
+
+function isMessageFlag(word: string, command: string): boolean {
+  if (MESSAGE_LONG.has(word) || MESSAGE_SHORT[command]?.has(word)) {
+    return true;
+  }
+  return command === "git" && /^-[a-zA-Z]+m$/.test(word);
+}
+
+/**
+ * Paths a shell segment might touch, each classified as read or write.
+ * Best effort: no variable expansion and no `sh -c`. Values of message-like
+ * options and quoted heredoc bodies are not candidates. When unsure, a word
+ * stays a candidate and counts as a write.
+ */
+export function secretCandidates(segment: Segment): PathCandidate[] {
+  const found: PathCandidate[] = [];
   const argv = segment.argv;
+  const command = argv[0] ?? "";
+  const readOnly = READ_ONLY.has(command);
+  const writeAll = WRITE_ALL.has(command);
+  const copyLike = command === "cp" || command === "mv" || command === "ln";
+  let lastPositional = -1;
+  for (let index = 1; index < argv.length; index += 1) {
+    if (!(argv[index] ?? "").startsWith("-")) {
+      lastPositional = index;
+    }
+  }
+  const hasTarget = argv.some(
+    (word) => word === "-t" || word.startsWith("--target-directory"),
+  );
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index] ?? "";
+    if (index > 0 && isMessageFlag(word, command)) {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--") && word.includes("=")) {
+      const eq = word.indexOf("=");
+      if (MESSAGE_LONG.has(word.slice(0, eq))) {
+        continue;
+      }
+      const value = word.slice(eq + 1);
+      if (value.length > 0) {
+        found.push({ path: value, write: !readOnly });
+      }
+    }
+    const redirect = REDIRECT.exec(word);
+    if (redirect) {
+      const target = redirect[2] ?? "";
+      if (target === "") {
+        const next = argv[index + 1];
+        if (next && next.length > 0) {
+          found.push({ path: next, write: true });
+          index += 1;
+        }
+      } else if (!target.startsWith("&")) {
+        found.push({ path: target, write: true });
+      }
+      continue;
+    }
     if (word === "<") {
       const next = argv[index + 1];
       if (next && next.length > 0) {
-        found.push(next);
+        found.push({ path: next, write: false });
       }
       continue;
     }
     if (word.startsWith("<") && word.length > 1) {
-      found.push(word.slice(1));
+      found.push({ path: word.slice(1), write: false });
       continue;
     }
-    if (word.startsWith("--") && word.includes("=")) {
-      const value = word.slice(word.indexOf("=") + 1);
-      if (value.length > 0) {
-        found.push(value);
-      }
-    }
     if (!word.startsWith("-")) {
-      found.push(word);
+      const write =
+        index === 0 ||
+        writeAll ||
+        (!readOnly && (!copyLike || hasTarget || index === lastPositional));
+      found.push({ path: word, write });
     }
   }
   return found;
