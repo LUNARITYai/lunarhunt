@@ -59,6 +59,17 @@ export function logLine(input: {
   };
 }
 
+/** Fallback log for events without a git toplevel: `<tmp>/panopticon/wardens.log.jsonl`. */
+export function appendFallback(tmpDir: string, line: LogLine): void {
+  const dir = join(tmpDir, "panopticon");
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(
+    join(dir, "wardens.log.jsonl"),
+    `${JSON.stringify(line)}\n`,
+    "utf8",
+  );
+}
+
 export function appendVerdict(toplevel: string, line: LogLine): void {
   const dir = join(toplevel, ".panopticon");
   mkdirSync(dir, { recursive: true });
