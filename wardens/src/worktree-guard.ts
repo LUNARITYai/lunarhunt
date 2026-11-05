@@ -75,58 +75,191 @@ export function allowlistMatches(pattern: string, argv: string[]): boolean {
   return parts.every((part, index) => globToken(part, argv[index] ?? ""));
 }
 
-const GIT_FETCH_DENIED =
-  /^(?:--upload-pack|--receive-pack|--exec|--update-head-ok|--recurse-submodules|-u$)/;
+const DIGITS = /^\d+$/;
+
+/**
+ * Read-only flag sets per git subcommand. Anything else that starts with `-` is
+ * denied: git accepts any unambiguous prefix of a long option, so a denylist of
+ * full spellings (`--upload-pack`) cannot be trusted. A flag set entry ending in
+ * `*` is a prefix (`--format=*`). `--` is allowed where a path list follows.
+ */
+const GIT_FLAGS: Record<string, readonly string[]> = {
+  fetch: [
+    "-q",
+    "--quiet",
+    "-v",
+    "--verbose",
+    "-p",
+    "--prune",
+    "-t",
+    "--tags",
+    "-n",
+    "--no-tags",
+    "-a",
+    "--all",
+    "--dry-run",
+  ],
+  log: [
+    "--oneline",
+    "-n",
+    "--stat",
+    "--format=*",
+    "--pretty=*",
+    "--graph",
+    "--decorate",
+    "--name-only",
+    "--name-status",
+    "--reverse",
+    "--no-merges",
+    "--max-count=*",
+    "--",
+  ],
+  diff: [
+    "--stat",
+    "--shortstat",
+    "--numstat",
+    "--name-only",
+    "--name-status",
+    "--cached",
+    "--staged",
+    "--quiet",
+    "--exit-code",
+    "--",
+  ],
+  show: [
+    "--stat",
+    "--name-only",
+    "--name-status",
+    "--format=*",
+    "--pretty=*",
+    "--",
+  ],
+  status: ["-s", "--short", "-b", "--branch", "-sb", "--porcelain*"],
+  "rev-parse": [
+    "--show-toplevel",
+    "--abbrev-ref",
+    "--verify",
+    "--short*",
+    "--git-dir",
+    "--git-common-dir",
+    "--path-format=absolute",
+    "--is-inside-work-tree",
+  ],
+  "ls-files": [
+    "-c",
+    "--cached",
+    "-o",
+    "--others",
+    "-m",
+    "--modified",
+    "-d",
+    "--deleted",
+    "--exclude-standard",
+    "--",
+  ],
+  branch: ["--show-current"],
+  worktree: ["--porcelain", "-v"],
+};
+
+function flagInSet(word: string, set: readonly string[]): boolean {
+  return set.some((entry) =>
+    entry.endsWith("*") ? word.startsWith(entry.slice(0, -1)) : word === entry,
+  );
+}
+
+/** `-<digits>`, `-n<digits>` and `-U<digits>` count flags for log and diff. */
+function numericFlag(subcommand: string, word: string): boolean {
+  if (subcommand === "log") {
+    return /^-(?:n)?\d+$/.test(word);
+  }
+  return subcommand === "diff" && /^-U\d+$/.test(word);
+}
+
+function gitAllowed(argv: string[]): boolean {
+  // A global option (-c, -C, --git-dir, --exec-path, --work-tree, --config-env,
+  // --namespace) can run code or retarget the repository.
+  const sub = argv[1];
+  if (sub === undefined || sub.startsWith("-")) {
+    return false;
+  }
+  const rest = argv.slice(2);
+  const set = GIT_FLAGS[sub];
+  if (set === undefined) {
+    // Not a read-only subcommand with a flag set; the Charter pattern alone decides.
+    return true;
+  }
+  if (sub === "worktree" && rest[0] !== "list") {
+    return false;
+  }
+  const args = sub === "worktree" ? rest.slice(1) : rest;
+  for (const word of args) {
+    if (word.startsWith("-") && word !== "-") {
+      if (!flagInSet(word, set) && !numericFlag(sub, word)) {
+        return false;
+      }
+    } else if (sub === "fetch" && word.includes(":")) {
+      return false;
+    } else if (sub === "branch") {
+      return false;
+    }
+  }
+  return true;
+}
+
+const RG_EXEC = ["--pre", "--pre-glob", "--hostname-bin", "--search-zip"];
+
+function rgAllowed(args: string[]): boolean {
+  return !args.some((word) => {
+    if (word.startsWith("--")) {
+      const name = word.split("=")[0] ?? word;
+      if (name.length >= 4 && RG_EXEC.some((long) => long.startsWith(name))) {
+        return true;
+      }
+      return RG_EXEC.some((long) => name.startsWith(long));
+    }
+    return /^-[A-Za-z]*z[A-Za-z]*$/.test(word);
+  });
+}
 
 /**
  * Per-command flag rules applied after the pattern matched. An allowlisted
  * command must not execute code or write refs or files through its flags.
- * `argv` has its redirect words removed.
+ * `argv` has its redirect words removed; `piped` tells whether the segment
+ * reads a pipe, `redirected` whether it had a redirect.
  */
-function flagsAllowed(argv: string[]): boolean {
+function flagsAllowed(
+  argv: string[],
+  piped: boolean,
+  redirected: boolean,
+): boolean {
   const [command, first, second] = argv;
   const args = argv.slice(1);
   if (args.some((word) => /^--output(?:=|$)/.test(word))) {
     return false;
   }
   switch (command) {
-    case "git": {
-      // A global option (-c, -C, --git-dir, --exec-path, --work-tree,
-      // --config-env, --namespace) can run code or retarget the repository.
-      if (first === undefined || first.startsWith("-")) {
-        return false;
-      }
-      const rest = argv.slice(2);
-      if (first === "fetch") {
-        return !rest.some(
-          (word) => word.includes(":") || GIT_FETCH_DENIED.test(word),
-        );
-      }
-      if (first === "log" || first === "diff" || first === "show") {
-        return !rest.some(
-          (word) => word === "--ext-diff" || word === "--textconv",
-        );
-      }
-      return true;
-    }
+    case "git":
+      return gitAllowed(argv);
     case "rg":
-      return !args.some(
-        (word) =>
-          word.startsWith("--pre") ||
-          word.startsWith("--hostname-bin") ||
-          word === "--search-zip" ||
-          /^-[A-Za-z]*z[A-Za-z]*$/.test(word),
-      );
+      return rgAllowed(args);
     case "claude":
     case "agent":
       return (
+        !piped &&
+        !redirected &&
         argv.length === 3 &&
         (first === "-w" || first === "--worktree") &&
         second !== undefined &&
-        !second.startsWith("-")
+        /^[A-Za-z0-9._-]+$/.test(second) &&
+        !second.includes("..")
       );
     case "wardens":
-      return (first === "worktree" && second === "list") || first === "doctor";
+      if (first === "doctor") {
+        return args
+          .slice(1)
+          .every((word) => word === "--ci" || word === "--json");
+      }
+      return first === "worktree" && second === "list" && argv.length === 3;
     default:
       return true;
   }
@@ -156,12 +289,15 @@ function externalWriteOk(
 
 const REDIRECT_WORD =
   /^(\{[A-Za-z_][A-Za-z0-9_]*\}|\d*|&)?(<>|<&|<|>>|>\||>&|>)(.*)$/;
+const REDIRECT_META = /[<>&()]/;
 
 /**
- * Checks the words the tokenizer flagged (unquoted `<`, `>`, `(`, `)`). Allowed:
- * here-strings, reads (`< file`), `N>&M` and `>&-`, device paths (#55) and
- * `paths.external` write targets. Denied: any other write target, `<>`, process
- * substitution, and glued forms the tokenizer cannot split (`a>out`).
+ * Checks the words the tokenizer flagged (unquoted `<`, `>`, `(`, `)`). The
+ * operator and fd prefix are stripped; what remains must hold none of `<`, `>`,
+ * `&`, `(`, `)`, so a glued second redirect (`<a>out`) never hides. Allowed:
+ * here-strings, reads (`< file`), exactly `N>&M`, `>&N`, `>&-`, `<&N`, device
+ * targets (#55) and `paths.external` write targets. Denied: every other write
+ * target, `<>`, `>&file`, process substitution, glued forms (`a>out`).
  * Returns the argv indexes to ignore (redirect words and their targets), or null.
  */
 function redirectsAllowed(
@@ -174,37 +310,45 @@ function redirectsAllowed(
     const word = segment.argv[index] ?? "";
     skip.add(index);
     if (word.startsWith("<<<")) {
-      if (word === "<<<") {
+      const rest = word.slice(3);
+      if (REDIRECT_META.test(rest)) {
+        return null;
+      }
+      if (rest === "") {
         skip.add(index + 1);
       }
       continue;
-    }
-    if (/[()]/.test(word)) {
-      return null;
     }
     const match = REDIRECT_WORD.exec(word);
     if (!match) {
       return null;
     }
+    const prefix = match[1] ?? "";
     const op = match[2] ?? "";
     const attached = match[3] ?? "";
-    if (op === "<>") {
+    if (op === "<>" || (prefix === "&" && op !== ">" && op !== ">>")) {
       return null;
     }
-    if (op === "<" || op === "<&") {
-      if (attached === "") {
-        skip.add(index + 1);
+    if (op === "<&" || op === ">&") {
+      if (!(DIGITS.test(attached) || attached === "-")) {
+        return null;
+      }
+      if (op === ">&" && prefix === "&") {
+        return null;
       }
       continue;
     }
-    const target = attached === "" ? (segment.argv[index + 1] ?? "") : attached;
+    if (REDIRECT_META.test(attached)) {
+      return null;
+    }
     if (attached === "") {
       skip.add(index + 1);
     }
-    if (op === ">&" && /^(?:\d+|-)$/.test(target)) {
+    if (op === "<") {
       continue;
     }
-    if (target === "") {
+    const target = attached === "" ? (segment.argv[index + 1] ?? "") : attached;
+    if (target === "" || REDIRECT_META.test(target)) {
       return null;
     }
     if (isDevicePath(target) || externalWriteOk(ctx, target, home)) {
@@ -216,10 +360,12 @@ function redirectsAllowed(
 }
 
 /**
- * Read-only in the primary checkout: every pipeline segment has no environment
- * assignment, passes the redirect check, matches `primary_read_only_commands`
- * (anchored, see `allowlistMatches`) and the per-command flag rules, and writes
- * no path into the repository. Ring 0 is a guard rail, not a sandbox.
+ * Read-only in the primary checkout. Default deny for anything the shell may
+ * transform after these checks. Every pipeline segment must: have no
+ * environment assignment and no expanding word (`$`, braces, globs, `~user`);
+ * pass the redirect check; match `primary_read_only_commands` (anchored, see
+ * `allowlistMatches`); pass the per-command flag rules; and write no path into
+ * the repository. Ring 0 is a guard rail, not a sandbox.
  */
 function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   if (ctx.event.command === null) {
@@ -230,12 +376,12 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
     return false;
   }
   const home = ctx.home ?? homedir();
-  for (const segment of pipeline.segments) {
+  for (const [position, segment] of pipeline.segments.entries()) {
     // The tokenizer leaves an empty segment after a quoted heredoc body.
     if (segment.argv.length === 0 && segment.meta.length === 0) {
       continue;
     }
-    if (Object.keys(segment.env).length > 0) {
+    if (Object.keys(segment.env).length > 0 || segment.expand.length > 0) {
       return false;
     }
     const skip = redirectsAllowed(ctx, segment, home);
@@ -243,12 +389,13 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
       return false;
     }
     const argv = segment.argv.filter((_, index) => !skip.has(index));
+    const piped = position > 0 && pipeline.pipes[position - 1] === true;
     if (
       argv.length === 0 ||
       !config.primary_read_only_commands.some((pattern) =>
         allowlistMatches(pattern, argv),
       ) ||
-      !flagsAllowed(argv)
+      !flagsAllowed(argv, piped, segment.meta.length > 0)
     ) {
       return false;
     }

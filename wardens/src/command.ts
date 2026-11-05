@@ -9,6 +9,12 @@ export type Segment = {
   tokens: ArgToken[];
   /** Indexes into `argv` of words that held an unquoted `<`, `>`, `(` or `)`: redirects, process substitution, fd forms. */
   meta: number[];
+  /**
+   * Indexes into `argv` of words the shell may rewrite after we have read them:
+   * an unquoted `$`, `{`, `}`, `*`, `?`, `[`, a `~user` tilde, or a `$` inside
+   * double quotes. Single-quoted and backslash-escaped text is literal.
+   */
+  expand: number[];
 };
 
 export type Pipeline =
@@ -20,6 +26,7 @@ type RawSegment = {
   pipeAfter: boolean;
   heredoc: boolean;
   meta: number[];
+  expand: number[];
 };
 
 /**
@@ -92,7 +99,9 @@ export function tokenize(command: string): Pipeline {
   if (!raw) {
     return { ok: false };
   }
-  const segments = raw.map((segment) => prepare(segment.words, segment.meta));
+  const segments = raw.map((segment) =>
+    prepare(segment.words, segment.meta, segment.expand),
+  );
   if (!heredocSafe(raw, segments)) {
     return { ok: false };
   }
@@ -168,9 +177,11 @@ function scan(command: string): RawSegment[] | null {
   let heredoc = false;
   let words: string[] = [];
   let metas: number[] = [];
+  let expands: number[] = [];
   let buf = "";
   let wordStarted = false;
   let wordMeta = false;
+  let wordExpand = false;
   let lastGt = false;
   let quote: "single" | "double" | null = null;
 
@@ -181,17 +192,22 @@ function scan(command: string): RawSegment[] | null {
     if (wordMeta) {
       metas.push(words.length);
     }
+    if (wordExpand) {
+      expands.push(words.length);
+    }
     words.push(buf);
     buf = "";
     wordStarted = false;
     wordMeta = false;
+    wordExpand = false;
   };
 
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
-    segments.push({ words, pipeAfter, heredoc, meta: metas });
+    segments.push({ words, pipeAfter, heredoc, meta: metas, expand: expands });
     words = [];
     metas = [];
+    expands = [];
     heredoc = false;
   };
 
@@ -232,6 +248,9 @@ function scan(command: string): RawSegment[] | null {
       // Double quotes still expand command substitution.
       if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
         return null;
+      }
+      if (ch === "$") {
+        wordExpand = true;
       }
       buf += ch;
       wordStarted = true;
@@ -325,6 +344,14 @@ function scan(command: string): RawSegment[] | null {
     if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
       return null;
     }
+    if (
+      /[$}{*?[]/.test(ch) ||
+      (ch === "~" &&
+        !wordStarted &&
+        !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))
+    ) {
+      wordExpand = true;
+    }
     buf += ch;
     wordStarted = true;
     if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
@@ -337,14 +364,25 @@ function scan(command: string): RawSegment[] | null {
     return null;
   }
   flushWord();
-  segments.push({ words, pipeAfter: false, heredoc, meta: metas });
+  segments.push({
+    words,
+    pipeAfter: false,
+    heredoc,
+    meta: metas,
+    expand: expands,
+  });
   return segments;
 }
 
-function prepare(words: string[], metaWords: number[]): Segment {
+function prepare(
+  words: string[],
+  metaWords: number[],
+  expandWords: number[],
+): Segment {
   const env: Record<string, string> = {};
   const argv: string[] = [];
   const meta: number[] = [];
+  const expand: number[] = [];
   let assigning = true;
   for (const [position, word] of words.entries()) {
     if (assigning && ENV_ASSIGNMENT.test(word)) {
@@ -356,9 +394,12 @@ function prepare(words: string[], metaWords: number[]): Segment {
     if (metaWords.includes(position)) {
       meta.push(argv.length);
     }
+    if (expandWords.includes(position)) {
+      expand.push(argv.length);
+    }
     argv.push(word);
   }
-  return { env, argv, tokens: annotate(argv), meta };
+  return { env, argv, tokens: annotate(argv), meta, expand };
 }
 
 function consumesValue(flag: string, subcommand: string | null): boolean {

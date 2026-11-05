@@ -218,6 +218,42 @@ const DENIED = [
   "wardens worktree remove x",
   "wardens worktree prune",
   "wardens doctorx",
+  "wardens doctor --fix",
+  // round 2: glued redirects, targets with a second redirect
+  "cat x <a>out",
+  "cat x <<<a>out",
+  "ls <a>out",
+  "git status <<<a>out",
+  "cat a >__EXT__/s>apps/x",
+  "ls > __EXT__/*",
+  "ls &>__EXT__/a>b",
+  // round 2: expansion after our checks
+  "git log -1 {--output=f,}",
+  "git log$\u007bIFS}--output=f",
+  "git fetch$\u007bIFS}--upload-pack=x .",
+  "git log $X",
+  "cat $HOME/f",
+  "cat ~root/f",
+  'git log "$X"',
+  "ls *.md",
+  // round 2: option abbreviations and flag allowlists
+  "git fetch --upl=x .",
+  "git fetch --upload-pa=x .",
+  "git fetch --update-he",
+  "git fetch --recurse-sub",
+  "git fetch --set-upstream origin",
+  "git diff --no-index a b",
+  "git log --since=x",
+  "git branch --show-current x",
+  "git worktree list --foo",
+  "git status --ignored",
+  "rg --pr x",
+  "rg --pre-glob=x y",
+  // round 2: claude and agent
+  "claude -w a..b",
+  "cat f | claude -w x",
+  "claude -w x < f",
+  "claude -w x > /dev/null",
 ];
 
 // Forms OVERSEER uses from the primary checkout: all must stay allowed.
@@ -247,17 +283,91 @@ const ALLOWED = [
   "git status | cat -",
 ];
 
+// The pattern list proposed for the Charter under the anchored semantics.
+const PROPOSED = [
+  "git status*",
+  "git log*",
+  "git diff*",
+  "git show*",
+  "git fetch*",
+  "git rev-parse*",
+  "git ls-files*",
+  "git branch --show-current",
+  "git worktree list*",
+  "git switch --detach origin/main",
+  "rg *",
+  "ls",
+  "ls *",
+  "cat",
+  "cat *",
+  "wardens worktree list",
+  "wardens doctor*",
+  "claude --worktree *",
+  "claude -w *",
+  "agent -w *",
+  "agent --worktree *",
+  "gh issue view*",
+  "gh issue list*",
+  "gh issue create*",
+  "gh issue comment*",
+  "gh issue edit * --add-label*",
+  "gh issue edit * --remove-label*",
+  "gh pr view*",
+  "gh pr list*",
+  "gh pr checks*",
+  "gh pr diff*",
+  "gh pr create*",
+  "gh pr comment*",
+  "gh pr edit*",
+  "gh pr ready*",
+  "gh label list*",
+];
+
+const withProposed = (doc: Record<string, unknown>): void => {
+  (
+    doc.worktree as { primary_read_only_commands: string[] }
+  ).primary_read_only_commands = PROPOSED;
+};
+
+const ALLOWED_PROPOSED = [
+  "gh issue comment 5 --body 'costs $5'",
+  "gh pr view 12 --json state --jq .state",
+  "git status -sb",
+  "git rev-parse --show-toplevel",
+  "git rev-parse --abbrev-ref HEAD",
+  "git switch --detach origin/main",
+  "git log -n 5 --format=%h",
+  "git diff --cached --name-only",
+  "git show origin/main:README.md",
+  "git ls-files --others --exclude-standard",
+  "git branch --show-current",
+  "git fetch -q --prune origin",
+  "wardens doctor --ci",
+  "rg foo | cat",
+];
+
 describe("worktree-guard shell allowlist (every Charter pattern)", () => {
-  it("denies every bypass PoC", () => {
-    const f = fixture();
-    for (const command of DENIED) {
-      expect(bash(f, f.primary, command), command).toContain("worktree-guard");
+  it("denies every bypass PoC under the Charter list and the proposed list", () => {
+    for (const make of [() => fixture(), () => fixture(withProposed)]) {
+      const f = make();
+      for (const command of DENIED) {
+        const run = command.replaceAll("__EXT__", f.external);
+        expect(bash(f, f.primary, run), command).toContain("worktree-guard");
+      }
+      expect(bash(f, f.primary, "claude -w ../../etc")).toContain("deny");
     }
   });
 
   it("allows the legitimate read-only forms", () => {
     const f = fixture();
     for (const command of ALLOWED) {
+      expect(bash(f, f.primary, command), command).toBe("");
+    }
+  });
+
+  it("allows the OVERSEER forms under the proposed list", () => {
+    const f = fixture(withProposed);
+    for (const command of [...ALLOWED, ...ALLOWED_PROPOSED]) {
       expect(bash(f, f.primary, command), command).toBe("");
     }
   });
