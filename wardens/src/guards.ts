@@ -130,6 +130,10 @@ export function generatedFilesGuard(ctx: RuleContext): Objection | null {
 }
 
 export function protectedPaths(ctx: RuleContext): Objection | null {
+  // `ask` guards edits only: agents must read the Covenant files (#46).
+  if (!isMutation(ctx.event.action)) {
+    return null;
+  }
   const denied = protectedDeny(ctx);
   if (denied || ctx.event.path === null) {
     return denied;
