@@ -224,7 +224,10 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
       "Bash(LEFTHOOK=0 *)",
       "Bash(git -c core.hooksPath=*)",
       "Bash(git config core.hooksPath*)",
-      "Bash(wardens worktree remove * --force*)"
+      "Bash(wardens worktree remove * --force*)",
+      "Bash(gh issue edit * --body*)",
+      "Bash(gh issue edit * -b *)",
+      "Bash(gh issue edit * --body-file*)"
     ]
   },
   "hooks": {
