@@ -7,7 +7,14 @@ const TRAILER = /^Agent: (claude|cursor) \(.+\)$/;
 
 export type TrailerResult = { exitCode: 0 | 2; stderr: string };
 
-/** `CLAUDECODE=1` is set by Claude Code in its Bash tool (confirmed 2026-11-04). */
+/**
+ * Agent marker order: `PANOPTICON_AGENT` (`claude` or `cursor`), then
+ * `CLAUDECODE=1` (set by Claude Code in its Bash tool, confirmed 2026-11-04),
+ * then a non-empty `CURSOR_AGENT` (set in cursor-agent shells, confirmed
+ * 2026-11-05). Cursor does not pass the `sessionStart` hook's `env` output to
+ * agent shells, so `PANOPTICON_AGENT` is empty there and `CURSOR_AGENT` is the
+ * working marker.
+ */
 export function detectAgent(
   env: NodeJS.ProcessEnv,
 ): "claude" | "cursor" | null {
@@ -15,7 +22,10 @@ export function detectAgent(
   if (marker === "claude" || marker === "cursor") {
     return marker;
   }
-  return env.CLAUDECODE === "1" ? "claude" : null;
+  if (env.CLAUDECODE === "1") {
+    return "claude";
+  }
+  return env.CURSOR_AGENT ? "cursor" : null;
 }
 
 function trailerLines(file: string, cwd: string): string[] {

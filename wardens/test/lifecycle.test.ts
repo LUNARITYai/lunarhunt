@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { runHook } from "../src/engine.ts";
 import { normalizeHook } from "../src/event.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
-import { runAgentTrailer } from "../src/trailer.ts";
+import { detectAgent, runAgentTrailer } from "../src/trailer.ts";
 import { cliPath, tempRepo, writeRepoFile } from "./support.ts";
 
 type Line = Record<string, unknown>;
@@ -306,6 +306,27 @@ describe("agent-trailer", () => {
     expect(
       runAgentTrailer(file, { PANOPTICON_AGENT: "x" }, root).exitCode,
     ).toBe(0);
+  });
+
+  it("detects the agent by marker order, with CURSOR_AGENT as the last fallback", () => {
+    expect(detectAgent({ CURSOR_AGENT: "1" })).toBe("cursor");
+    expect(detectAgent({ CURSOR_AGENT: "" })).toBeNull();
+    expect(detectAgent({})).toBeNull();
+    expect(detectAgent({ PANOPTICON_AGENT: "claude", CURSOR_AGENT: "1" })).toBe(
+      "claude",
+    );
+    expect(detectAgent({ CLAUDECODE: "1", CURSOR_AGENT: "1" })).toBe("claude");
+    expect(detectAgent({ PANOPTICON_AGENT: "cursor", CLAUDECODE: "1" })).toBe(
+      "cursor",
+    );
+  });
+
+  it("judges a Cursor commit by CURSOR_AGENT alone", () => {
+    const root = tempRepo();
+    const env = { CURSOR_AGENT: "1" };
+    expect(runAgentTrailer(message(root, body), env, root).exitCode).toBe(2);
+    const ok = message(root, `${body}Agent: cursor (grok-4.7)\n`);
+    expect(runAgentTrailer(ok, env, root).exitCode).toBe(0);
   });
 
   it("runs through the CLI as wardens check agent-trailer <file>", () => {
