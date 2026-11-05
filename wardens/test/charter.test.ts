@@ -166,7 +166,7 @@ describe("charter rejection", () => {
     expect(validateCharterDocument(doc).ok).toBe(false);
   });
 
-  it("rejects a top-level worktree key", () => {
+  it("rejects a worktree section with an unknown key", () => {
     const doc = clone();
     doc.worktree = { mode: "task" };
     expect(validateCharterDocument(doc).ok).toBe(false);
