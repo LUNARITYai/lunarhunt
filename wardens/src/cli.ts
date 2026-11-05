@@ -4,6 +4,7 @@ import { type RunResult, runCheck, runHook } from "./engine.ts";
 import { resolveRole } from "./engines.ts";
 import { gitToplevel } from "./git.ts";
 import { engineMessage } from "./messages.ts";
+import { runSync } from "./sync/index.ts";
 import { runAgentTrailer } from "./trailer.ts";
 
 function readStdin(): Promise<string> {
@@ -100,6 +101,21 @@ async function main(): Promise<void> {
       }
       const stdin = rule === "charter-validate" ? "" : await readStdin();
       process.exitCode = emit(runCheck(rule, stdin));
+    });
+
+  program
+    .command("sync")
+    .description("generate tool configs from The Charter")
+    .option("--check", "compare with the generated output, write nothing")
+    .action((opts: { check?: boolean }) => {
+      const result = runSync(opts.check === true);
+      if (result.stdout.length > 0) {
+        process.stdout.write(result.stdout);
+      }
+      if (result.stderr.length > 0) {
+        process.stderr.write(result.stderr);
+      }
+      process.exitCode = result.exitCode;
     });
 
   program

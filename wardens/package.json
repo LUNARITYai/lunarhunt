@@ -11,7 +11,7 @@
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "node --experimental-strip-types src/cli.ts check charter-validate",
+    "check": "node --experimental-strip-types src/cli.ts check charter-validate && node --experimental-strip-types src/cli.ts sync --check",
     "build": "tsup"
   },
   "dependencies": {
