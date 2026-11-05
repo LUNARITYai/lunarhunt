@@ -4,7 +4,7 @@
   "service": "devcontainer",
   "workspaceFolder": "/workspaces/lunarhunt",
   "remoteUser": "node",
-  "postCreateCommand": "pnpm install --frozen-lockfile && uv sync --frozen --all-groups && pnpm exec lefthook install",
+  "postCreateCommand": "pnpm install --frozen-lockfile && pnpm --filter wardens build && uv sync --frozen --all-groups && pnpm exec lefthook install",
   "containerEnv": {
     "COMPOSE_PROJECT_NAME": "lunarhunt",
     "DATABASE_URL": "postgresql://lunarhunt:lunarhunt@postgres:5432/lunarhunt",
