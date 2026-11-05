@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "source": "recorded-cursor-session",
+    "provisional": false,
+    "tool": "cursor",
+    "event": "sessionStart",
+    "note": "Recorded from cursor-agent on 2026-11-05. Email, home paths and the recording directory were stripped.",
+    "expect": {
+      "action": "session_start",
+      "path": null,
+      "command": null,
+      "mcp_server": null,
+      "decision": "allow",
+      "rule": "none"
+    }
+  },
+  "stdin": {
+    "conversation_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
+    "generation_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
+    "model": "grok-4.7-high",
+    "is_background_agent": false,
+    "session_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
+    "hook_event_name": "sessionStart",
+    "cursor_version": "2026.11.05-86047df",
+    "workspace_roots": ["__WORKTREE__"],
+    "user_email": null,
+    "transcript_path": null
+  }
+}

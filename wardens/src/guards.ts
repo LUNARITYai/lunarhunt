@@ -79,7 +79,8 @@ export function scopeGuard(ctx: RuleContext): Objection | null {
   return null;
 }
 
-export function protectedPaths(ctx: RuleContext): Objection | null {
+/** The deny side of `protected-paths`. The post-edit audit uses it alone, because a human may have approved an ask path. */
+export function protectedDeny(ctx: RuleContext): Objection | null {
   if (!isMutation(ctx.event.action)) {
     return null;
   }
@@ -91,15 +92,46 @@ export function protectedPaths(ctx: RuleContext): Objection | null {
       "Ask for needs:human",
     );
   }
-  const path = ctx.event.path;
-  if (denyListMatches(ctx.charter.paths.protected.deny, path)) {
+  if (denyListMatches(ctx.charter.paths.protected.deny, ctx.event.path)) {
     return block(
       "protected-paths",
       "deny",
-      `${path} is deny for agents`,
+      `${ctx.event.path} is deny for agents`,
       "A human must change it in a reviewed PR",
     );
   }
+  return null;
+}
+
+export function generatedFilesGuard(ctx: RuleContext): Objection | null {
+  if (!isMutation(ctx.event.action)) {
+    return null;
+  }
+  if (ctx.event.path === null) {
+    return block(
+      "generated-files-guard",
+      "deny",
+      "path is missing",
+      "Ask for needs:human",
+    );
+  }
+  if (anyGlob(ctx.charter.paths.generated, ctx.event.path)) {
+    return block(
+      "generated-files-guard",
+      "deny",
+      `${ctx.event.path} is generated`,
+      "Run uv run export-openapi to regenerate it",
+    );
+  }
+  return null;
+}
+
+export function protectedPaths(ctx: RuleContext): Objection | null {
+  const denied = protectedDeny(ctx);
+  if (denied || ctx.event.path === null) {
+    return denied;
+  }
+  const path = ctx.event.path;
   if (!pathInScope(path, ctx.charter, ctx.task)) {
     return null;
   }

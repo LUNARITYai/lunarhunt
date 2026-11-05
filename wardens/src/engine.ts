@@ -7,6 +7,7 @@ import {
 } from "./event.ts";
 import { EngineFailure } from "./failures.ts";
 import { gitToplevel } from "./git.ts";
+import { evaluateStop, postEditAudit } from "./lifecycle.ts";
 import { appendVerdict, type LogLine, logLine } from "./log.ts";
 import { CHARTER_INVALID_MESSAGE, engineMessage } from "./messages.ts";
 import { finalizeVerdict, knownTool, renderHook } from "./render.ts";
@@ -62,10 +63,43 @@ const RANK: Record<Exclude<Verdict["decision"], "allow">, number> = {
   ask: 1,
 };
 
+function objectionVerdict(objection: Objection): Verdict {
+  return {
+    rule: objection.rule,
+    decision: objection.decision,
+    message: objection.message,
+    replacement: objection.replacement,
+    rendered: objection.decision,
+  };
+}
+
+/** Lifecycle events (stop, session start, post-edit audit) skip the pre-edit rule list. */
+function evaluateLifecycle(ctx: RuleContext): Verdict | null {
+  try {
+    if (ctx.event.action === "session_start") {
+      return allowVerdict();
+    }
+    if (ctx.event.action === "stop") {
+      return evaluateStop(ctx);
+    }
+    if (ctx.event.phase === "post") {
+      const objection = postEditAudit(ctx);
+      return objection ? objectionVerdict(objection) : allowVerdict();
+    }
+  } catch (err) {
+    return caught(err);
+  }
+  return null;
+}
+
 export function evaluateRules(
   ctx: RuleContext,
   rules: Record<RuleId, Rule> = RULES,
 ): Verdict {
+  const lifecycle = evaluateLifecycle(ctx);
+  if (lifecycle) {
+    return lifecycle;
+  }
   let winner: Objection | null = null;
   for (const id of RULE_IDS) {
     let objection: Objection | null;
@@ -81,16 +115,7 @@ export function evaluateRules(
       winner = objection;
     }
   }
-  if (!winner) {
-    return allowVerdict();
-  }
-  return {
-    rule: winner.rule,
-    decision: winner.decision,
-    message: winner.message,
-    replacement: winner.replacement,
-    rendered: winner.decision,
-  };
+  return winner ? objectionVerdict(winner) : allowVerdict();
 }
 
 export function evaluateRule(

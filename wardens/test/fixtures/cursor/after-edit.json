@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "source": "recorded-cursor-session",
+    "provisional": false,
+    "tool": "cursor",
+    "event": "afterFileEdit",
+    "note": "Recorded from cursor-agent on 2026-11-05. Email, home paths and the recording directory were stripped.",
+    "expect": {
+      "action": "edit",
+      "path": "notes.txt",
+      "command": null,
+      "mcp_server": null,
+      "decision": "deny",
+      "rule": "scope-guard"
+    }
+  },
+  "stdin": {
+    "conversation_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
+    "generation_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
+    "model": "grok-4.7",
+    "file_path": "__WORKTREE__/notes.txt",
+    "edits": [
+      {
+        "old_string": "",
+        "new_string": "recorded edit"
+      }
+    ],
+    "session_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
+    "hook_event_name": "afterFileEdit",
+    "cursor_version": "2026.10.22-27dcf5f",
+    "workspace_roots": ["__WORKTREE__"],
+    "user_email": null,
+    "transcript_path": "transcript.jsonl"
+  }
+}

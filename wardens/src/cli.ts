@@ -4,6 +4,7 @@ import { type RunResult, runCheck, runHook } from "./engine.ts";
 import { resolveRole } from "./engines.ts";
 import { gitToplevel } from "./git.ts";
 import { engineMessage } from "./messages.ts";
+import { runAgentTrailer } from "./trailer.ts";
 
 function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
@@ -83,10 +84,18 @@ async function main(): Promise<void> {
   program
     .command("check")
     .argument("<rule>", "rule id, or role")
-    .argument("[name]", "role name when <rule> is role")
+    .argument("[name]", "role name, or message file for agent-trailer")
     .action(async (rule: string, name?: string) => {
       if (rule === "role") {
         process.exitCode = printResolvedRole(name);
+        return;
+      }
+      if (rule === "agent-trailer") {
+        const result = runAgentTrailer(name);
+        if (result.stderr.length > 0) {
+          process.stderr.write(result.stderr);
+        }
+        process.exitCode = result.exitCode;
         return;
       }
       const stdin = rule === "charter-validate" ? "" : await readStdin();

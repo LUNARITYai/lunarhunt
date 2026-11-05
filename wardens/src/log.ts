@@ -11,7 +11,7 @@ export type LogLine = {
   duration_ms: number;
   tool: NormalizedEvent["tool"] | null;
   event: string | null;
-  action: NormalizedEvent["action"] | null;
+  action: NormalizedEvent["action"] | "commit" | null;
   path: string | null;
   command: string | null;
   mcp_server: string | null;
@@ -19,6 +19,9 @@ export type LogLine = {
   agent: string | null;
   model: string | null;
   interactive: boolean;
+  phase: NormalizedEvent["phase"];
+  stop_status: NormalizedEvent["stop_status"];
+  foreign: boolean;
   message: string | null;
   replacement: string | null;
 };
@@ -48,6 +51,9 @@ export function logLine(input: {
     agent: event?.agent ?? null,
     model: event?.model ?? null,
     interactive: event?.interactive ?? false,
+    phase: event?.phase ?? null,
+    stop_status: event?.stop_status ?? null,
+    foreign: event?.foreign ?? false,
     message: input.verdict.message,
     replacement: input.verdict.replacement,
   };

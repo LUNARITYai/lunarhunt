@@ -2,6 +2,7 @@ import type { Charter } from "./charter.ts";
 import type { NormalizedEvent } from "./event.ts";
 import {
   commandGuard,
+  generatedFilesGuard,
   protectedPaths,
   scopeGuard,
   secretReadGuard,
@@ -28,6 +29,7 @@ export type Rule = (ctx: RuleContext) => Objection | null;
 export const RULE_IDS = [
   "protected-paths",
   "secret-read-guard",
+  "generated-files-guard",
   "command-guard",
   "scope-guard",
 ] as const;
@@ -37,6 +39,7 @@ export type RuleId = (typeof RULE_IDS)[number];
 export const RULES: Record<RuleId, Rule> = {
   "protected-paths": protectedPaths,
   "secret-read-guard": secretReadGuard,
+  "generated-files-guard": generatedFilesGuard,
   "command-guard": commandGuard,
   "scope-guard": scopeGuard,
 };

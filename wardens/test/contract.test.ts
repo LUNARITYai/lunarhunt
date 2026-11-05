@@ -10,7 +10,15 @@ import { tempRepo } from "./support.ts";
 const fixturesRoot = join(import.meta.dirname, "fixtures");
 
 type Expectation = {
-  action: "shell" | "read" | "edit" | "write" | "delete" | "mcp";
+  action:
+    | "shell"
+    | "read"
+    | "edit"
+    | "write"
+    | "delete"
+    | "mcp"
+    | "stop"
+    | "session_start";
   path: string | null;
   command: string | null;
   mcp_server: string | null;
@@ -22,6 +30,7 @@ type Fixture = {
   _meta: {
     source: string;
     provisional: boolean;
+    note: string;
     tool: string;
     event: string;
     expect: Expectation;
@@ -43,6 +52,12 @@ const REQUIRED_ROWS: Array<[string, string, Expectation["action"]]> = [
   ["cursor", "preToolUse", "delete"],
   ["cursor", "preToolUse", "mcp"],
   ["cursor", "beforeMCPExecution", "mcp"],
+  ["claude", "PostToolUse", "edit"],
+  ["claude", "PostToolUse", "write"],
+  ["claude", "Stop", "stop"],
+  ["cursor", "afterFileEdit", "edit"],
+  ["cursor", "stop", "stop"],
+  ["cursor", "sessionStart", "session_start"],
 ];
 
 function load(
@@ -92,6 +107,9 @@ function leakedStrings(value: unknown): string[] {
         key === "content" ||
         key === "old_string" ||
         key === "new_string" ||
+        key === "tool_response" ||
+        key === "edits" ||
+        key === "last_assistant_message" ||
         key === "user_email"
       ) {
         found.push(...leakedStrings(item));
@@ -105,7 +123,7 @@ function leakedStrings(value: unknown): string[] {
 const fixtures = [...load("claude"), ...load("cursor")];
 
 describe("hook contract fixtures", () => {
-  it("covers every mapping-table row and rejects a Cursor fixture marked as docs", () => {
+  it("covers every mapping-table row and has only recorded, non-provisional Cursor fixtures", () => {
     const covered = new Set<string>();
     for (const { name, raw, fixture } of fixtures) {
       expect(raw, name).not.toContain("/Users/");
@@ -113,8 +131,8 @@ describe("hook contract fixtures", () => {
       expect(raw, name).not.toContain("/tmp/wardens-cursor-record");
       const meta = fixture._meta;
       if (name.startsWith("cursor/")) {
-        expect(meta.source, name).toBe("recorded-cursor-session");
         expect(meta.provisional, name).toBe(false);
+        expect(meta.source, name).toBe("recorded-cursor-session");
       } else {
         expect(meta.source, name).toBe("claude-docs");
         expect(meta.provisional, name).toBe(true);
