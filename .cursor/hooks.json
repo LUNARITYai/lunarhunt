@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event sessionStart'",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event preToolUse'",
+        "matcher": "^(Shell|Read|Write|Delete|MCP:.*)$",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeShellExecution'",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeMCPExecution'",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeReadFile'",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event afterFileEdit'",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "stop": [
+      {
+        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event stop'",
+        "timeout": 900,
+        "loop_limit": 3,
+        "failClosed": true
+      }
+    ]
+  }
+}
