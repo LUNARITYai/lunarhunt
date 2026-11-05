@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { type Charter, loadCharterAt } from "./charter.ts";
 import { type DodDeps, stopEngineFailure } from "./dod.ts";
 import {
@@ -10,8 +10,12 @@ import {
 import { EngineFailure } from "./failures.ts";
 import { gitToplevel } from "./git.ts";
 import { evaluateStop, postEditAudit } from "./lifecycle.ts";
-import { appendVerdict, type LogLine, logLine } from "./log.ts";
-import { CHARTER_INVALID_MESSAGE, engineMessage } from "./messages.ts";
+import { appendFallback, appendVerdict, type LogLine, logLine } from "./log.ts";
+import {
+  CHARTER_INVALID_MESSAGE,
+  engineMessage,
+  TOPLEVEL_UNRESOLVED,
+} from "./messages.ts";
 import { finalizeVerdict, knownTool, renderHook } from "./render.ts";
 import {
   isRuleId,
@@ -39,6 +43,8 @@ export type EngineDeps = {
   dod?: DodDeps;
   /** Home dir for `~/` in `paths.external`; tests inject it. */
   home?: string;
+  /** Base dir of the fallback log used without a git toplevel; tests inject it. */
+  tmpDir?: string;
 };
 
 const defaultDeps: EngineDeps = {
@@ -287,7 +293,7 @@ export function runCheck(
     return checkBody(
       commit({
         toplevel: null,
-        verdict: engineDeny("git toplevel could not be resolved"),
+        verdict: engineDeny(TOPLEVEL_UNRESOLVED),
         event: null,
         tool: null,
         eventName: null,
@@ -348,6 +354,48 @@ export function runCheck(
 function charterVerdict(toplevel: string): Verdict {
   const loaded = loadCharterAt(toplevel);
   return loaded.ok ? allowVerdict() : engineDeny(CHARTER_INVALID_MESSAGE);
+}
+
+/**
+ * Without a toplevel there is no DoD state, so a blocked Stop would repeat
+ * forever. Allow it and record the reason in the fallback log; a logging
+ * failure must not turn the allow into a block.
+ */
+function allowUnresolvedStop(
+  hintedTool: ToolName | null,
+  eventName: string,
+  raw: Record<string, unknown>,
+  startedAt: number,
+  deps: EngineDeps,
+): RunResult {
+  const allowed: Verdict = {
+    ...allowVerdict(),
+    rule: "engine",
+    message: TOPLEVEL_UNRESOLVED,
+  };
+  const verdict = finalizeVerdict(allowed, null);
+  try {
+    appendFallback(
+      deps.tmpDir ?? tmpdir(),
+      logLine({
+        verdict,
+        event: null,
+        tool: hintedTool,
+        eventName,
+        finishedAt: deps.now(),
+        startedAt,
+      }),
+    );
+  } catch {
+    // Best effort only.
+  }
+  // The reason goes to the log only; the rendered allow stays empty.
+  return hookBody(
+    hintedTool ?? "cursor",
+    eventName,
+    { ...verdict, message: null },
+    raw,
+  );
 }
 
 export function runHook(
@@ -411,7 +459,10 @@ export function runHook(
     typeof raw.cwd === "string" && raw.cwd.length > 0 ? raw.cwd : fallbackCwd;
   const toplevel = gitToplevel(cwd);
   if (!toplevel) {
-    return fail("git toplevel could not be resolved", null, null);
+    if (eventName === "Stop" || eventName === "stop") {
+      return allowUnresolvedStop(hintedTool, eventName, raw, startedAt, deps);
+    }
+    return fail(TOPLEVEL_UNRESOLVED, null, null);
   }
   if (!hintedTool) {
     return fail("the hook event is not mapped", toplevel, null);
