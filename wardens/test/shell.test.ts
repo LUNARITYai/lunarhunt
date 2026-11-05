@@ -364,10 +364,24 @@ describe("a # the shell reads differently from the tokenizer", () => {
     }
   });
 
+  it("fails closed for a # right after a parenthesis or brace", () => {
+    for (const command of [
+      "(echo a)# x \\\ngit push --force origin main",
+      "(# y \\\ngit push --force origin main)",
+      "(echo a)#x \\\nnpm publish",
+      "echo a;(# x \\\ngit push --force)",
+      "{ echo a; }# x \\\ngit push --force",
+      "a)#x \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
   it("keeps plain comments and quoted # working", () => {
     for (const command of [
       "pnpm check # run the checks",
       "git log --grep='#12'",
+      "gh issue comment 5 --body 'fix #12'",
     ]) {
       expect(allowed(bash(f, command)), command).toBe(true);
     }

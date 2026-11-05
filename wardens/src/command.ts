@@ -9,18 +9,18 @@ const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
  *
  * The union is not enough when a real comment and a literal `#` are mixed
  * (`echo a # it's` then `echo ${x:- #}; git push --force`): neither reading
- * sees the push. So a command whose comment-aware scan found a comment AND that
- * holds shell syntax able to change what `#` means (see `special`, taken from either reading) is treated as
- * unparseable. This is intentionally conservative; false positives are accepted.
+ * sees the push. So a command with an unquoted `#` anywhere (`hash`: at a word
+ * start or inside a word, since the shell also starts a comment after `(` or
+ * `)`) AND shell syntax able to change what `#` means (see `special`) is
+ * treated as unparseable. Both flags are taken from either reading. This is
+ * intentionally conservative; false positives are accepted.
  */
 export function tokenizeAll(command: string): Pipeline[] {
   const aware = tokenize(command, true);
   const plain = tokenize(command, false);
-  if (
-    aware.ok &&
-    aware.comment &&
-    (aware.special || (plain.ok && plain.special))
-  ) {
+  const hash = aware.ok && (aware.hash || (plain.ok && plain.hash));
+  const special = aware.ok && (aware.special || (plain.ok && plain.special));
+  if (hash && special) {
     return [{ ok: false }, { ok: false }];
   }
   return [aware, plain];
@@ -53,6 +53,8 @@ export type Pipeline =
       newline: boolean;
       /** Shell syntax that can change what a `#` means: `$`, `(`, `)`, `{`, `}`, `[`, `]` outside single quotes, or a `case` word. */
       special: boolean;
+      /** The command held an unquoted `#` anywhere in a word, at its start or inside it. */
+      hash: boolean;
     }
   | { ok: false };
 
@@ -154,6 +156,7 @@ export function tokenize(command: string, comments = true): Pipeline {
     comment: scanned.comment,
     newline: scanned.newline,
     special: scanned.special,
+    hash: scanned.hash,
   };
 }
 
@@ -227,11 +230,13 @@ function scan(
   comment: boolean;
   newline: boolean;
   special: boolean;
+  hash: boolean;
 } | null {
   const segments: RawSegment[] = [];
   let comment = false;
   let newline = false;
   let special = false;
+  let hash = false;
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
@@ -353,6 +358,7 @@ function scan(
       // A comment runs to the next newline (not consumed). Nothing inside it is
       // parsed: no quotes, continuation or heredoc, as the shell does.
       comment = true;
+      hash = true;
       const end = command.indexOf("\n", index);
       index = (end === -1 ? command.length : end) - 1;
       continue;
@@ -438,6 +444,9 @@ function scan(
     ) {
       wordExpand = true;
     }
+    if (ch === "#") {
+      hash = true;
+    }
     if (/[$(){}[\]]/.test(ch)) {
       special = true;
     }
@@ -446,6 +455,11 @@ function scan(
     if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
       wordMeta = true;
       lastGt = ch === ">";
+    }
+    if (ch === "(" || ch === ")") {
+      // A parenthesis ends the word, so a `#` right after it starts a comment,
+      // as in the shell. The paren stays in the word and keeps it flagged.
+      flushWord();
     }
   }
 
@@ -460,7 +474,7 @@ function scan(
     meta: metas,
     expand: expands,
   });
-  return { segments, comment, newline, special };
+  return { segments, comment, newline, special, hash };
 }
 
 function prepare(
