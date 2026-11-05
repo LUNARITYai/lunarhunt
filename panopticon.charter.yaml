@@ -17,7 +17,7 @@ roles:
     model: sonnet
     effort: medium
     escalate_to: { engine: claude, model: opus, effort: high }
-  reviewer: { engine: claude, model: sonnet, effort: medium, read_only: true }
+  reviewer: { engine: claude, model: sonnet, effort: high, read_only: true }
   sentinel: { engine: claude, model: sonnet, effort: high, read_only: true }
   debugger: { engine: claude, model: sonnet, effort: high, read_only: true }
 
@@ -128,10 +128,17 @@ worktree: # ADR-0012, spec docs/specs/2026-11-05-wardens-worktree.md
     - "git diff*"
     - "git fetch*"
     - "git worktree list*"
+    - "git show*"
+    - "git rev-parse*"
+    - "git ls-files*"
+    - "git branch --show-current"
+    - "git switch --detach origin/main"
     - "rg *"
-    - "ls*"
+    - "ls"
+    - "ls *"
+    - "cat"
     - "cat *"
-    - "wardens worktree *"
+    - "wardens worktree list"
     - "wardens doctor*"
     - "claude --worktree *"
     - "claude -w *"
