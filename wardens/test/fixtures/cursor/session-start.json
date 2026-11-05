@@ -1,10 +1,10 @@
 {
   "_meta": {
-    "source": "documented",
-    "provisional": true,
+    "source": "recorded-cursor-session",
+    "provisional": false,
     "tool": "cursor",
     "event": "sessionStart",
-    "note": "Built from the Cursor hooks docs, not recorded. Replace with a recording from cursor-agent before merge.",
+    "note": "Recorded from cursor-agent on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "session_start",
       "path": null,
@@ -15,14 +15,15 @@
     }
   },
   "stdin": {
-    "conversation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
-    "generation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
-    "model": "grok-4.7",
-    "session_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "conversation_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
+    "generation_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
+    "model": "grok-4.7-high",
+    "is_background_agent": false,
+    "session_id": "8b7b08a1-70ad-4a01-88f4-83a745650027",
     "hook_event_name": "sessionStart",
-    "cursor_version": "2026.10.22-27dcf5f",
+    "cursor_version": "2026.11.05-86047df",
     "workspace_roots": ["__WORKTREE__"],
     "user_email": null,
-    "transcript_path": "transcript.jsonl"
+    "transcript_path": null
   }
 }

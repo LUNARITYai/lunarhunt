@@ -60,9 +60,6 @@ const REQUIRED_ROWS: Array<[string, string, Expectation["action"]]> = [
   ["cursor", "sessionStart", "session_start"],
 ];
 
-/** Cursor events whose payloads are built from the docs until a recording replaces them. */
-const PROVISIONAL_CURSOR = new Set(["afterFileEdit", "stop", "sessionStart"]);
-
 function load(
   dir: string,
 ): Array<{ name: string; raw: string; fixture: Fixture }> {
@@ -126,7 +123,7 @@ function leakedStrings(value: unknown): string[] {
 const fixtures = [...load("claude"), ...load("cursor")];
 
 describe("hook contract fixtures", () => {
-  it("covers every mapping-table row and accepts a Cursor fixture marked documented only for the unrecorded events", () => {
+  it("covers every mapping-table row and has only recorded, non-provisional Cursor fixtures", () => {
     const covered = new Set<string>();
     for (const { name, raw, fixture } of fixtures) {
       expect(raw, name).not.toContain("/Users/");
@@ -134,13 +131,8 @@ describe("hook contract fixtures", () => {
       expect(raw, name).not.toContain("/tmp/wardens-cursor-record");
       const meta = fixture._meta;
       if (name.startsWith("cursor/")) {
-        if (meta.provisional) {
-          expect(PROVISIONAL_CURSOR.has(meta.event), name).toBe(true);
-          expect(meta.source, name).toBe("documented");
-          expect(meta.note, name).toContain("Replace with a recording");
-        } else {
-          expect(meta.source, name).toBe("recorded-cursor-session");
-        }
+        expect(meta.provisional, name).toBe(false);
+        expect(meta.source, name).toBe("recorded-cursor-session");
       } else {
         expect(meta.source, name).toBe("claude-docs");
         expect(meta.provisional, name).toBe(true);

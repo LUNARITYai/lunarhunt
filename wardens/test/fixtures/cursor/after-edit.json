@@ -1,13 +1,13 @@
 {
   "_meta": {
-    "source": "documented",
-    "provisional": true,
+    "source": "recorded-cursor-session",
+    "provisional": false,
     "tool": "cursor",
     "event": "afterFileEdit",
-    "note": "Built from the Cursor hooks docs, not recorded. Replace with a recording from cursor-agent before merge.",
+    "note": "Recorded from cursor-agent on 2026-11-05. Email, home paths and the recording directory were stripped.",
     "expect": {
       "action": "edit",
-      "path": "infra/main.tf",
+      "path": "notes.txt",
       "command": null,
       "mcp_server": null,
       "decision": "deny",
@@ -15,17 +15,17 @@
     }
   },
   "stdin": {
-    "conversation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
-    "generation_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "conversation_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
+    "generation_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
     "model": "grok-4.7",
-    "file_path": "__WORKTREE__/infra/main.tf",
+    "file_path": "__WORKTREE__/notes.txt",
     "edits": [
       {
         "old_string": "",
-        "new_string": "SENTINEL_CONTENT_9f3a"
+        "new_string": "recorded edit"
       }
     ],
-    "session_id": "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+    "session_id": "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
     "hook_event_name": "afterFileEdit",
     "cursor_version": "2026.10.22-27dcf5f",
     "workspace_roots": ["__WORKTREE__"],
