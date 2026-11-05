@@ -109,10 +109,15 @@ describe("render", () => {
     const settings = JSON.parse(rendered.get(".claude/settings.json") ?? "");
     expect(settings.env.PANOPTICON_AGENT).toBe("claude");
     expect(Object.keys(settings.hooks)).toEqual([
+      "SessionStart",
       "PreToolUse",
       "PostToolUse",
       "Stop",
     ]);
+    expect(settings.hooks.SessionStart[0].hooks[0]).toMatchObject({
+      timeout: 10,
+      onFailure: "block",
+    });
     for (const groups of Object.values(settings.hooks) as {
       hooks: { onFailure: string; timeout: number }[];
     }[][]) {

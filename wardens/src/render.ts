@@ -50,6 +50,16 @@ function renderLifecycle(
       },
     });
   }
+  if (tool === "claude" && event === "SessionStart" && allowed) {
+    return verdict.message
+      ? json({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: verdict.message,
+          },
+        })
+      : "";
+  }
   if (tool === "claude" && (event === "PostToolUse" || event === "Stop")) {
     return allowed ? "" : json({ decision: "block", reason });
   }

@@ -8,6 +8,7 @@ import {
   scopeGuard,
   secretReadGuard,
 } from "./guards.ts";
+import type { BundleProbe } from "./stale.ts";
 import type { TaskState } from "./task.ts";
 import type { Decision } from "./verdict.ts";
 
@@ -20,6 +21,8 @@ export type RuleContext = {
   home?: string;
   /** Injected by tests so `pnpm check` never runs for real. */
   dod?: DodDeps;
+  /** Bundle hash probe for the session-start stale check; defaults to the real bundle. */
+  bundle?: BundleProbe;
 };
 
 export type Objection = {

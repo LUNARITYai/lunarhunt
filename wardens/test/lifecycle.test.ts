@@ -202,6 +202,88 @@ describe("stop and session start", () => {
     expect(lines(root)).toHaveLength(1);
   });
 
+  describe("stale-bundle warning at session start", () => {
+    const A = "a".repeat(64);
+    const B = "b".repeat(64);
+    const WARNING =
+      "Wardens bundle is stale. Run pnpm --filter wardens build in the primary checkout.";
+    const probe = (running: string | null, current: string | null) => ({
+      running,
+      current: () => current,
+    });
+    const start = (
+      tool: "claude" | "cursor",
+      bundle: ReturnType<typeof probe> | undefined,
+    ) => {
+      const root = tempRepo();
+      const result = runHook(
+        tool,
+        tool === "claude" ? "SessionStart" : "sessionStart",
+        JSON.stringify({ session_id: "s1", cwd: root }),
+        { cwd: () => root, env: {}, ...(bundle ? { bundle } : {}) },
+      );
+      return { root, result };
+    };
+
+    it("Claude: stale adds additionalContext and allows", () => {
+      const { root, result } = start("claude", probe(A, B));
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: WARNING,
+        },
+      });
+      expect(lines(root)[0]).toMatchObject({
+        action: "session_start",
+        decision: "allow",
+        message: WARNING,
+      });
+    });
+
+    it("Claude: matching hashes give empty output", () => {
+      expect(start("claude", probe(A, A)).result).toMatchObject({
+        exitCode: 0,
+        stdout: "",
+      });
+    });
+
+    it("Claude: running from source (no embedded hash) never warns", () => {
+      expect(start("claude", probe(null, B)).result.stdout).toBe("");
+      expect(start("claude", undefined).result.stdout).toBe("");
+    });
+
+    it("Claude: a throwing or unresolvable check allows without warning", () => {
+      const boom = {
+        running: A,
+        current: () => {
+          throw new Error("boom");
+        },
+      };
+      expect(start("claude", boom).result).toMatchObject({
+        exitCode: 0,
+        stdout: "",
+      });
+      expect(start("claude", probe(A, null)).result.stdout).toBe("");
+    });
+
+    it("Cursor: keeps the env output and logs the warning", () => {
+      const { root, result } = start("cursor", probe(A, B));
+      expect(JSON.parse(result.stdout)).toEqual({
+        env: { PANOPTICON_AGENT: "cursor" },
+      });
+      expect(lines(root)[0]).toMatchObject({
+        decision: "allow",
+        message: WARNING,
+      });
+    });
+
+    it("Cursor: fresh bundle logs no message", () => {
+      const { root } = start("cursor", probe(A, A));
+      expect(lines(root)[0]).toMatchObject({ message: null });
+    });
+  });
+
   it("renders an engine failure on stop as a block", () => {
     const root = tempRepo();
     writeRepoFile(root, "panopticon.charter.yaml", "version: [\n");
