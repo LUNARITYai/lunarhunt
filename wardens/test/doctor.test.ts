@@ -31,7 +31,7 @@ if (!loaded.ok) {
 const rendered = render(loaded.charter);
 
 // One level below wardens/ so the bundle finds ../schema like dist/ does.
-const outDir = mkdtempSync(join(repoRoot, "wardens", ".doctor-test-"));
+const outDir = mkdtempSync(join(repoRoot, "wardens", ".bundle-test-doctor-"));
 const bundle = join(outDir, "wardens.mjs");
 const scratch: string[] = [];
 
