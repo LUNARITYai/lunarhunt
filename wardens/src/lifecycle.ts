@@ -7,8 +7,7 @@ import type { Verdict } from "./verdict.ts";
 import { worktreeGuard } from "./worktree-guard.ts";
 
 const AUDIT_WHAT: Record<string, (path: string) => string> = {
-  "worktree-guard": (path) =>
-    `${path} was edited in the primary checkout or on a protected branch`,
+  "worktree-guard": (path) => `${path} was edited outside a task worktree`,
   "protected-paths": (path) => `${path} was edited but is deny for agents`,
   "scope-guard": (path) =>
     `${path} was edited outside allowed_paths for this task`,

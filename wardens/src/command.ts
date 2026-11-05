@@ -7,13 +7,20 @@ export type Segment = {
   env: Record<string, string>;
   argv: string[];
   tokens: ArgToken[];
+  /** Indexes into `argv` of words that held an unquoted `<`, `>`, `(` or `)`: redirects, process substitution, fd forms. */
+  meta: number[];
 };
 
 export type Pipeline =
   | { ok: true; segments: Segment[]; pipes: boolean[] }
   | { ok: false };
 
-type RawSegment = { words: string[]; pipeAfter: boolean; heredoc: boolean };
+type RawSegment = {
+  words: string[];
+  pipeAfter: boolean;
+  heredoc: boolean;
+  meta: number[];
+};
 
 /**
  * A quoted heredoc body is data only for a command that treats stdin as text.
@@ -85,7 +92,7 @@ export function tokenize(command: string): Pipeline {
   if (!raw) {
     return { ok: false };
   }
-  const segments = raw.map((segment) => prepare(segment.words));
+  const segments = raw.map((segment) => prepare(segment.words, segment.meta));
   if (!heredocSafe(raw, segments)) {
     return { ok: false };
   }
@@ -160,28 +167,38 @@ function scan(command: string): RawSegment[] | null {
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
+  let metas: number[] = [];
   let buf = "";
   let wordStarted = false;
+  let wordMeta = false;
+  let lastGt = false;
   let quote: "single" | "double" | null = null;
 
   const flushWord = (): void => {
     if (!wordStarted) {
       return;
     }
+    if (wordMeta) {
+      metas.push(words.length);
+    }
     words.push(buf);
     buf = "";
     wordStarted = false;
+    wordMeta = false;
   };
 
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
-    segments.push({ words, pipeAfter, heredoc });
+    segments.push({ words, pipeAfter, heredoc, meta: metas });
     words = [];
+    metas = [];
     heredoc = false;
   };
 
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index] ?? "";
+    const afterGt = lastGt;
+    lastGt = false;
     if (quote === "single") {
       if (ch === "'") {
         quote = null;
@@ -248,6 +265,7 @@ function scan(command: string): RawSegment[] | null {
       if (command[index + 2] === "<") {
         buf += "<<<";
         wordStarted = true;
+        wordMeta = true;
         index += 2;
         continue;
       }
@@ -292,35 +310,55 @@ function scan(command: string): RawSegment[] | null {
       index += 1;
       continue;
     }
+    if (ch === "&") {
+      // `&>`, `&>>` and `>&` are redirects; any other lone `&` backgrounds the
+      // command before it, so what follows is a new segment.
+      if (command[index + 1] === ">" || afterGt) {
+        buf += ch;
+        wordStarted = true;
+        wordMeta = true;
+        continue;
+      }
+      endSegment(false);
+      continue;
+    }
     if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
       return null;
     }
     buf += ch;
     wordStarted = true;
+    if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
+      wordMeta = true;
+      lastGt = ch === ">";
+    }
   }
 
   if (quote !== null || pending.length > 0) {
     return null;
   }
   flushWord();
-  segments.push({ words, pipeAfter: false, heredoc });
+  segments.push({ words, pipeAfter: false, heredoc, meta: metas });
   return segments;
 }
 
-function prepare(words: string[]): Segment {
+function prepare(words: string[], metaWords: number[]): Segment {
   const env: Record<string, string> = {};
   const argv: string[] = [];
+  const meta: number[] = [];
   let assigning = true;
-  for (const word of words) {
+  for (const [position, word] of words.entries()) {
     if (assigning && ENV_ASSIGNMENT.test(word)) {
       const eq = word.indexOf("=");
       env[word.slice(0, eq)] = word.slice(eq + 1);
       continue;
     }
     assigning = false;
+    if (metaWords.includes(position)) {
+      meta.push(argv.length);
+    }
     argv.push(word);
   }
-  return { env, argv, tokens: annotate(argv) };
+  return { env, argv, tokens: annotate(argv), meta };
 }
 
 function consumesValue(flag: string, subcommand: string | null): boolean {
@@ -649,7 +687,7 @@ export function writeTargets(segment: Segment): string[] {
 /** Standard streams and descriptors: exact match only, so `/dev/../etc` and `/dev/sda` stay candidates. */
 const DEVICE_PATH = /^\/dev\/(?:null|stdout|stderr|stdin|fd\/[0-9]+)$/;
 
-function isDevicePath(path: string): boolean {
+export function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 

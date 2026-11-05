@@ -40,6 +40,8 @@ export function gitCommonDir(cwd: string): string | null {
 /**
  * Primary checkout (`--git-dir` equals `--git-common-dir`) or linked worktree,
  * plus the current branch (null when detached). Null when git cannot say.
+ * A submodule or a bare repository also has `--git-dir` equal to its common
+ * dir, so it classifies as primary: the guard then blocks, which fails closed.
  */
 export function classifyCwd(cwd: string): CwdClass | null {
   const gitDir = gitOut(cwd, [

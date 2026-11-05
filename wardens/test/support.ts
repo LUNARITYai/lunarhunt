@@ -13,7 +13,13 @@ export function normativeCharter(): string {
 
 /** The normative Charter without `worktree:`, so `worktree-guard` is off for tests that edit in a primary-checkout temp repo. */
 export function charterWithoutWorktree(): string {
-  return normativeCharter().replace(/^worktree:[\s\S]*?(?=^\S)/m, "");
+  const text = normativeCharter().replace(/^worktree:[\s\S]*?(?=^\S)/m, "");
+  if (/^worktree:/m.test(text)) {
+    throw new Error(
+      "charterWithoutWorktree could not strip the worktree section",
+    );
+  }
+  return text;
 }
 
 export function tempRepo(options: { worktree?: boolean } = {}): string {

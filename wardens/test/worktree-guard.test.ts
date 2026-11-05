@@ -1,12 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { runHook } from "../src/engine.ts";
+import { loadCharterAt } from "../src/charter.ts";
+import { evaluateRules, runHook } from "../src/engine.ts";
 import { classifyCwd } from "../src/git.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { allowlistMatches } from "../src/worktree-guard.ts";
 import { normativeCharter, tempRepo } from "./support.ts";
 
 function git(cwd: string, ...args: string[]): void {
@@ -97,6 +105,187 @@ describe("classifyCwd", () => {
     git(f.linked, "checkout", "-q", "--detach");
     expect(classifyCwd(f.linked)).toEqual({ kind: "linked", branch: null });
   });
+
+  it("classifies a subdirectory and a symlink to the primary checkout as primary", () => {
+    const f = fixture();
+    expect(classifyCwd(join(f.primary, "apps"))?.kind).toBe("primary");
+    const link = join(f.home, "link");
+    symlinkSync(f.primary, link);
+    expect(classifyCwd(link)).toEqual({ kind: "primary", branch: "main" });
+    mkdirSync(join(f.linked, "sub"));
+    expect(classifyCwd(join(f.linked, "sub"))?.kind).toBe("linked");
+  });
+
+  it("is null for a directory git cannot classify", () => {
+    const f = fixture();
+    expect(classifyCwd(join(f.home, "missing"))).toBeNull();
+  });
+});
+
+describe("worktree-guard fails closed", () => {
+  it("denies with an engine message when the cwd cannot be classified", () => {
+    const f = fixture();
+    const loaded = loadCharterAt(f.primary);
+    if (!loaded.ok) {
+      throw new Error("charter");
+    }
+    const verdict = evaluateRules({
+      event: {
+        tool: "claude",
+        event: "PreToolUse",
+        action: "edit",
+        path: "apps/web.ts",
+        command: null,
+        mcp_server: null,
+        session_id: null,
+        agent: null,
+        model: null,
+        interactive: false,
+        cwd: join(f.home, "missing"),
+        phase: "pre",
+        stop_status: null,
+        foreign: false,
+      },
+      charter: loaded.charter,
+      task: { kind: "missing" },
+      root: f.primary,
+      home: f.home,
+    });
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe("engine");
+  });
+});
+
+// Sentinel and Reviewer PoCs for PR #59: each must be denied in the primary checkout.
+const DENIED = [
+  // unanchored matches and git smuggling
+  "git commit --allow-empty -m status",
+  "git reset --hard log",
+  "git checkout -b x diff",
+  "git branch -D fetch",
+  "git push origin main status",
+  "git clean -fdx status",
+  "git worktree add -b list y",
+  "gh pr checkout 12 --branch view",
+  "gh issue develop 5 --checkout --name view",
+  "wardens sync worktree",
+  "claude -p 'x' --dangerously-skip-permissions -w foo",
+  "git log ; git commit -m status",
+  "git checkout -b log",
+  "git branch diff",
+  "git reset --hard status",
+  // lone &
+  "cat a & rm -rf x",
+  "ls & touch x",
+  "ls & git commit --allow-empty -m x",
+  // redirects and process substitution
+  "cat a>out",
+  "ls>out",
+  "cat a >& out",
+  "cat a >&out",
+  "cat a {fd}>out",
+  "cat <>newfile",
+  "cat <(touch x)",
+  "cat a >(tee x)",
+  "ls &>> out",
+  "ls &> out",
+  "ls 1> out",
+  "ls 1>out",
+  // exec, env and ref writes through flags
+  "git -c core.fsmonitor='touch /x' status",
+  "git -C apps status",
+  "git --git-dir=x status",
+  "GIT_EXTERNAL_DIFF=evil git diff",
+  "GIT_SSH_COMMAND=evil git fetch origin",
+  "GIT_PAGER=evil git log",
+  "git fetch --upload-pack='touch x' origin",
+  "git fetch origin 'refs/heads/*:refs/heads/foo'",
+  "git fetch origin main:refs/heads/zzz",
+  "git fetch -u origin main:main",
+  "git log --output=x",
+  "git diff --ext-diff",
+  "git show --textconv HEAD",
+  "rg --pre 'sh -c evil' x",
+  "rg --hostname-bin=x y",
+  "rg -z foo",
+  "rg --search-zip foo",
+  "claude -p x",
+  "claude --worktree foo --settings x",
+  "agent -w foo --add-dir x",
+  "claude -w",
+  "wardens sync",
+  "wardens worktree new 5",
+  "wardens worktree remove x",
+  "wardens worktree prune",
+  "wardens doctorx",
+];
+
+// Forms OVERSEER uses from the primary checkout: all must stay allowed.
+const ALLOWED = [
+  "git status",
+  "git status -s",
+  "git log --oneline -5 origin/main",
+  "git diff --stat origin/main",
+  "git fetch -q origin",
+  "git worktree list",
+  "gh pr view 12 --comments",
+  "gh pr checks 12 --watch --interval 30",
+  "gh pr create --title t --body-file - <<'EOF'\nbody\nEOF",
+  "gh issue edit 5 --add-label x",
+  "cat README.md",
+  "cat README.md 2>&1",
+  "cat README.md 2>/dev/null",
+  "cat - <<< hello",
+  "ls",
+  "ls -la",
+  "rg foo wardens",
+  "rg 'a>b' wardens",
+  "claude --worktree 42-offer-crud",
+  "agent -w 42-offer-crud",
+  "wardens worktree list",
+  "wardens doctor",
+  "git status | cat -",
+];
+
+describe("worktree-guard shell allowlist (every Charter pattern)", () => {
+  it("denies every bypass PoC", () => {
+    const f = fixture();
+    for (const command of DENIED) {
+      expect(bash(f, f.primary, command), command).toContain("worktree-guard");
+    }
+  });
+
+  it("allows the legitimate read-only forms", () => {
+    const f = fixture();
+    for (const command of ALLOWED) {
+      expect(bash(f, f.primary, command), command).toBe("");
+    }
+  });
+
+  it("matches anchored: positions, trailing star and exact length", () => {
+    expect(allowlistMatches("ls", ["ls"])).toBe(true);
+    expect(allowlistMatches("ls", ["ls", "-la"])).toBe(false);
+    expect(allowlistMatches("ls *", ["ls"])).toBe(false);
+    expect(allowlistMatches("ls *", ["ls", "-la"])).toBe(true);
+    expect(allowlistMatches("git status*", ["git", "status", "-s"])).toBe(true);
+    expect(allowlistMatches("git status*", ["git", "reset", "status"])).toBe(
+      false,
+    );
+    expect(allowlistMatches("git status*", ["git", "commit", "status"])).toBe(
+      false,
+    );
+    expect(allowlistMatches("gh pr view*", ["gh", "pr", "views"])).toBe(true);
+    expect(
+      allowlistMatches("gh issue edit * --add-label*", [
+        "gh",
+        "issue",
+        "edit",
+        "5",
+        "--add-label",
+        "x",
+      ]),
+    ).toBe(true);
+  });
 });
 
 describe("worktree-guard in the primary checkout", () => {
@@ -148,7 +337,7 @@ describe("worktree-guard in the primary checkout", () => {
       "ls",
       "cat panopticon.charter.yaml",
       "gh issue view 49",
-      "rg foo | cat",
+      "rg foo | cat -",
     ]) {
       expect(bash(f, f.primary, command), command).toBe("");
     }
@@ -249,7 +438,11 @@ describe("worktree-guard in a linked worktree on a task branch", () => {
     expect(out).toContain(
       `Blocked by Warden worktree-guard: ${target} is in another worktree or in the primary checkout. Edit only files inside the worktree of your task.`,
     );
-    expect(edit(f, f.linked, "../../../README.md")).not.toBe("");
+    expect(edit(f, f.linked, relative(f.linked, target))).toContain(
+      esc(
+        `Blocked by Warden worktree-guard: ${target} is in another worktree or in the primary checkout.`,
+      ),
+    );
   });
 
   it("denies an edit that targets another worktree, including a new file", () => {
@@ -306,6 +499,6 @@ describe("worktree-guard post-edit audit", () => {
       { cwd: () => f.primary, env: {}, home: f.home },
     ).stdout;
     expect(out).toContain("worktree-guard");
-    expect(out).toContain("apps/a.ts was edited in the primary checkout");
+    expect(out).toContain("apps/a.ts was edited outside a task worktree");
   });
 });

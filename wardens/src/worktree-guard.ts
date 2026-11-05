@@ -1,7 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeConfig } from "./charter.ts";
-import { segmentMatches, tokenize, writeTargets } from "./command.ts";
+import {
+  isDevicePath,
+  type Segment,
+  tokenize,
+  writeTargets,
+} from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { classifyCwd } from "./git.ts";
@@ -41,11 +46,180 @@ function expandHome(path: string, home: string): string {
   return path.startsWith("~/") ? join(home, path.slice(2)) : path;
 }
 
+function globToken(pattern: string, text: string): boolean {
+  const body = pattern
+    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("*", "[^]*");
+  return new RegExp(`^${body}$`).test(text);
+}
+
 /**
- * Read-only in the primary checkout: every pipeline segment matches
- * `primary_read_only_commands`, none redirects or passes a write path into the
- * repository (an allowed `paths.external` target is fine), and no segment asks
- * for an output file (`--output`). The glob alone would allow `cat a > b`.
+ * Anchored allowlist matching for `primary_read_only_commands` (the deny-side
+ * `segmentMatches` is an unanchored subsequence match and must not be used here).
+ * The pattern is split on spaces into tokens p1..pn. argv[i] must glob-match p_i
+ * for every i in 1..n, token by token (a `*` never crosses a token). When the
+ * pattern ends with `*`, any further argv tokens are allowed; otherwise argv must
+ * have exactly n tokens. So `ls` matches only `ls`, `ls *` needs one argument,
+ * and `git status*` matches `git status` and `git status -s`, never `git reset status`.
+ */
+export function allowlistMatches(pattern: string, argv: string[]): boolean {
+  const trimmed = pattern.trim();
+  const parts = trimmed.split(/\s+/).filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return false;
+  }
+  const open = trimmed.endsWith("*");
+  if (open ? argv.length < parts.length : argv.length !== parts.length) {
+    return false;
+  }
+  return parts.every((part, index) => globToken(part, argv[index] ?? ""));
+}
+
+const GIT_FETCH_DENIED =
+  /^(?:--upload-pack|--receive-pack|--exec|--update-head-ok|--recurse-submodules|-u$)/;
+
+/**
+ * Per-command flag rules applied after the pattern matched. An allowlisted
+ * command must not execute code or write refs or files through its flags.
+ * `argv` has its redirect words removed.
+ */
+function flagsAllowed(argv: string[]): boolean {
+  const [command, first, second] = argv;
+  const args = argv.slice(1);
+  if (args.some((word) => /^--output(?:=|$)/.test(word))) {
+    return false;
+  }
+  switch (command) {
+    case "git": {
+      // A global option (-c, -C, --git-dir, --exec-path, --work-tree,
+      // --config-env, --namespace) can run code or retarget the repository.
+      if (first === undefined || first.startsWith("-")) {
+        return false;
+      }
+      const rest = argv.slice(2);
+      if (first === "fetch") {
+        return !rest.some(
+          (word) => word.includes(":") || GIT_FETCH_DENIED.test(word),
+        );
+      }
+      if (first === "log" || first === "diff" || first === "show") {
+        return !rest.some(
+          (word) => word === "--ext-diff" || word === "--textconv",
+        );
+      }
+      return true;
+    }
+    case "rg":
+      return !args.some(
+        (word) =>
+          word.startsWith("--pre") ||
+          word.startsWith("--hostname-bin") ||
+          word === "--search-zip" ||
+          /^-[A-Za-z]*z[A-Za-z]*$/.test(word),
+      );
+    case "claude":
+    case "agent":
+      return (
+        argv.length === 3 &&
+        (first === "-w" || first === "--worktree") &&
+        second !== undefined &&
+        !second.startsWith("-")
+      );
+    case "wardens":
+      return (first === "worktree" && second === "list") || first === "doctor";
+    default:
+      return true;
+  }
+}
+
+/** A write target is fine only outside the repository and when `paths.external` allows writing it. */
+function externalWriteOk(
+  ctx: RuleContext,
+  target: string,
+  home: string,
+): boolean {
+  const path = expandHome(target, home);
+  const resolved = resolveRepoPath(path, ctx.event.cwd, ctx.root);
+  if (resolved.ok || resolved.reason !== "escape") {
+    return false;
+  }
+  return (
+    externalAllows(
+      ctx.charter.paths.external,
+      "write",
+      path,
+      ctx.event.cwd,
+      home,
+    ) !== null
+  );
+}
+
+const REDIRECT_WORD =
+  /^(\{[A-Za-z_][A-Za-z0-9_]*\}|\d*|&)?(<>|<&|<|>>|>\||>&|>)(.*)$/;
+
+/**
+ * Checks the words the tokenizer flagged (unquoted `<`, `>`, `(`, `)`). Allowed:
+ * here-strings, reads (`< file`), `N>&M` and `>&-`, device paths (#55) and
+ * `paths.external` write targets. Denied: any other write target, `<>`, process
+ * substitution, and glued forms the tokenizer cannot split (`a>out`).
+ * Returns the argv indexes to ignore (redirect words and their targets), or null.
+ */
+function redirectsAllowed(
+  ctx: RuleContext,
+  segment: Segment,
+  home: string,
+): Set<number> | null {
+  const skip = new Set<number>();
+  for (const index of segment.meta) {
+    const word = segment.argv[index] ?? "";
+    skip.add(index);
+    if (word.startsWith("<<<")) {
+      if (word === "<<<") {
+        skip.add(index + 1);
+      }
+      continue;
+    }
+    if (/[()]/.test(word)) {
+      return null;
+    }
+    const match = REDIRECT_WORD.exec(word);
+    if (!match) {
+      return null;
+    }
+    const op = match[2] ?? "";
+    const attached = match[3] ?? "";
+    if (op === "<>") {
+      return null;
+    }
+    if (op === "<" || op === "<&") {
+      if (attached === "") {
+        skip.add(index + 1);
+      }
+      continue;
+    }
+    const target = attached === "" ? (segment.argv[index + 1] ?? "") : attached;
+    if (attached === "") {
+      skip.add(index + 1);
+    }
+    if (op === ">&" && /^(?:\d+|-)$/.test(target)) {
+      continue;
+    }
+    if (target === "") {
+      return null;
+    }
+    if (isDevicePath(target) || externalWriteOk(ctx, target, home)) {
+      continue;
+    }
+    return null;
+  }
+  return skip;
+}
+
+/**
+ * Read-only in the primary checkout: every pipeline segment has no environment
+ * assignment, passes the redirect check, matches `primary_read_only_commands`
+ * (anchored, see `allowlistMatches`) and the per-command flag rules, and writes
+ * no path into the repository. Ring 0 is a guard rail, not a sandbox.
  */
 function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   if (ctx.event.command === null) {
@@ -58,35 +232,28 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   const home = ctx.home ?? homedir();
   for (const segment of pipeline.segments) {
     // The tokenizer leaves an empty segment after a quoted heredoc body.
-    if (segment.argv.length === 0) {
+    if (segment.argv.length === 0 && segment.meta.length === 0) {
       continue;
     }
+    if (Object.keys(segment.env).length > 0) {
+      return false;
+    }
+    const skip = redirectsAllowed(ctx, segment, home);
+    if (skip === null) {
+      return false;
+    }
+    const argv = segment.argv.filter((_, index) => !skip.has(index));
     if (
+      argv.length === 0 ||
       !config.primary_read_only_commands.some((pattern) =>
-        segmentMatches(pattern, segment),
-      )
+        allowlistMatches(pattern, argv),
+      ) ||
+      !flagsAllowed(argv)
     ) {
       return false;
     }
-    if (segment.argv.some((word) => /^--output(?:=|$)/.test(word))) {
-      return false;
-    }
     for (const target of writeTargets(segment)) {
-      const path = expandHome(target, home);
-      const resolved = resolveRepoPath(path, ctx.event.cwd, ctx.root);
-      if (resolved.ok) {
-        return false;
-      }
-      if (
-        resolved.reason !== "escape" ||
-        externalAllows(
-          ctx.charter.paths.external,
-          "write",
-          path,
-          ctx.event.cwd,
-          home,
-        ) === null
-      ) {
+      if (!externalWriteOk(ctx, target, home)) {
         return false;
       }
     }
