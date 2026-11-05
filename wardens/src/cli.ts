@@ -7,6 +7,7 @@ import { gitToplevel } from "./git.ts";
 import { engineMessage } from "./messages.ts";
 import { runSync } from "./sync/index.ts";
 import { runAgentTrailer } from "./trailer.ts";
+import { runWorktree } from "./worktree/index.ts";
 
 function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
@@ -118,6 +119,30 @@ async function main(): Promise<void> {
       }
       process.exitCode = result.exitCode;
     });
+
+  program
+    .command("worktree")
+    .description("task worktrees: new, setup, list, remove, prune")
+    .argument("<sub>", "new, setup, list, remove or prune")
+    .argument("[arg]", "issue number for new, name for remove")
+    .option("--slug <slug>", "slug for new")
+    .option("--force", "remove or prune despite uncommitted or unpushed work")
+    .action(
+      (
+        sub: string,
+        arg: string | undefined,
+        opts: { slug?: string; force?: boolean },
+      ) => {
+        const result = runWorktree({ sub, arg, ...opts });
+        if (result.stdout.length > 0) {
+          process.stdout.write(result.stdout);
+        }
+        if (result.stderr.length > 0) {
+          process.stderr.write(result.stderr);
+        }
+        process.exitCode = result.exitCode;
+      },
+    );
 
   program
     .command("doctor")
