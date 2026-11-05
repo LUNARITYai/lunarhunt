@@ -301,6 +301,39 @@ describe("paths.external in shell", () => {
   });
 });
 
+describe("shell comments in the tokenizer", () => {
+  it("drops a comment up to the newline and flags it", () => {
+    const pipeline = tokenize("echo a # b; rm x");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments.map((segment) => segment.argv)).toEqual([
+        ["echo", "a"],
+      ]);
+      expect(pipeline.comment).toBe(true);
+      expect(pipeline.newline).toBe(false);
+    }
+  });
+
+  it("keeps the command after the comment line and flags the newline", () => {
+    const pipeline = tokenize("ls # x \\\nrm -rf y");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments.map((segment) => segment.argv)).toEqual([
+        ["ls"],
+        ["rm", "-rf", "y"],
+      ]);
+      expect(pipeline.newline).toBe(true);
+    }
+  });
+
+  it("does not treat a mid-word or quoted # as a comment", () => {
+    for (const command of ["echo a#b", "echo '#x'", 'echo "#x"']) {
+      const pipeline = tokenize(command);
+      expect(pipeline.ok && pipeline.comment, command).toBe(false);
+    }
+  });
+});
+
 describe("device paths in shell", () => {
   const devices = [
     "/dev/null",

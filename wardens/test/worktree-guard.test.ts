@@ -279,6 +279,14 @@ const DENIED = [
   "rg --follow x",
   "rg -z x",
   "rg 'a\nb' x",
+  // round 4: comments and newlines hide commands
+  "cat a # x \\\nrm -rf y",
+  "ls # \\\ngit commit --allow-empty -m x",
+  "cat a #\\\nrm x",
+  "cat a # <<'EOF'\nrm -rf y\nEOF",
+  "cat a\nrm x",
+  "ls #x",
+  "git status # note",
 ];
 
 // Forms OVERSEER uses from the primary checkout: all must stay allowed.

@@ -147,6 +147,7 @@ const GIT_FLAGS: Record<string, readonly string[]> = {
     "--no-color",
     "--color=*",
     "--word-diff",
+    "--word-diff=*",
     "--",
   ],
   show: [
@@ -283,7 +284,7 @@ const RG_FLAGS = new Set([
   "-P",
   "--pcre2",
 ]);
-const RG_VALUE = new Set(["-g", "-t", "-T", "-e"]);
+const RG_VALUE = new Set(["-g", "-t", "-T", "-e", "-A", "-B", "-C", "-m"]);
 const RG_PREFIX = [
   "--glob=",
   "--iglob=",
@@ -476,6 +477,11 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   }
   const pipeline = tokenize(ctx.event.command);
   if (!pipeline.ok) {
+    return false;
+  }
+  // Comments and multi-line commands hide text from every later check; the
+  // read-only path needs neither. A heredoc body is not a newline in this sense.
+  if (pipeline.comment || pipeline.newline) {
     return false;
   }
   const home = ctx.home ?? homedir();

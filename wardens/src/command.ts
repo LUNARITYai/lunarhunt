@@ -18,7 +18,15 @@ export type Segment = {
 };
 
 export type Pipeline =
-  | { ok: true; segments: Segment[]; pipes: boolean[] }
+  | {
+      ok: true;
+      segments: Segment[];
+      pipes: boolean[];
+      /** The command held a shell comment (an unquoted `#` at the start of a word). */
+      comment: boolean;
+      /** The command held an unquoted newline outside a heredoc body, followed by more text. */
+      newline: boolean;
+    }
   | { ok: false };
 
 type RawSegment = {
@@ -95,10 +103,11 @@ function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
 }
 
 export function tokenize(command: string): Pipeline {
-  const raw = scan(command);
-  if (!raw) {
+  const scanned = scan(command);
+  if (!scanned) {
     return { ok: false };
   }
+  const raw = scanned.segments;
   const segments = raw.map((segment) =>
     prepare(segment.words, segment.meta, segment.expand),
   );
@@ -106,7 +115,13 @@ export function tokenize(command: string): Pipeline {
     return { ok: false };
   }
   const pipes = raw.slice(0, -1).map((segment) => segment.pipeAfter);
-  return { ok: true, segments, pipes };
+  return {
+    ok: true,
+    segments,
+    pipes,
+    comment: scanned.comment,
+    newline: scanned.newline,
+  };
 }
 
 type Heredoc = { delimiter: string; stripTabs: boolean };
@@ -171,8 +186,14 @@ function skipHeredocBody(
   return null;
 }
 
-function scan(command: string): RawSegment[] | null {
+function scan(command: string): {
+  segments: RawSegment[];
+  comment: boolean;
+  newline: boolean;
+} | null {
   const segments: RawSegment[] = [];
+  let comment = false;
+  let newline = false;
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
@@ -286,6 +307,14 @@ function scan(command: string): RawSegment[] | null {
       wordStarted = true;
       continue;
     }
+    if (ch === "#" && !wordStarted) {
+      // A comment runs to the next newline (not consumed). Nothing inside it is
+      // parsed: no quotes, continuation or heredoc, as the shell does.
+      comment = true;
+      const end = command.indexOf("\n", index);
+      index = (end === -1 ? command.length : end) - 1;
+      continue;
+    }
     if (ch === " " || ch === "\t" || ch === "\r") {
       flushWord();
       continue;
@@ -322,6 +351,9 @@ function scan(command: string): RawSegment[] | null {
       continue;
     }
     if (ch === "\n" || ch === ";") {
+      if (ch === "\n" && command.slice(index + 1).trim() !== "") {
+        newline = true;
+      }
       endSegment(false);
       continue;
     }
@@ -383,7 +415,7 @@ function scan(command: string): RawSegment[] | null {
     meta: metas,
     expand: expands,
   });
-  return segments;
+  return { segments, comment, newline };
 }
 
 function prepare(
