@@ -36,7 +36,8 @@
     "quality_gates": { "$ref": "#/$defs/qualityGates" },
     "budgets": { "$ref": "#/$defs/budgets" },
     "log_access": { "$ref": "#/$defs/logAccess" },
-    "ledger": { "$ref": "#/$defs/ledger" }
+    "ledger": { "$ref": "#/$defs/ledger" },
+    "worktree": { "$ref": "#/$defs/worktree" }
   },
   "$defs": {
     "engine": { "enum": ["claude", "cursor"] },
@@ -377,6 +378,93 @@
         "redact": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_for_agents",
+        "protected_branches",
+        "base_ref",
+        "naming",
+        "location",
+        "setup",
+        "resources",
+        "primary_read_only_commands",
+        "cleanup"
+      ],
+      "properties": {
+        "required_for_agents": { "type": "boolean" },
+        "protected_branches": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "base_ref": { "type": "string", "minLength": 1 },
+        "naming": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["worktree", "branch", "slug_max_length"],
+          "properties": {
+            "worktree": { "type": "string", "minLength": 1 },
+            "branch": { "type": "string", "minLength": 1 },
+            "slug_max_length": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default"],
+          "properties": {
+            "default": { "type": "string", "minLength": 1 }
+          }
+        },
+        "setup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["steps", "env_template"],
+          "properties": {
+            "steps": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "env_template": { "type": "string", "minLength": 1 },
+            "copy_from_primary": {
+              "type": "array",
+              "maxItems": 0,
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ports"],
+          "properties": {
+            "database": { "type": "string", "minLength": 1 },
+            "ports": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["web", "api"],
+              "properties": {
+                "web": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+                "api": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+              }
+            }
+          }
+        },
+        "primary_read_only_commands": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stale_after_days"],
+          "properties": {
+            "stale_after_days": { "type": "integer", "minimum": 1 }
+          }
         }
       }
     },

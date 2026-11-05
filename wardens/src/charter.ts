@@ -111,6 +111,31 @@ const roleGate = z.strictObject({
   roles: z.union([z.literal("all"), z.array(z.string().min(1)).min(1)]),
 });
 
+const port = z.int().min(1024).max(65535);
+
+const worktreeSchema = z.strictObject({
+  required_for_agents: z.boolean(),
+  protected_branches: z.array(z.string().min(1)),
+  base_ref: z.string().min(1),
+  naming: z.strictObject({
+    worktree: z.string().min(1),
+    branch: z.string().min(1),
+    slug_max_length: z.int().min(1),
+  }),
+  location: z.strictObject({ default: z.string().min(1) }),
+  setup: z.strictObject({
+    steps: z.array(z.string().min(1)),
+    env_template: z.string().min(1),
+    copy_from_primary: z.array(z.string()).max(0).optional(),
+  }),
+  resources: z.strictObject({
+    database: z.string().min(1).optional(),
+    ports: z.strictObject({ web: port, api: port }),
+  }),
+  primary_read_only_commands: z.array(z.string().min(1)),
+  cleanup: z.strictObject({ stale_after_days: z.int().min(1) }),
+});
+
 export const charterSchema = z.strictObject({
   version: z.literal(1),
   project: z.string().min(1),
@@ -204,9 +229,11 @@ export const charterSchema = z.strictObject({
     sink: z.array(z.string().min(1)).min(1),
     capture_content: z.boolean(),
   }),
+  worktree: worktreeSchema.optional(),
 });
 
 export type Charter = z.infer<typeof charterSchema>;
+export type WorktreeConfig = NonNullable<Charter["worktree"]>;
 
 export type ValidateResult =
   | { ok: true; charter: Charter }
