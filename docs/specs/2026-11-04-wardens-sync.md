@@ -83,7 +83,7 @@ The tool facts below were read from the Claude Code hooks, settings and permissi
 
 ### Bundle freshness (#43)
 
-- WHEN `git pull` (merge or rebase) updates `main` in the primary checkout, THE generated `lefthook.yml` hooks `post-merge` and `post-rewrite` SHALL run `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed between `ORIG_HEAD` and `HEAD`, and then `pnpm --filter wardens build` if anything under `wardens/` changed.
+- WHEN `git pull` (merge or rebase) updates `main` in the primary checkout, THE generated `lefthook.yml` hooks `post-merge` and `post-rewrite` SHALL run `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed between `ORIG_HEAD` and `HEAD`, and then `pnpm --filter wardens build` if anything under `wardens/` or the lockfile changed (the bundle inlines its dependencies, so a lockfile change can make it stale while the source hash stays equal).
 - IF `ORIG_HEAD` cannot be resolved, THEN the hooks SHALL treat the lockfile and `wardens/` as changed.
 - IF the hook runs in a linked worktree (`git rev-parse --git-dir` differs from `--git-common-dir`) or on a branch other than `main`, THEN it SHALL do nothing and exit 0.
 - WHEN `post-rewrite` runs for an amend, THE hook SHALL do nothing.
@@ -394,7 +394,7 @@ post-merge:
         if [ "$lock" = 1 ]; then
           if ! pnpm install --frozen-lockfile; then echo "wardens: pnpm install failed. $next"; exit 0; fi
         fi
-        if [ "$wd" = 1 ]; then
+        if [ "$lock" = 1 ] || [ "$wd" = 1 ]; then
           if ! pnpm --filter wardens build; then echo "wardens: bundle build failed. $next"; exit 0; fi
         fi
         exit 0
@@ -419,7 +419,7 @@ post-rewrite:
         if [ "$lock" = 1 ]; then
           if ! pnpm install --frozen-lockfile; then echo "wardens: pnpm install failed. $next"; exit 0; fi
         fi
-        if [ "$wd" = 1 ]; then
+        if [ "$lock" = 1 ] || [ "$wd" = 1 ]; then
           if ! pnpm --filter wardens build; then echo "wardens: bundle build failed. $next"; exit 0; fi
         fi
         exit 0

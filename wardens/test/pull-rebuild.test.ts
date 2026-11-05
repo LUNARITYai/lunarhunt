@@ -115,10 +115,13 @@ describe("post-merge / post-rewrite shell", () => {
     expect(calls(stub)).toEqual(["--filter wardens build"]);
   });
 
-  it("only installs when just the lockfile changed", () => {
+  it("installs and builds when only the lockfile changed (inlined deps)", () => {
     const stub = stubBin();
     run(pulled({ "pnpm-lock.yaml": "x" }), stub);
-    expect(calls(stub)).toEqual(["install --frozen-lockfile"]);
+    expect(calls(stub)).toEqual([
+      "install --frozen-lockfile",
+      "--filter wardens build",
+    ]);
   });
 
   it("does nothing when neither changed", () => {
@@ -234,7 +237,10 @@ describe("real git pulls fire the hooks with a usable ORIG_HEAD", () => {
     commitFile(clone, "local.txt", "x");
     commitFile(origin, "pnpm-lock.yaml", "x");
     pull(clone, stub, "--no-rebase");
-    expect(calls(stub)).toEqual(["install --frozen-lockfile"]);
+    expect(calls(stub)).toEqual([
+      "install --frozen-lockfile",
+      "--filter wardens build",
+    ]);
   });
 
   it("rebase pull with local commits (post-rewrite)", () => {

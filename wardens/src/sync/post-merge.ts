@@ -19,7 +19,7 @@ next='Run pnpm install && pnpm --filter wardens build in the primary checkout.'
 if [ "$lock" = 1 ]; then
   if ! pnpm install --frozen-lockfile; then echo "wardens: pnpm install failed. $next"; exit 0; fi
 fi
-if [ "$wd" = 1 ]; then
+if [ "$lock" = 1 ] || [ "$wd" = 1 ]; then
   if ! pnpm --filter wardens build; then echo "wardens: bundle build failed. $next"; exit 0; fi
 fi
 exit 0
