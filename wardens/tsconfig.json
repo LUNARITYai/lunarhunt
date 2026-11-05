@@ -10,6 +10,7 @@
     "src/**/*.d.ts",
     "test/**/*.ts",
     "vitest.config.ts",
-    "tsup.config.ts"
+    "tsup.config.ts",
+    "scripts/**/*.ts"
   ]
 }
