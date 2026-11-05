@@ -18,6 +18,9 @@ const AUDIT_WHAT: Record<string, (path: string) => string> = {
  * should have denied. Only deny-side rules run; an `ask` path may be approved.
  */
 export function postEditAudit(ctx: RuleContext): Objection | null {
+  if (ctx.event.external) {
+    return null;
+  }
   for (const rule of [protectedDeny, generatedFilesGuard, scopeGuard]) {
     const objection = rule(ctx);
     if (!objection) {
