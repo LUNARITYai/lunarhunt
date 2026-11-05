@@ -110,6 +110,54 @@ describe("quoted heredocs", () => {
     }
   });
 
+  it("denies a heredoc fed to an interpreter or exec wrapper", () => {
+    const f = fixture();
+    const body = "\ngit push --force\nEOF";
+    for (const command of [
+      `bash <<'EOF'${body}`,
+      `sh <<'EOF'${body}`,
+      `/bin/sh <<'EOF'${body}`,
+      `cat <<'EOF' | sh${body}`,
+      `cat <<'EOF' | bash -s${body}`,
+      `cat <<'EOF' | /usr/bin/env sh${body}`,
+      `python3 - <<'EOF'${body}`,
+      `python3.12 - <<'EOF'${body}`,
+      `node <<'EOF'${body}`,
+      `xargs -I{} sh -c {} <<'EOF'${body}`,
+      `env bash <<'EOF'${body}`,
+      `sudo sh <<'EOF'${body}`,
+      `exec bash <<'EOF'${body}`,
+      `source /dev/stdin <<'EOF'${body}`,
+      `. /dev/stdin <<'EOF'${body}`,
+      `eval "$(cat <<'EOF'${body}\n)"`,
+      `timeout 5 bash <<'EOF'${body}`,
+      `nohup sh <<'EOF'${body}`,
+      `perl <<'EOF'${body}`,
+      `awk -f /dev/stdin <<'EOF'${body}`,
+      `ruby <<'EOF'${body}`,
+      `ls <<'EOF'${body}`,
+      `cat <<'EOF'\nx\nEOF\n| sh`,
+      `cat <<'EOF' && bash -c 'git push --force'\nx\nEOF`,
+    ]) {
+      const out = bash(f, command);
+      expect(out, command).toContain("command-guard");
+      expect(out, command).toContain("could not be parsed safely");
+    }
+  });
+
+  it("still allows heredocs for git, gh, cat and tee", () => {
+    const f = fixture();
+    for (const command of [
+      "git commit -F - <<'EOF'\nmsg\nEOF",
+      "gh pr create --body-file - <<'EOF'\nbody\nEOF",
+      "cat <<'EOF' > x.md\nbody\nEOF",
+      "tee x.md <<'EOF'\nbody\nEOF",
+      "cat <<'EOF' | tee x.md\nbody\nEOF",
+    ]) {
+      expect(allowed(bash(f, command)), command).toBe(true);
+    }
+  });
+
   it("strips leading tabs for <<- only", () => {
     const f = fixture();
     expect(allowed(bash(f, "cat <<-'EOF'\n\tx\n\tEOF"))).toBe(true);

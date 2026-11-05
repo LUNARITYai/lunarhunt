@@ -13,7 +13,72 @@ export type Pipeline =
   | { ok: true; segments: Segment[]; pipes: boolean[] }
   | { ok: false };
 
-type RawSegment = { words: string[]; pipeAfter: boolean };
+type RawSegment = { words: string[]; pipeAfter: boolean; heredoc: boolean };
+
+/**
+ * A quoted heredoc body is data only for a command that treats stdin as text.
+ * Consumer allowlist: the command word that receives the heredoc must be one
+ * of these. Interpreters and exec wrappers would execute the body, so a
+ * pipeline with a heredoc is unparseable (denied) when any word of any other
+ * segment, or any later word of the receiver, names one of them (also by
+ * path, e.g. `/bin/sh`).
+ */
+const HEREDOC_CONSUMERS = new Set(["git", "gh", "cat", "tee"]);
+const EXECUTORS = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "python",
+  "node",
+  "deno",
+  "bun",
+  "ruby",
+  "perl",
+  "php",
+  "awk",
+  "gawk",
+  "eval",
+  "source",
+  ".",
+  "exec",
+  "xargs",
+  "env",
+  "sudo",
+  "doas",
+  "nohup",
+  "time",
+  "timeout",
+  "nice",
+  "command",
+  "builtin",
+  "busybox",
+  "ssh",
+]);
+
+function commandName(word: string): string {
+  return word.slice(word.lastIndexOf("/") + 1);
+}
+
+function isExecutor(word: string): boolean {
+  const name = commandName(word);
+  return EXECUTORS.has(name) || /^(python|ruby|perl|php)[\d.]*$/.test(name);
+}
+
+function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
+  if (!raw.some((segment) => segment.heredoc)) {
+    return true;
+  }
+  return prepared.every((segment, index) => {
+    const head = segment.argv[0] ?? "";
+    if (raw[index]?.heredoc && !HEREDOC_CONSUMERS.has(head)) {
+      return false;
+    }
+    return !segment.argv.slice(raw[index]?.heredoc ? 1 : 0).some(isExecutor);
+  });
+}
 
 export function tokenize(command: string): Pipeline {
   const raw = scan(command);
@@ -21,6 +86,9 @@ export function tokenize(command: string): Pipeline {
     return { ok: false };
   }
   const segments = raw.map((segment) => prepare(segment.words));
+  if (!heredocSafe(raw, segments)) {
+    return { ok: false };
+  }
   const pipes = raw.slice(0, -1).map((segment) => segment.pipeAfter);
   return { ok: true, segments, pipes };
 }
@@ -90,6 +158,7 @@ function skipHeredocBody(
 function scan(command: string): RawSegment[] | null {
   const segments: RawSegment[] = [];
   const pending: Heredoc[] = [];
+  let heredoc = false;
   let words: string[] = [];
   let buf = "";
   let wordStarted = false;
@@ -106,8 +175,9 @@ function scan(command: string): RawSegment[] | null {
 
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
-    segments.push({ words, pipeAfter });
+    segments.push({ words, pipeAfter, heredoc });
     words = [];
+    heredoc = false;
   };
 
   for (let index = 0; index < command.length; index += 1) {
@@ -141,6 +211,10 @@ function scan(command: string): RawSegment[] | null {
         quote = null;
         wordStarted = true;
         continue;
+      }
+      // Double quotes still expand command substitution.
+      if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
+        return null;
       }
       buf += ch;
       wordStarted = true;
@@ -183,6 +257,7 @@ function scan(command: string): RawSegment[] | null {
       }
       flushWord();
       pending.push(start.heredoc);
+      heredoc = true;
       index = start.next;
       continue;
     }
@@ -228,7 +303,7 @@ function scan(command: string): RawSegment[] | null {
     return null;
   }
   flushWord();
-  segments.push({ words, pipeAfter: false });
+  segments.push({ words, pipeAfter: false, heredoc });
   return segments;
 }
 
