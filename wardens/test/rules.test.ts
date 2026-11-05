@@ -214,6 +214,86 @@ describe("protected-paths", () => {
   });
 });
 
+describe("protected-paths: ask paths are readable (#46)", () => {
+  const askPaths = [
+    "AGENTS.md",
+    "docs/specs/AGENTS.md",
+    "docs/constitution.md",
+  ];
+  // Root AGENTS.md is outside the Charter's allowed_paths, so scope-guard denies its edits first.
+  const inScopeAskPaths = [
+    "apps/api/AGENTS.md",
+    "docs/specs/AGENTS.md",
+    "docs/constitution.md",
+  ];
+  const readers = [
+    { tool: "claude", event: "PreToolUse" },
+    { tool: "cursor", event: "beforeReadFile" },
+    { tool: "cursor", event: "preToolUse" },
+  ] as const;
+
+  it("allows a read of an ask path in interactive and non-interactive sessions, for both tools", () => {
+    const root = tempRepo();
+    for (const reader of readers) {
+      for (const path of askPaths) {
+        for (const interactive of [true, false]) {
+          const verdict = decide(root, {
+            ...reader,
+            action: "read",
+            path,
+            interactive,
+          });
+          expect(
+            verdict.decision,
+            `${reader.tool}/${reader.event} ${path} interactive=${interactive}`,
+          ).toBe("allow");
+        }
+      }
+    }
+  });
+
+  it("still denies an edit, write or delete of an ask path non-interactively and asks interactively", () => {
+    const root = tempRepo();
+    for (const reader of readers) {
+      for (const path of inScopeAskPaths) {
+        for (const action of ["edit", "write", "delete"] as const) {
+          const headless = decide(root, {
+            ...reader,
+            action,
+            path,
+            interactive: false,
+          });
+          expect(headless.decision, `${reader.tool} ${action} ${path}`).toBe(
+            "deny",
+          );
+          expect(headless.rule).toBe("protected-paths");
+          const live = decide(root, {
+            ...reader,
+            action,
+            path,
+            interactive: true,
+          });
+          expect(live.decision, `${reader.tool} ${action} ${path}`).toBe("ask");
+        }
+      }
+    }
+  });
+
+  it("keeps secret-read-guard on reads and leaves deny paths unchanged", () => {
+    const root = tempRepo();
+    expect(decide(root, { action: "read", path: ".env.local" }).rule).toBe(
+      "secret-read-guard",
+    );
+    // protected.deny covers mutations only: a read of a deny path is not blocked by protected-paths.
+    expect(
+      decide(root, { action: "read", path: "panopticon.charter.yaml" }),
+    ).toMatchObject({ decision: "allow", rule: "none" });
+    expect(
+      decide(root, { action: "edit", path: "panopticon.charter.yaml" }).rule,
+    ).toBe("protected-paths");
+  });
+});
+
 describe("command-guard", () => {
   const allow = [
     "git push -n",
