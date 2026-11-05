@@ -16,6 +16,8 @@ export type RuleContext = {
   charter: Charter;
   task: TaskState;
   root: string;
+  /** Home dir for `~` and `paths.external` in shell commands; defaults to the OS home. */
+  home?: string;
   /** Injected by tests so `pnpm check` never runs for real. */
   dod?: DodDeps;
 };

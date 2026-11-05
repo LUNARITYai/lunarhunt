@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Charter } from "./charter.ts";
 import {
   firstDeny,
@@ -5,6 +7,7 @@ import {
   secretCandidates,
   tokenize,
 } from "./command.ts";
+import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
 import { wardenMessage } from "./messages.ts";
@@ -230,6 +233,14 @@ export function commandGuard(ctx: RuleContext): Objection | null {
   return null;
 }
 
+/** The shell expands a leading `~`; the tokenizer does not. */
+function expandHome(path: string, home: string): string {
+  if (path === "~") {
+    return home;
+  }
+  return path.startsWith("~/") ? join(home, path.slice(2)) : path;
+}
+
 function secretDeny(path: string): Objection {
   return block(
     "secret-read-guard",
@@ -258,11 +269,31 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
   if (!pipeline.ok) {
     return null;
   }
+  const home = ctx.home ?? homedir();
   for (const segment of pipeline.segments) {
     for (const candidate of secretCandidates(segment)) {
-      const resolved = resolveRepoPath(candidate, ctx.event.cwd, ctx.root);
+      const path = expandHome(candidate.path, home);
+      const resolved = resolveRepoPath(path, ctx.event.cwd, ctx.root);
       if (!resolved.ok) {
-        throw new EngineFailure("path escapes the worktree");
+        // Same treatment as the Read and Write tools: an outside path must match
+        // `paths.external` for this read or write, and only its basename is checked.
+        const allowed =
+          resolved.reason === "escape"
+            ? externalAllows(
+                ctx.charter.paths.external,
+                candidate.write ? "write" : "read",
+                path,
+                ctx.event.cwd,
+                home,
+              )
+            : null;
+        if (allowed === null) {
+          throw new EngineFailure("path escapes the worktree");
+        }
+        if (denyListMatches(secrets, basename(allowed))) {
+          return secretDeny(allowed);
+        }
+        continue;
       }
       if (denyListMatches(secrets, resolved.path)) {
         return secretDeny(resolved.path);

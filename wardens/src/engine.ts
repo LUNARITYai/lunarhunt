@@ -493,6 +493,7 @@ export function runHook(
       charter: policy.charter,
       task: policy.task,
       root: toplevel,
+      home: deps.home ?? homedir(),
       ...(deps.dod ? { dod: deps.dod } : {}),
     }),
     event: normalized.event,
