@@ -100,6 +100,34 @@ function prState(
   }
 }
 
+/** True when `gh` reports a MERGED PR for the branch (squash merges leave no ancestor). */
+function mergedPr(deps: Deps, cwd: string, branch: string): boolean {
+  const res = deps.gh(
+    [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "merged",
+      "--json",
+      "state",
+      "--limit",
+      "1",
+    ],
+    cwd,
+  );
+  if (res.status !== 0) {
+    return false;
+  }
+  try {
+    const data = JSON.parse(res.stdout) as { state?: unknown }[];
+    return data[0]?.state === "MERGED";
+  } catch {
+    return false;
+  }
+}
+
 function newWorktree(
   cfg: WorktreeConfig,
   cwd: string,
@@ -294,8 +322,9 @@ function removeOne(
   let note = `removed ${name}`;
   if (
     entry.branch !== null &&
-    git(primary, ["merge-base", "--is-ancestor", entry.branch, cfg.base_ref])
-      .ok &&
+    (git(primary, ["merge-base", "--is-ancestor", entry.branch, cfg.base_ref])
+      .ok ||
+      mergedPr(deps, primary, entry.branch)) &&
     git(primary, ["branch", "-D", entry.branch]).ok
   ) {
     note += `, deleted branch ${entry.branch}`;

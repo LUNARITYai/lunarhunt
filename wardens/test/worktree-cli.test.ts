@@ -389,6 +389,30 @@ describe("wardens worktree remove", () => {
     expect(sh(f.primary, "branch", "--list", branch)).toContain(branch);
   });
 
+  it("deletes a squash-merged branch (PR MERGED, not an ancestor)", () => {
+    const { f, name, branch } = made(34, "s");
+    const wt = wtPath(f, name);
+    sh(wt, "commit", "-q", "--allow-empty", "-m", "work");
+    sh(wt, "push", "-q", "origin", branch);
+    f.prs.set(branch, "MERGED");
+    const res = runWorktree({ sub: "remove", arg: name }, f.deps());
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain(`deleted branch ${branch}`);
+    expect(sh(f.primary, "branch", "--list", branch)).toBe("");
+  });
+
+  it("prune removes a closed-PR worktree but keeps its branch", () => {
+    const { f, name, branch } = made(35, "x");
+    const wt = wtPath(f, name);
+    sh(wt, "commit", "-q", "--allow-empty", "-m", "work");
+    sh(wt, "push", "-q", "origin", branch);
+    f.prs.set(branch, "CLOSED");
+    const res = runWorktree({ sub: "prune" }, f.deps());
+    expect(res.exitCode).toBe(0);
+    expect(existsSync(wt)).toBe(false);
+    expect(sh(f.primary, "branch", "--list", branch)).toContain(branch);
+  });
+
   it("fails on an unknown name", () => {
     const f = fixture();
     expect(runWorktree({ sub: "remove", arg: "nope" }, f.deps()).exitCode).toBe(
