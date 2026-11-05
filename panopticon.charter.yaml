@@ -90,6 +90,10 @@ commands:
     - "git -c core.hooksPath=*"
     - "git config core.hooksPath*"
     - "wardens worktree remove * --force*"
+    # Spec #38, Decisions item 2: agents cannot widen task scope through issue bodies.
+    - "gh issue edit * --body*"
+    - "gh issue edit * -b *"
+    - "gh issue edit * --body-file*"
   allow:
     - "pnpm turbo run *"
     - "pnpm check*"
@@ -97,6 +101,59 @@ commands:
     - "uv run ruff *"
   rewrite:
     npm install: pnpm install
+
+worktree: # ADR-0012, spec docs/specs/2026-11-05-wardens-worktree.md
+  required_for_agents: true
+  protected_branches: ["main"]
+  base_ref: "origin/main"
+  naming:
+    worktree: "{issue}-{slug}"
+    branch: "{type}/{issue}-{slug}"
+    slug_max_length: 40
+  location:
+    default: ".claude/worktrees/{name}"
+  setup:
+    steps:
+      - "pnpm install --frozen-lockfile"
+      - "uv sync --frozen"
+      - "pnpm exec lefthook install"
+    env_template: ".env.example"
+    copy_from_primary: []
+  resources:
+    ports: { web: 30000, api: 31000 }
+    # database: "lunarhunt_t{issue}"   # enable once the Dev Container Postgres is the norm
+  primary_read_only_commands:
+    - "git status*"
+    - "git log*"
+    - "git diff*"
+    - "git fetch*"
+    - "git worktree list*"
+    - "rg *"
+    - "ls*"
+    - "cat *"
+    - "wardens worktree *"
+    - "wardens doctor*"
+    - "claude --worktree *"
+    - "claude -w *"
+    - "agent -w *"
+    - "agent --worktree *"
+    - "gh issue view*"
+    - "gh issue list*"
+    - "gh issue create*"
+    - "gh issue comment*"
+    - "gh issue edit * --add-label*"
+    - "gh issue edit * --remove-label*"
+    - "gh pr view*"
+    - "gh pr list*"
+    - "gh pr checks*"
+    - "gh pr diff*"
+    - "gh pr create*"
+    - "gh pr comment*"
+    - "gh pr edit*"
+    - "gh pr ready*"
+    - "gh label list*"
+  cleanup:
+    stale_after_days: 7
 
 covenant:
   agents_md_exempt: ["packages/contracts", "packages/api-client"]
