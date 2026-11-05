@@ -1,6 +1,16 @@
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
 
+/**
+ * Both readings of a command: comment-aware, and `#` as an ordinary character.
+ * Every deny-side consumer must hold for BOTH (deny if either matches, yields a
+ * candidate, or is unparseable), so a `#` the shell reads differently from us
+ * cannot hide a command.
+ */
+export function tokenizeAll(command: string): Pipeline[] {
+  return [tokenize(command, true), tokenize(command, false)];
+}
+
 export type ArgToken = { text: string; value: boolean };
 
 export type Segment = {
@@ -102,8 +112,13 @@ function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
   });
 }
 
-export function tokenize(command: string): Pipeline {
-  const scanned = scan(command);
+/**
+ * `comments: false` reads `#` as an ordinary character. A comment is not always
+ * a comment to the shell (`${x:- #}`, `$[1 #]`), so deny-side checks must use
+ * `tokenizeAll`, never a single reading.
+ */
+export function tokenize(command: string, comments = true): Pipeline {
+  const scanned = scan(command, comments);
   if (!scanned) {
     return { ok: false };
   }
@@ -186,7 +201,10 @@ function skipHeredocBody(
   return null;
 }
 
-function scan(command: string): {
+function scan(
+  command: string,
+  comments: boolean,
+): {
   segments: RawSegment[];
   comment: boolean;
   newline: boolean;
@@ -307,7 +325,7 @@ function scan(command: string): {
       wordStarted = true;
       continue;
     }
-    if (ch === "#" && !wordStarted) {
+    if (comments && ch === "#" && !wordStarted) {
       // A comment runs to the next newline (not consumed). Nothing inside it is
       // parsed: no quotes, continuation or heredoc, as the shell does.
       comment = true;

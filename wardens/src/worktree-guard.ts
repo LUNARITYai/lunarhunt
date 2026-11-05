@@ -3,8 +3,9 @@ import { join } from "node:path";
 import type { WorktreeConfig } from "./charter.ts";
 import {
   isDevicePath,
+  type Pipeline,
   type Segment,
-  tokenize,
+  tokenizeAll,
   writeTargets,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
@@ -393,7 +394,7 @@ function externalWriteOk(
 
 const REDIRECT_WORD =
   /^(\{[A-Za-z_][A-Za-z0-9_]*\}|\d*|&)?(<>|<&|<|>>|>\||>&|>)(.*)$/;
-const REDIRECT_META = /[<>&()]/;
+const REDIRECT_META = /[<>&()#]/;
 
 /**
  * Checks the words the tokenizer flagged (unquoted `<`, `>`, `(`, `)`). The
@@ -475,10 +476,18 @@ function readOnlyCommand(ctx: RuleContext, config: WorktreeConfig): boolean {
   if (ctx.event.command === null) {
     return false;
   }
-  const pipeline = tokenize(ctx.event.command);
-  if (!pipeline.ok) {
-    return false;
-  }
+  // Both readings of `#` must pass: a comment the shell reads differently from
+  // the comment-aware scan cannot hide a command from the other one.
+  return tokenizeAll(ctx.event.command).every(
+    (pipeline) => pipeline.ok && readOnlyPipeline(ctx, config, pipeline),
+  );
+}
+
+function readOnlyPipeline(
+  ctx: RuleContext,
+  config: WorktreeConfig,
+  pipeline: Extract<Pipeline, { ok: true }>,
+): boolean {
   // Comments and multi-line commands hide text from every later check; the
   // read-only path needs neither. A heredoc body is not a newline in this sense.
   if (pipeline.comment || pipeline.newline) {

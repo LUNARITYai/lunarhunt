@@ -287,6 +287,7 @@ const DENIED = [
   "cat a\nrm x",
   "ls #x",
   "git status # note",
+  "cat a <# x",
 ];
 
 // Forms OVERSEER uses from the primary checkout: all must stay allowed.

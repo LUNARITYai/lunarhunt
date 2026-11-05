@@ -334,6 +334,29 @@ describe("shell comments in the tokenizer", () => {
   });
 });
 
+describe("a # the shell reads differently from the tokenizer", () => {
+  const f = fixture();
+
+  it("still hits commands.deny", () => {
+    for (const command of [
+      "echo $\u007bx:- #}; git push --force origin main",
+      "echo $\u007bx:-a #}&& npm publish",
+      "echo $[1 #]; git push +main",
+      "echo a # x; git push --force",
+      "git commit -m a #note --no-verify",
+      "echo a # x \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("still hits secret-read-guard", () => {
+    for (const command of ["cat .env # c", "echo x #; cat .env"]) {
+      expect(bash(f, command), command).toContain("secret-read-guard");
+    }
+  });
+});
+
 describe("device paths in shell", () => {
   const devices = [
     "/dev/null",
