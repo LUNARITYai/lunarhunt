@@ -169,6 +169,7 @@ describe("fail-closed engine", () => {
       replacement: "pnpm install",
     });
     const verdict = evaluateRules(ctx, {
+      "worktree-guard": () => null,
       "protected-paths": deny,
       "secret-read-guard": () => null,
       "generated-files-guard": () => null,

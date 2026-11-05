@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { secretCandidates, tokenize } from "../src/command.ts";
 import { runHook } from "../src/engine.ts";
-import { normativeCharter, tempRepo } from "./support.ts";
+import { charterWithoutWorktree, tempRepo } from "./support.ts";
 
 function real(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -22,7 +22,7 @@ function fixture(): Fixture {
   const root = tempRepo();
   const readDir = real("wardens-shell-read-");
   const writeDir = real("wardens-shell-write-");
-  const doc = parse(normativeCharter());
+  const doc = parse(charterWithoutWorktree());
   doc.paths.external = { read: [`${readDir}/**`], write: [`${writeDir}/**`] };
   writeFileSync(join(root, "panopticon.charter.yaml"), stringify(doc));
   return { root, home: real("wardens-shell-home-"), readDir, writeDir };
@@ -293,11 +293,128 @@ describe("paths.external in shell", () => {
 
   it("denies external shell paths without a paths.external key", () => {
     const f = fixture();
-    const doc = parse(normativeCharter());
+    const doc = parse(charterWithoutWorktree());
     writeFileSync(join(f.root, "panopticon.charter.yaml"), stringify(doc));
     expect(bash(f, `cat ${join(f.readDir, "a.txt")}`)).toContain(
       "path escapes the worktree",
     );
+  });
+});
+
+describe("shell comments in the tokenizer", () => {
+  it("drops a comment up to the newline and flags it", () => {
+    const pipeline = tokenize("echo a # b; rm x");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments.map((segment) => segment.argv)).toEqual([
+        ["echo", "a"],
+      ]);
+      expect(pipeline.comment).toBe(true);
+      expect(pipeline.newline).toBe(false);
+    }
+  });
+
+  it("keeps the command after the comment line and flags the newline", () => {
+    const pipeline = tokenize("ls # x \\\nrm -rf y");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments.map((segment) => segment.argv)).toEqual([
+        ["ls"],
+        ["rm", "-rf", "y"],
+      ]);
+      expect(pipeline.newline).toBe(true);
+    }
+  });
+
+  it("does not treat a mid-word or quoted # as a comment", () => {
+    for (const command of ["echo a#b", "echo '#x'", 'echo "#x"']) {
+      const pipeline = tokenize(command);
+      expect(pipeline.ok && pipeline.comment, command).toBe(false);
+    }
+  });
+});
+
+describe("a # the shell reads differently from the tokenizer", () => {
+  const f = fixture();
+
+  it("still hits commands.deny", () => {
+    for (const command of [
+      "echo $\u007bx:- #}; git push --force origin main",
+      "echo $\u007bx:-a #}&& npm publish",
+      "echo $[1 #]; git push +main",
+      "echo a # x; git push --force",
+      "git commit -m a #note --no-verify",
+      "echo a # x \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("fails closed when a real comment meets shell syntax that can change #", () => {
+    const parse = "the command could not be parsed safely";
+    for (const command of [
+      "echo a # it's\necho $\u007bx:- #}; git push --force origin main; echo 'x' # it's",
+      "echo a # it's\necho $\u007bx:- #}; npm publish; echo 'x' # it's",
+      "echo a # c\necho $\u007bx#pat}",
+      "echo a # c\necho $[1 #]",
+      "echo a # c\necho $(( 1 #))",
+      "echo a # c\ncase x in x) git push --force;; esac",
+    ]) {
+      expect(bash(f, command), command).toContain(parse);
+    }
+  });
+
+  it("fails closed for a # right after a parenthesis or brace", () => {
+    for (const command of [
+      "(echo a)# x \\\ngit push --force origin main",
+      "(# y \\\ngit push --force origin main)",
+      "(echo a)#x \\\nnpm publish",
+      "echo a;(# x \\\ngit push --force)",
+      "{ echo a; }# x \\\ngit push --force",
+      "a)#x \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("fails closed for operator-adjacent # and # with a continuation", () => {
+    for (const command of [
+      "echo a &!# x \\\ngit push --force origin main",
+      "echo a &|# x \\\nnpm publish",
+      "echo a &! # x \\\ngit push --force",
+      "ls # c \\\ngit push --force",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("splits zsh &! and &| like &", () => {
+    for (const command of [
+      "echo a &! git push --force",
+      "echo a &| npm publish",
+    ]) {
+      expect(bash(f, command), command).toContain("command-guard");
+    }
+  });
+
+  it("keeps a continuation without # working", () => {
+    expect(allowed(bash(f, "pnpm --filter wardens \\\ntest"))).toBe(true);
+  });
+
+  it("keeps plain comments and quoted # working", () => {
+    for (const command of [
+      "pnpm check # run the checks",
+      "git log --grep='#12'",
+      "gh issue comment 5 --body 'fix #12'",
+    ]) {
+      expect(allowed(bash(f, command)), command).toBe(true);
+    }
+  });
+
+  it("still hits secret-read-guard", () => {
+    for (const command of ["cat .env # c", "echo x #; cat .env"]) {
+      expect(bash(f, command), command).toContain("secret-read-guard");
+    }
   });
 });
 

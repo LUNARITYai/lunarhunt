@@ -10,7 +10,7 @@ import {
 } from "../src/event.ts";
 import { resolveRepoPath } from "../src/paths.ts";
 import { loadTask } from "../src/task.ts";
-import { normativeCharter, tempRepo, writeRepoFile } from "./support.ts";
+import { charterWithoutWorktree, tempRepo, writeRepoFile } from "./support.ts";
 
 const env = {} as NodeJS.ProcessEnv;
 
@@ -127,11 +127,11 @@ describe("path resolution", () => {
 
   it("resolves ..notes.md and allows the edit when that file is in scope", () => {
     const root = tempRepo();
-    const charter = normativeCharter().replace(
+    const charter = charterWithoutWorktree().replace(
       '    - "turbo.json"\n',
       '    - "turbo.json"\n    - "..notes.md"\n',
     );
-    expect(charter).not.toBe(normativeCharter());
+    expect(charter).not.toBe(charterWithoutWorktree());
     writeRepoFile(root, "panopticon.charter.yaml", charter);
     writeRepoFile(root, "..notes.md", "notes\n");
     expect(resolveRepoPath("..notes.md", root, root)).toEqual({

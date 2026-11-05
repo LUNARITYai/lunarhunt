@@ -5,7 +5,7 @@ import {
   firstDeny,
   rewriteCommand,
   secretCandidates,
-  tokenize,
+  tokenizeAll,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
@@ -211,20 +211,25 @@ export function commandGuard(ctx: RuleContext): Objection | null {
       "Retry with an explicit command",
     );
   }
-  const pipeline = tokenize(ctx.event.command);
-  if (!pipeline.ok) {
+  const pipelines = tokenizeAll(ctx.event.command);
+  const parsed = pipelines.filter((pipeline) => pipeline.ok);
+  if (parsed.length !== pipelines.length) {
     return block(
       "command-guard",
       "deny",
       "the command could not be parsed safely",
-      "Retry with a simpler command",
+      "Retry without shell comments or with a simpler command",
     );
   }
-  const denied = firstDeny(ctx.charter.commands.deny, pipeline);
-  if (denied) {
-    return commandDeny(denied);
+  for (const pipeline of parsed) {
+    const denied = firstDeny(ctx.charter.commands.deny, pipeline);
+    if (denied) {
+      return commandDeny(denied);
+    }
   }
-  const replacement = rewriteCommand(ctx.charter.commands.rewrite, pipeline);
+  const replacement = parsed
+    .map((pipeline) => rewriteCommand(ctx.charter.commands.rewrite, pipeline))
+    .find((candidate) => candidate);
   if (replacement) {
     return block(
       "command-guard",
@@ -269,12 +274,11 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
   }
-  const pipeline = tokenize(ctx.event.command);
-  if (!pipeline.ok) {
-    return null;
-  }
+  const segments = tokenizeAll(ctx.event.command).flatMap((pipeline) =>
+    pipeline.ok ? pipeline.segments : [],
+  );
   const home = ctx.home ?? homedir();
-  for (const segment of pipeline.segments) {
+  for (const segment of segments) {
     for (const candidate of secretCandidates(segment)) {
       const path = expandHome(candidate.path, home);
       const resolved = resolveRepoPath(path, ctx.event.cwd, ctx.root);

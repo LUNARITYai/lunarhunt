@@ -1,19 +1,80 @@
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
 
+/**
+ * Both readings of a command: comment-aware, and `#` as an ordinary character.
+ * Every deny-side consumer must hold for BOTH (deny if either matches, yields a
+ * candidate, or is unparseable), so a `#` the shell reads differently from us
+ * cannot hide a command.
+ *
+ * The union is not enough when a real comment and a literal `#` are mixed
+ * (`echo a # it's` then `echo ${x:- #}; git push --force`): neither reading
+ * sees the push. So a command with an unquoted `#` anywhere (`hash`: at a word
+ * start or inside a word, since the shell also starts a comment after `(` or
+ * `)`) AND shell syntax able to change what `#` means (see `special`) is
+ * treated as unparseable. Both flags are taken from either reading. This is
+ * intentionally conservative; false positives are accepted. Two more classes are
+ * closed rather than chased one by one: any unquoted `#` together with a
+ * backslash-newline continuation, and a `#` right after an operator character
+ * (`&`, `!`, `|`, `;`, `<`, `>`, `(`, `)`, `{`), as in zsh `&!#`.
+ */
+export function tokenizeAll(command: string): Pipeline[] {
+  const aware = tokenize(command, true);
+  const plain = tokenize(command, false);
+  const hash = aware.ok && (aware.hash || (plain.ok && plain.hash));
+  const special = aware.ok && (aware.special || (plain.ok && plain.special));
+  const continued =
+    aware.ok && (aware.continuation || (plain.ok && plain.continuation));
+  const adjacent = aware.ok && (aware.adjacent || (plain.ok && plain.adjacent));
+  if ((hash && (special || continued)) || adjacent) {
+    return [{ ok: false }, { ok: false }];
+  }
+  return [aware, plain];
+}
+
 export type ArgToken = { text: string; value: boolean };
 
 export type Segment = {
   env: Record<string, string>;
   argv: string[];
   tokens: ArgToken[];
+  /** Indexes into `argv` of words that held an unquoted `<`, `>`, `(` or `)`: redirects, process substitution, fd forms. */
+  meta: number[];
+  /**
+   * Indexes into `argv` of words the shell may rewrite after we have read them:
+   * an unquoted `$`, `{`, `}`, `*`, `?`, `[`, a `~user` tilde, or a `$` inside
+   * double quotes. Single-quoted and backslash-escaped text is literal.
+   */
+  expand: number[];
 };
 
 export type Pipeline =
-  | { ok: true; segments: Segment[]; pipes: boolean[] }
+  | {
+      ok: true;
+      segments: Segment[];
+      pipes: boolean[];
+      /** The command held a shell comment (an unquoted `#` at the start of a word). */
+      comment: boolean;
+      /** The command held an unquoted newline outside a heredoc body, followed by more text. */
+      newline: boolean;
+      /** Shell syntax that can change what a `#` means: `$`, `(`, `)`, `{`, `}`, `[`, `]` outside single quotes, or a `case` word. */
+      special: boolean;
+      /** The command held an unquoted `#` anywhere in a word, at its start or inside it. */
+      hash: boolean;
+      /** The command held an unquoted or double-quoted backslash-newline continuation. */
+      continuation: boolean;
+      /** An unquoted `#` followed one of `& ! | ; < > ( ) {`. */
+      adjacent: boolean;
+    }
   | { ok: false };
 
-type RawSegment = { words: string[]; pipeAfter: boolean; heredoc: boolean };
+type RawSegment = {
+  words: string[];
+  pipeAfter: boolean;
+  heredoc: boolean;
+  meta: number[];
+  expand: number[];
+};
 
 /**
  * A quoted heredoc body is data only for a command that treats stdin as text.
@@ -80,17 +141,35 @@ function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
   });
 }
 
-export function tokenize(command: string): Pipeline {
-  const raw = scan(command);
-  if (!raw) {
+/**
+ * `comments: false` reads `#` as an ordinary character. A comment is not always
+ * a comment to the shell (`${x:- #}`, `$[1 #]`), so deny-side checks must use
+ * `tokenizeAll`, never a single reading.
+ */
+export function tokenize(command: string, comments = true): Pipeline {
+  const scanned = scan(command, comments);
+  if (!scanned) {
     return { ok: false };
   }
-  const segments = raw.map((segment) => prepare(segment.words));
+  const raw = scanned.segments;
+  const segments = raw.map((segment) =>
+    prepare(segment.words, segment.meta, segment.expand),
+  );
   if (!heredocSafe(raw, segments)) {
     return { ok: false };
   }
   const pipes = raw.slice(0, -1).map((segment) => segment.pipeAfter);
-  return { ok: true, segments, pipes };
+  return {
+    ok: true,
+    segments,
+    pipes,
+    comment: scanned.comment,
+    newline: scanned.newline,
+    special: scanned.special,
+    hash: scanned.hash,
+    continuation: scanned.continuation,
+    adjacent: scanned.adjacent,
+  };
 }
 
 type Heredoc = { delimiter: string; stripTabs: boolean };
@@ -155,33 +234,70 @@ function skipHeredocBody(
   return null;
 }
 
-function scan(command: string): RawSegment[] | null {
+function scan(
+  command: string,
+  comments: boolean,
+): {
+  segments: RawSegment[];
+  comment: boolean;
+  newline: boolean;
+  special: boolean;
+  hash: boolean;
+  continuation: boolean;
+  adjacent: boolean;
+} | null {
   const segments: RawSegment[] = [];
+  let comment = false;
+  let newline = false;
+  let special = false;
+  let hash = false;
+  let continuation = false;
+  let adjacent = false;
   const pending: Heredoc[] = [];
   let heredoc = false;
   let words: string[] = [];
+  let metas: number[] = [];
+  let expands: number[] = [];
   let buf = "";
   let wordStarted = false;
+  let wordMeta = false;
+  let wordExpand = false;
+  let lastGt = false;
   let quote: "single" | "double" | null = null;
 
   const flushWord = (): void => {
     if (!wordStarted) {
       return;
     }
+    if (buf === "case") {
+      special = true;
+    }
+    if (wordMeta) {
+      metas.push(words.length);
+    }
+    if (wordExpand) {
+      expands.push(words.length);
+    }
     words.push(buf);
     buf = "";
     wordStarted = false;
+    wordMeta = false;
+    wordExpand = false;
   };
 
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
-    segments.push({ words, pipeAfter, heredoc });
+    segments.push({ words, pipeAfter, heredoc, meta: metas, expand: expands });
     words = [];
+    metas = [];
+    expands = [];
     heredoc = false;
   };
 
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index] ?? "";
+    const afterGt = lastGt;
+    lastGt = false;
     if (quote === "single") {
       if (ch === "'") {
         quote = null;
@@ -196,6 +312,12 @@ function scan(command: string): RawSegment[] | null {
         const next = command[index + 1];
         if (next === undefined) {
           return null;
+        }
+        if (next === "\n") {
+          // Line continuation: the shell deletes both characters.
+          continuation = true;
+          index += 1;
+          continue;
         }
         if (next === "\\" || next === '"') {
           buf += next;
@@ -216,6 +338,10 @@ function scan(command: string): RawSegment[] | null {
       if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
         return null;
       }
+      if (ch === "$") {
+        wordExpand = true;
+        special = true;
+      }
       buf += ch;
       wordStarted = true;
       continue;
@@ -224,6 +350,12 @@ function scan(command: string): RawSegment[] | null {
       const next = command[index + 1];
       if (next === undefined) {
         return null;
+      }
+      if (next === "\n") {
+        // Line continuation: the shell deletes both characters and the word stays open.
+        continuation = true;
+        index += 1;
+        continue;
       }
       buf += next;
       wordStarted = true;
@@ -240,6 +372,18 @@ function scan(command: string): RawSegment[] | null {
       wordStarted = true;
       continue;
     }
+    if (ch === "#" && /[&!|;<>(){]/.test(command[index - 1] ?? "")) {
+      adjacent = true;
+    }
+    if (comments && ch === "#" && !wordStarted) {
+      // A comment runs to the next newline (not consumed). Nothing inside it is
+      // parsed: no quotes, continuation or heredoc, as the shell does.
+      comment = true;
+      hash = true;
+      const end = command.indexOf("\n", index);
+      index = (end === -1 ? command.length : end) - 1;
+      continue;
+    }
     if (ch === " " || ch === "\t" || ch === "\r") {
       flushWord();
       continue;
@@ -248,6 +392,7 @@ function scan(command: string): RawSegment[] | null {
       if (command[index + 2] === "<") {
         buf += "<<<";
         wordStarted = true;
+        wordMeta = true;
         index += 2;
         continue;
       }
@@ -275,6 +420,9 @@ function scan(command: string): RawSegment[] | null {
       continue;
     }
     if (ch === "\n" || ch === ";") {
+      if (ch === "\n" && command.slice(index + 1).trim() !== "") {
+        newline = true;
+      }
       endSegment(false);
       continue;
     }
@@ -292,35 +440,102 @@ function scan(command: string): RawSegment[] | null {
       index += 1;
       continue;
     }
+    if (ch === "&") {
+      // `&>`, `&>>` and `>&` are redirects; any other lone `&` backgrounds the
+      // command before it, so what follows is a new segment.
+      if (command[index + 1] === ">" || afterGt) {
+        buf += ch;
+        wordStarted = true;
+        wordMeta = true;
+        continue;
+      }
+      // zsh `&!` and `&|` background and disown: also a separator, two characters.
+      if (command[index + 1] === "!" || command[index + 1] === "|") {
+        index += 1;
+      }
+      endSegment(false);
+      continue;
+    }
     if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
       return null;
     }
+    if (
+      /[$}{*?[]/.test(ch) ||
+      // A tilde expands only at the start of a word, and only `~` alone or `~/`
+      // is safe: `~user`, `~+` and `~-` name other directories.
+      (ch === "~" &&
+        !wordStarted &&
+        !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))
+    ) {
+      wordExpand = true;
+    }
+    if (ch === "#") {
+      hash = true;
+    }
+    if (/[$(){}[\]]/.test(ch)) {
+      special = true;
+    }
     buf += ch;
     wordStarted = true;
+    if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
+      wordMeta = true;
+      lastGt = ch === ">";
+    }
+    if (ch === "(" || ch === ")") {
+      // A parenthesis ends the word, so a `#` right after it starts a comment,
+      // as in the shell. The paren stays in the word and keeps it flagged.
+      flushWord();
+    }
   }
 
   if (quote !== null || pending.length > 0) {
     return null;
   }
   flushWord();
-  segments.push({ words, pipeAfter: false, heredoc });
-  return segments;
+  segments.push({
+    words,
+    pipeAfter: false,
+    heredoc,
+    meta: metas,
+    expand: expands,
+  });
+  return {
+    segments,
+    comment,
+    newline,
+    special,
+    hash,
+    continuation,
+    adjacent,
+  };
 }
 
-function prepare(words: string[]): Segment {
+function prepare(
+  words: string[],
+  metaWords: number[],
+  expandWords: number[],
+): Segment {
   const env: Record<string, string> = {};
   const argv: string[] = [];
+  const meta: number[] = [];
+  const expand: number[] = [];
   let assigning = true;
-  for (const word of words) {
+  for (const [position, word] of words.entries()) {
     if (assigning && ENV_ASSIGNMENT.test(word)) {
       const eq = word.indexOf("=");
       env[word.slice(0, eq)] = word.slice(eq + 1);
       continue;
     }
     assigning = false;
+    if (metaWords.includes(position)) {
+      meta.push(argv.length);
+    }
+    if (expandWords.includes(position)) {
+      expand.push(argv.length);
+    }
     argv.push(word);
   }
-  return { env, argv, tokens: annotate(argv) };
+  return { env, argv, tokens: annotate(argv), meta, expand };
 }
 
 function consumesValue(flag: string, subcommand: string | null): boolean {
@@ -616,20 +831,49 @@ function isMessageFlag(word: string, command: string): boolean {
  * stays a candidate and counts as a write.
  */
 export function secretCandidates(segment: Segment): PathCandidate[] {
-  return collectCandidates(segment).filter(
-    (candidate) => !isDevicePath(candidate.path),
-  );
+  return collectCandidates(segment)
+    .filter((candidate) => !isDevicePath(candidate.path))
+    .map(({ path, write }) => ({ path, write }));
+}
+
+/**
+ * Paths a segment writes by its own syntax: redirect targets for any command,
+ * plus every path argument of a command that is a writer by definition
+ * (rm, mkdir, touch, tee, cp, mv...). Positional arguments of other commands
+ * are not listed: `gh pr view 12` or `git log origin/main` write nothing.
+ * The command word and device paths are never targets.
+ */
+export function writeTargets(segment: Segment): string[] {
+  const command = segment.argv[0] ?? "";
+  const writer =
+    WRITE_ALL.has(command) ||
+    command === "cp" ||
+    command === "mv" ||
+    command === "ln";
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.write &&
+        !isDevicePath(candidate.path) &&
+        (candidate.origin === "redirect" ||
+          (writer && candidate.origin === "arg")),
+    )
+    .map((candidate) => candidate.path);
 }
 
 /** Standard streams and descriptors: exact match only, so `/dev/../etc` and `/dev/sda` stay candidates. */
 const DEVICE_PATH = /^\/dev\/(?:null|stdout|stderr|stdin|fd\/[0-9]+)$/;
 
-function isDevicePath(path: string): boolean {
+export function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 
-function collectCandidates(segment: Segment): PathCandidate[] {
-  const found: PathCandidate[] = [];
+type Origin = "head" | "redirect" | "arg";
+
+function collectCandidates(
+  segment: Segment,
+): Array<PathCandidate & { origin: Origin }> {
+  const found: Array<PathCandidate & { origin: Origin }> = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
   const readOnly = READ_ONLY.has(command);
@@ -657,7 +901,7 @@ function collectCandidates(segment: Segment): PathCandidate[] {
       }
       const value = word.slice(eq + 1);
       if (value.length > 0) {
-        found.push({ path: value, write: !readOnly });
+        found.push({ path: value, write: !readOnly, origin: "arg" });
       }
     }
     const redirect = REDIRECT.exec(word);
@@ -666,23 +910,23 @@ function collectCandidates(segment: Segment): PathCandidate[] {
       if (target === "") {
         const next = argv[index + 1];
         if (next && next.length > 0) {
-          found.push({ path: next, write: true });
+          found.push({ path: next, write: true, origin: "redirect" });
           index += 1;
         }
       } else if (!target.startsWith("&")) {
-        found.push({ path: target, write: true });
+        found.push({ path: target, write: true, origin: "redirect" });
       }
       continue;
     }
     if (word === "<") {
       const next = argv[index + 1];
       if (next && next.length > 0) {
-        found.push({ path: next, write: false });
+        found.push({ path: next, write: false, origin: "arg" });
       }
       continue;
     }
     if (word.startsWith("<") && word.length > 1) {
-      found.push({ path: word.slice(1), write: false });
+      found.push({ path: word.slice(1), write: false, origin: "arg" });
       continue;
     }
     if (!word.startsWith("-")) {
@@ -690,7 +934,7 @@ function collectCandidates(segment: Segment): PathCandidate[] {
         index === 0 ||
         writeAll ||
         (!readOnly && (!copyLike || hasTarget || index === lastPositional));
-      found.push({ path: word, write });
+      found.push({ path: word, write, origin: index === 0 ? "head" : "arg" });
     }
   }
   return found;

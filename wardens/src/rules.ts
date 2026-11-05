@@ -11,6 +11,7 @@ import {
 import type { BundleProbe } from "./stale.ts";
 import type { TaskState } from "./task.ts";
 import type { Decision } from "./verdict.ts";
+import { worktreeGuard } from "./worktree-guard.ts";
 
 export type RuleContext = {
   event: NormalizedEvent;
@@ -35,6 +36,7 @@ export type Objection = {
 export type Rule = (ctx: RuleContext) => Objection | null;
 
 export const RULE_IDS = [
+  "worktree-guard",
   "protected-paths",
   "secret-read-guard",
   "generated-files-guard",
@@ -45,6 +47,7 @@ export const RULE_IDS = [
 export type RuleId = (typeof RULE_IDS)[number];
 
 export const RULES: Record<RuleId, Rule> = {
+  "worktree-guard": worktreeGuard,
   "protected-paths": protectedPaths,
   "secret-read-guard": secretReadGuard,
   "generated-files-guard": generatedFilesGuard,
