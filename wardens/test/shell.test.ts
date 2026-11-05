@@ -300,3 +300,59 @@ describe("paths.external in shell", () => {
     );
   });
 });
+
+describe("device paths in shell", () => {
+  const devices = [
+    "/dev/null",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/stdin",
+    "/dev/fd/0",
+    "/dev/fd/12",
+  ];
+  const forms = [
+    (d: string) => `echo x >${d}`,
+    (d: string) => `echo x > ${d}`,
+    (d: string) => `echo x >>${d}`,
+    (d: string) => `echo x >> ${d}`,
+    (d: string) => `echo x >|${d}`,
+    (d: string) => `echo x 2>${d}`,
+    (d: string) => `echo x 2> ${d}`,
+    (d: string) => `echo x &>${d}`,
+    (d: string) => `echo x &> ${d}`,
+    (d: string) => `cat <${d}`,
+    (d: string) => `cat < ${d}`,
+    (d: string) => `echo x | tee ${d}`,
+  ];
+
+  it("are not path candidates in any redirect form", () => {
+    const f = fixture();
+    for (const device of devices) {
+      for (const form of forms) {
+        const command = form(device);
+        expect(allowed(bash(f, command)), command).toBe(true);
+      }
+    }
+  });
+
+  it("keeps other /dev paths and traversal as escaping candidates", () => {
+    const f = fixture();
+    for (const path of [
+      "/dev/sda",
+      "/dev/null2",
+      "/dev/fd/x",
+      "/dev/fd/",
+      "/dev/../etc/passwd",
+    ]) {
+      for (const command of [
+        `echo x >${path}`,
+        `echo x 2> ${path}`,
+        `tee ${path}`,
+      ]) {
+        expect(bash(f, command), command).toContain(
+          "path escapes the worktree",
+        );
+      }
+    }
+  });
+});
