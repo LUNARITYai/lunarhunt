@@ -44,12 +44,12 @@ const HUMAN_ONLY = new Set(["new", "setup", "remove", "prune"]);
 
 const ISSUE_NUMBER = /^[1-9][0-9]{0,8}$/;
 
-function fill(template: string, values: Record<string, string>): string {
+export function fill(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
 }
 
 /** The branch part of `base_ref` (`origin/main` gives `main`), or null without a remote prefix. */
-function baseBranchOf(cfg: WorktreeConfig): string | null {
+export function baseBranchOf(cfg: WorktreeConfig): string | null {
   const i = cfg.base_ref.indexOf("/");
   return i > 0 && i < cfg.base_ref.length - 1
     ? cfg.base_ref.slice(i + 1)
@@ -191,13 +191,21 @@ function grantedNote(paths: string[]): string {
   return `granted allowed_paths: ${paths.join(", ")}\n`;
 }
 
-function newWorktree(
+/** What `newWorktree` made, so the hook can clean up after a failed setup. */
+export type Created = { target: string; branch: string };
+
+/**
+ * `expectName` (the hook): the derived worktree name must equal it exactly, so
+ * the name Claude Code asked for is the directory it gets.
+ */
+export function newWorktree(
   cfg: WorktreeConfig,
   cwd: string,
   primary: string,
   args: WorktreeArgs,
   deps: Deps,
-): Result {
+  expectName?: string,
+): Result & { created?: Created } {
   if (!ISSUE_NUMBER.test(args.arg ?? "")) {
     return fail(
       msg(
@@ -247,6 +255,14 @@ function newWorktree(
   const values = { issue: String(issue), slug, type: typed.type };
   const name = fill(cfg.naming.worktree, values);
   const branch = fill(cfg.naming.branch, values);
+  if (expectName !== undefined && name !== expectName) {
+    return fail(
+      msg(
+        `the worktree name ${expectName} is not the canonical ${name} for issue #${issue}`,
+        `Use the name ${name}`,
+      ),
+    );
+  }
   const target = join(primary, fill(cfg.location.default, { name }));
   const collision = portCollision(primary, issue, null, name);
   if (collision !== null) {
@@ -278,6 +294,7 @@ function newWorktree(
       ),
     );
   }
+  const created = { target, branch };
   const setup = setupWorktree(
     target,
     cfg,
@@ -288,9 +305,10 @@ function newWorktree(
     return {
       ...setup,
       stderr: `${setup.stderr}The worktree stays at ${target}.\n`,
+      created,
     };
   }
-  return ok(`${target}\n`, grantedNote(paths.paths));
+  return { ...ok(`${target}\n`, grantedNote(paths.paths)), created };
 }
 
 function setupHere(
@@ -442,22 +460,32 @@ function unverified(name: string): Refusal {
   };
 }
 
-/** Removes one worktree. */
-function removeOne(
+/** `worktree-<name>`: the branch of a worktree the `WorktreeCreate` hook made for a subagent. */
+const HOOK_BRANCH = /^worktree-[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Removes one worktree. `hook` is the `WorktreeRemove` mode: any linked
+ * worktree under the location root qualifies (subagent worktrees are not
+ * task worktrees), the caller's cwd is not checked (Claude Code's own session
+ * may sit inside it), and commits that another local branch or a remote also
+ * holds do not count as unpushed.
+ */
+export function removeOne(
   entry: WorktreeEntry,
   cfg: WorktreeConfig,
   primary: string,
   force: boolean,
   deps: Deps,
+  hook = false,
 ): { removed: string } | Refusal {
   const name = basename(entry.path);
-  if (!isTaskWorktree(entry, cfg, primary)) {
+  if (!hook && !isTaskWorktree(entry, cfg, primary)) {
     return {
       refused: `${name} is not a task worktree`,
       next: "Remove it with git yourself if it is yours",
     };
   }
-  if (inside(deps.cwd, entry.path)) {
+  if (!hook && inside(deps.cwd, entry.path)) {
     return {
       refused: `the current directory is inside ${name}`,
       next: "Change out of the worktree and run it again",
@@ -479,6 +507,9 @@ function removeOne(
         "HEAD",
         "--not",
         "--remotes",
+        ...(hook && entry.branch !== null
+          ? [`--exclude=${entry.branch}`, "--branches"]
+          : []),
       ]);
       if (!count.ok || !/^\d+$/.test(count.out)) {
         return unverified(name);
@@ -506,6 +537,23 @@ function removeOne(
   let note = `removed ${name}`;
   const branch = entry.branch;
   if (
+    hook &&
+    branch !== null &&
+    HOOK_BRANCH.test(branch) &&
+    !cfg.protected_branches.includes(branch) &&
+    git(primary, [
+      "rev-list",
+      "--count",
+      branch,
+      "--not",
+      "--remotes",
+      `--exclude=${branch}`,
+      "--branches",
+    ]).out === "0" &&
+    git(primary, ["branch", "-D", branch]).ok
+  ) {
+    note += `, deleted branch ${branch}`;
+  } else if (
     branch !== null &&
     parseBranch(branch) !== null &&
     !cfg.protected_branches.includes(branch) &&

@@ -10,6 +10,7 @@ import {
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { invokesWorktreeHook } from "./hook-deny.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -219,6 +220,14 @@ export function commandGuard(ctx: RuleContext): Objection | null {
       "deny",
       "the command could not be parsed safely",
       "Retry without shell comments or with a simpler command",
+    );
+  }
+  if (invokesWorktreeHook(ctx.event.command, parsed)) {
+    return block(
+      "command-guard",
+      "deny",
+      "the Claude Code worktree hook entrypoints (worktree create and remove with --tool) are not for shell use",
+      "Ask Krzysztof to run wardens worktree new <issue>, or use claude --worktree",
     );
   }
   for (const pipeline of parsed) {

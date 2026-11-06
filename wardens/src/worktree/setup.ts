@@ -62,7 +62,7 @@ function setValue(text: string, values: Record<string, string>): string {
     : `${body}${body.endsWith("\n") ? "" : "\n"}${missing.join("\n")}\n`;
 }
 
-function isSymlink(path: string): boolean {
+export function isSymlink(path: string): boolean {
   try {
     return lstatSync(path).isSymbolicLink();
   } catch {
@@ -71,7 +71,7 @@ function isSymlink(path: string): boolean {
 }
 
 /** Replaces `path` with a new regular file; refuses to follow a symlink there. */
-function writeFresh(path: string, text: string, mode: number): void {
+export function writeFresh(path: string, text: string, mode: number): void {
   if (isSymlink(path)) {
     throw new Error(`${path} is a symlink`);
   }

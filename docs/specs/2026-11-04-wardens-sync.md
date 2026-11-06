@@ -280,10 +280,37 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
           }
         ]
       }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" worktree create --tool claude",
+            "timeout": 900
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" worktree remove --tool claude",
+            "timeout": 120
+          }
+        ]
+      }
     ]
+  },
+  "worktree": {
+    "baseRef": "fresh"
   }
 }
 ```
+
+The `WorktreeCreate` and `WorktreeRemove` hooks were added by #51 (see the [worktree spec](2026-11-05-wardens-worktree.md), Tool integration). They have no `onFailure`: a non-zero exit of `WorktreeCreate` already fails the spawn.
 
 The `Bash(...)` permission rules are a second line (Decisions, item 3); unlike hooks, they still apply under `disableAllHooks`. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
 

@@ -85,6 +85,14 @@ type Subscription = {
   entry: Json;
 };
 
+/** `WorktreeCreate` and `WorktreeRemove` run the worktree entrypoints, not the rule engine: no mapping row. */
+function isWorktreeHook(sub: Subscription): boolean {
+  return (
+    sub.tool === "claude" &&
+    (sub.event === "WorktreeCreate" || sub.event === "WorktreeRemove")
+  );
+}
+
 function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -189,8 +197,11 @@ function checkFailClosed(toplevel: string): CheckResult {
   }
   const problems: string[] = [];
   for (const sub of loaded.subs) {
-    const guard =
-      sub.tool === "claude"
+    // The worktree hooks fail closed by exit code (a non-zero `WorktreeCreate`
+    // fails the spawn) and have no `onFailure`; they still need a timeout.
+    const guard = isWorktreeHook(sub)
+      ? true
+      : sub.tool === "claude"
         ? sub.entry.onFailure === "block"
         : sub.entry.failClosed === true;
     const timeout = sub.entry.timeout;
@@ -228,7 +239,7 @@ function checkCoverage(toplevel: string): CheckResult {
   );
   const subscribed = new Set<string>();
   const problems: string[] = [];
-  for (const sub of loaded.subs) {
+  for (const sub of loaded.subs.filter((s) => !isWorktreeHook(s))) {
     for (const alt of alternatives(sub.matcher)) {
       const id = key(sub.tool, sub.event, alt);
       subscribed.add(id);

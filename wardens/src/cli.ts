@@ -7,7 +7,9 @@ import { gitToplevel } from "./git.ts";
 import { engineMessage } from "./messages.ts";
 import { runSync } from "./sync/index.ts";
 import { runAgentTrailer } from "./trailer.ts";
-import { runWorktree } from "./worktree/index.ts";
+import { runWorktreeHook } from "./worktree/hook.ts";
+import { type Result, runWorktree } from "./worktree/index.ts";
+import { fail, msg } from "./worktree/types.ts";
 
 function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
@@ -128,13 +130,37 @@ async function main(): Promise<void> {
     .option("--slug <slug>", "slug for new")
     .option("--force", "remove or prune despite uncommitted or unpushed work")
     .option("--refresh", "setup: re-read Allowed paths from the issue")
+    .option(
+      "--tool <tool>",
+      "create or remove as a tool hook (claude): the payload is read from stdin",
+    )
     .action(
-      (
+      async (
         sub: string,
         arg: string | undefined,
-        opts: { slug?: string; force?: boolean; refresh?: boolean },
+        opts: {
+          slug?: string;
+          force?: boolean;
+          refresh?: boolean;
+          tool?: string;
+        },
       ) => {
-        const result = runWorktree({ sub, arg, ...opts });
+        const { tool, ...rest } = opts;
+        let result: Result;
+        if (tool !== undefined || sub === "create") {
+          // The hook entrypoints: never the human-only `new` and `remove` paths.
+          result =
+            (sub === "create" || sub === "remove") && tool !== undefined
+              ? runWorktreeHook(sub, tool, await readStdin())
+              : fail(
+                  msg(
+                    "worktree create and --tool belong to the Claude Code worktree hooks",
+                    "Use wardens worktree new <issue> or remove <name> instead",
+                  ),
+                );
+        } else {
+          result = runWorktree({ sub, arg, ...rest });
+        }
         if (result.stdout.length > 0) {
           process.stdout.write(result.stdout);
         }

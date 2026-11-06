@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "source": "documented-schema",
+    "provisional": true,
+    "event": "WorktreeRemove",
+    "note": "NOT a real recording. WorktreeRemove never fired in the 2026-11-06 recording runs (issue 51). Built from the documented schema: the common fields plus worktree_path. Krzysztof records one real WorktreeRemove before merge and this file is then replaced. __WORKTREE__ stands for the worktree to remove, __PRIMARY__ for the primary checkout."
+  },
+  "stdin": {
+    "session_id": "425fef0f-0000-0000-0000-000000000000",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__PRIMARY__",
+    "hook_event_name": "WorktreeRemove",
+    "worktree_path": "__WORKTREE__"
+  }
+}

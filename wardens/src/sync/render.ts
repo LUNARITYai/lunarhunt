@@ -76,8 +76,26 @@ function permissions(charter: Charter): {
   };
 }
 
+function claudeBundleCommand(args: string): string {
+  return `d=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node "$(dirname "$d")/wardens/dist/wardens.mjs" ${args}`;
+}
+
 function claudeCommand(event: string): string {
-  return `d=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node "$(dirname "$d")/wardens/dist/wardens.mjs" hook --tool claude --event ${event}`;
+  return claudeBundleCommand(`hook --tool claude --event ${event}`);
+}
+
+/**
+ * `WorktreeCreate` replaces `git worktree add` and `WorktreeRemove` replaces
+ * removal (spec 2026-11-05-wardens-worktree.md, Tool integration). A failed
+ * create already fails the spawn, so there is no `onFailure`; the create
+ * timeout covers `setup.steps` (`pnpm install`, `uv sync`).
+ */
+function claudeWorktreeHook(kind: "create" | "remove", timeout: number) {
+  return {
+    type: "command",
+    command: claudeBundleCommand(`worktree ${kind} --tool claude`),
+    timeout,
+  };
 }
 
 function cursorCommand(event: string): string {
@@ -113,7 +131,10 @@ function claudeSettings(charter: Charter): string {
         },
       ],
       Stop: [{ hooks: [claudeHook("Stop", 900)] }],
+      WorktreeCreate: [{ hooks: [claudeWorktreeHook("create", 900)] }],
+      WorktreeRemove: [{ hooks: [claudeWorktreeHook("remove", 120)] }],
     },
+    worktree: { baseRef: "fresh" },
   };
   return `${JSON.stringify(settings, null, 2)}\n`;
 }
