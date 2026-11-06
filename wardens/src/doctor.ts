@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
+  checkCharterDrift,
   checkTaskDatabases,
   checkWorktreeExclusions,
   checkWorktrees,
@@ -686,8 +687,9 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),
-      checkWorktrees(toplevel, primary, worktreeDeps),
-      checkTaskDatabases(toplevel, primary, worktreeDeps),
+      checkWorktrees(primary, worktreeDeps),
+      checkTaskDatabases(primary, worktreeDeps),
+      checkCharterDrift(toplevel, primary),
     );
   }
   return results;

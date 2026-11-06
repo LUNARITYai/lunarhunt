@@ -3,9 +3,13 @@ import {
   type SpawnSyncReturns,
   spawnSync,
 } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
-import { loadCharterAt, type WorktreeConfig } from "./charter.ts";
+import {
+  CHARTER_FILENAME,
+  loadCharterAt,
+  type WorktreeConfig,
+} from "./charter.ts";
 import type { CheckResult, CheckStatus } from "./doctor.ts";
 import { git, listWorktrees } from "./worktree/git.ts";
 import { GH_FAILED_STATE, issueOf, prState } from "./worktree/index.ts";
@@ -94,12 +98,16 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The Charter's worktree section, or the skipped result that explains its absence. */
+/**
+ * The Charter's worktree section, or the skipped result that explains its
+ * absence. Read from the primary checkout: a task branch's own Charter must
+ * not be able to silence these checks (#73).
+ */
 function worktreeConfig(
   id: string,
-  toplevel: string,
+  primary: string,
 ): { cfg: WorktreeConfig } | { skipped: CheckResult } {
-  const loaded = loadCharterAt(toplevel);
+  const loaded = loadCharterAt(primary);
   if (!loaded.ok) {
     return {
       skipped: result(id, "ok", "skipped: The Charter could not be loaded"),
@@ -147,11 +155,10 @@ function worktreeReasons(
 }
 
 export function checkWorktrees(
-  toplevel: string,
   primary: string,
   deps: WorktreeCheckDeps,
 ): CheckResult {
-  const config = worktreeConfig("worktrees", toplevel);
+  const config = worktreeConfig("worktrees", primary);
   if ("skipped" in config) {
     return config.skipped;
   }
@@ -180,11 +187,10 @@ export function checkWorktrees(
 }
 
 export function checkTaskDatabases(
-  toplevel: string,
   primary: string,
   deps: WorktreeCheckDeps,
 ): CheckResult {
-  const config = worktreeConfig("task-databases", toplevel);
+  const config = worktreeConfig("task-databases", primary);
   if ("skipped" in config) {
     return config.skipped;
   }
@@ -239,6 +245,46 @@ function listDatabaseNames(
     return deps.listDatabases(deps.env);
   } catch {
     return { unavailable: "unreachable" };
+  }
+}
+
+function charterText(root: string): string | null {
+  try {
+    return readFileSync(join(root, CHARTER_FILENAME), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Advisory (#73): the hooks apply the primary's Charter, so a session's own
+ * copy that differs is not in force. Expected while a PR changes the Charter.
+ */
+export function checkCharterDrift(
+  toplevel: string,
+  primary: string,
+): CheckResult {
+  if (realpathOr(toplevel) === realpathOr(primary)) {
+    return result("charter-drift", "ok", "this is the primary checkout");
+  }
+  return charterText(toplevel) === charterText(primary)
+    ? result(
+        "charter-drift",
+        "ok",
+        "this worktree's Charter equals the primary's",
+      )
+    : result(
+        "charter-drift",
+        "warn",
+        `${CHARTER_FILENAME} of this worktree differs from the primary's, and the hooks apply the primary's. Expected only while a PR changes the Charter; otherwise reset the file`,
+      );
+}
+
+function realpathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
 }
 

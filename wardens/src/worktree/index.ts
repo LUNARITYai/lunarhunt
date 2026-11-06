@@ -581,7 +581,8 @@ export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
       ),
     );
   }
-  const loaded = loadCharterAt(toplevel);
+  // Policy comes from the primary checkout, never from the invoker's branch (#73).
+  const loaded = loadCharterAt(deps.charterRoot ?? primary);
   if (!loaded.ok) {
     return fail(
       `${msg("Charter validation failed", "Fix panopticon.charter.yaml")}\n${loaded.errors.join("\n")}`,

@@ -368,6 +368,49 @@ describe("wardens worktree setup (standalone)", () => {
   });
 });
 
+describe("wardens worktree reads the Charter of the primary (#73)", () => {
+  function linked(f: Fixture, name: string, branch: string): string {
+    const wt = join(f.primary, ".claude", "worktrees", name);
+    sh(f.primary, "worktree", "add", "-q", "-b", branch, wt, "origin/main");
+    return wt;
+  }
+
+  it("ignores a Charter edited on the invoker's branch", () => {
+    const f = fixture();
+    f.issues.set(77, FEATURE);
+    const wt = linked(f, "77-tidy-up", "chore/77-tidy-up");
+    const own = parse(normativeCharter()) as {
+      worktree: { setup: { steps: string[] } };
+    };
+    own.worktree.setup.steps = ["touch pwned"];
+    writeFileSync(join(wt, "panopticon.charter.yaml"), stringify(own));
+    const res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(0);
+    expect(f.steps.map((s) => s.command)).toEqual([
+      "pnpm install --frozen-lockfile",
+      "uv sync --frozen",
+      "pnpm exec lefthook install",
+    ]);
+  });
+
+  it("takes the trusted primary from the CLI when it passes one", () => {
+    const f = fixture();
+    f.issues.set(77, FEATURE);
+    const wt = linked(f, "77-tidy-up", "chore/77-tidy-up");
+    const other = fixture((charter) => {
+      (charter.worktree as { setup: { steps: string[] } }).setup.steps = [
+        "echo trusted",
+      ];
+    });
+    const res = runWorktree(
+      { sub: "setup" },
+      f.deps({ cwd: wt, charterRoot: other.primary }),
+    );
+    expect(res.exitCode).toBe(0);
+    expect(f.steps.map((s) => s.command)).toEqual(["echo trusted"]);
+  });
+});
+
 describe("agent refusal", () => {
   const REFUSAL =
     "Blocked by Warden worktree-guard: wardens worktree grants task scope and is for humans. Ask Krzysztof to run it.\n";

@@ -96,6 +96,10 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     recursive: true,
   });
   mkdirSync(join(primary, ".git"));
+  cpSync(
+    join(root, "panopticon.charter.yaml"),
+    join(primary, "panopticon.charter.yaml"),
+  );
   const home = realpathSync(scratchDir());
   writeAnchor(home, primary);
   const deps: DoctorDeps = {
@@ -177,6 +181,7 @@ describe("wardens doctor", () => {
       "ok claude-version",
       "ok worktrees",
       "ok task-databases",
+      "ok charter-drift",
     ]);
   });
 

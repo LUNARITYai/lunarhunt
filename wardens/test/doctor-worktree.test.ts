@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { type DoctorDeps, runChecks } from "../src/doctor.ts";
+import { type CheckResult, type DoctorDeps, runChecks } from "../src/doctor.ts";
 import {
   checkTaskDatabases,
   checkWorktreeExclusions,
@@ -131,7 +131,7 @@ describe("doctor worktrees", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud");
     f.prs.set("feat/42-offer-crud", "OPEN");
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res).toEqual({
       id: "worktrees",
       status: "ok",
@@ -141,12 +141,12 @@ describe("doctor worktrees", () => {
 
   it("pluralises the count", () => {
     const f = fixture();
-    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toBe(
+    expect(checkWorktrees(f.primary, f.deps()).message).toBe(
       "0 linked worktrees are in use",
     );
     f.addWorktree("42-a", "feat/42-a");
     f.addWorktree("43-b", "feat/43-b");
-    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toBe(
+    expect(checkWorktrees(f.primary, f.deps()).message).toBe(
       "2 linked worktrees are in use",
     );
   });
@@ -154,7 +154,7 @@ describe("doctor worktrees", () => {
   it("gives advice that matches what prune does", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
-    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toContain(
+    expect(checkWorktrees(f.primary, f.deps()).message).toContain(
       "Run wardens worktree prune for merged/closed PRs; set up or remove the others with wardens worktree setup/remove",
     );
   });
@@ -163,7 +163,7 @@ describe("doctor worktrees", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     f.addWorktree("43-fine", "feat/43-fine");
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res.status).toBe("warn");
     expect(res.message).toContain("42-offer-crud: no setup.ok");
     expect(res.message).not.toContain("43-fine");
@@ -173,7 +173,7 @@ describe("doctor worktrees", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud");
     f.prs.set("feat/42-offer-crud", state);
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res.status).toBe("warn");
     expect(res.message).toContain(`42-offer-crud: PR ${state.toLowerCase()}`);
   });
@@ -181,17 +181,9 @@ describe("doctor worktrees", () => {
   it("warns about a stale worktree, with the days and the limit", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud");
-    const fresh = checkWorktrees(
-      f.primary,
-      f.primary,
-      f.deps(Date.now() + 3 * DAY),
-    );
+    const fresh = checkWorktrees(f.primary, f.deps(Date.now() + 3 * DAY));
     expect(fresh.status).toBe("ok");
-    const stale = checkWorktrees(
-      f.primary,
-      f.primary,
-      f.deps(Date.now() + 10 * DAY),
-    );
+    const stale = checkWorktrees(f.primary, f.deps(Date.now() + 10 * DAY));
     expect(stale.status).toBe("warn");
     expect(stale.message).toContain(
       "42-offer-crud: no commit for 10 days (stale after 7)",
@@ -210,7 +202,7 @@ describe("doctor worktrees", () => {
         stdio: "ignore",
       },
     );
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res.status).toBe("warn");
     expect(res.message).toContain("no commit for 30 days");
   });
@@ -219,11 +211,7 @@ describe("doctor worktrees", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     f.prs.set("feat/42-offer-crud", "MERGED");
-    const res = checkWorktrees(
-      f.primary,
-      f.primary,
-      f.deps(Date.now() + 9 * DAY),
-    );
+    const res = checkWorktrees(f.primary, f.deps(Date.now() + 9 * DAY));
     expect(res.message).toContain(
       "42-offer-crud: no setup.ok, PR merged, no commit for 9 days (stale after 7)",
     );
@@ -233,22 +221,15 @@ describe("doctor worktrees", () => {
     const f = fixture();
     f.addWorktree("42-offer-crud", "feat/42-offer-crud");
     f.ghFail.on = true;
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res.status).toBe("ok");
     expect(res.message).toContain("PR state not checked: gh failed");
-  });
-
-  it("works from inside a linked worktree", () => {
-    const f = fixture();
-    const wt = f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
-    const res = checkWorktrees(wt, f.primary, f.deps());
-    expect(res.status).toBe("warn");
   });
 
   it("is skipped without a worktree: section in the Charter", () => {
     const f = fixture({ charter: charterWithoutWorktree() });
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
-    const res = checkWorktrees(f.primary, f.primary, f.deps());
+    const res = checkWorktrees(f.primary, f.deps());
     expect(res.status).toBe("ok");
     expect(res.message).toMatch(/^skipped: .*no worktree: section/);
   });
@@ -260,14 +241,14 @@ describe("doctor task-databases", () => {
   it("is skipped when worktree.resources.database is not set", () => {
     const f = fixture();
     f.databases.list = ["lunarhunt_t9"];
-    const res = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const res = checkTaskDatabases(f.primary, f.deps());
     expect(res.status).toBe("ok");
     expect(res.message).toMatch(/^skipped: .*database is not set/);
   });
 
   it("is skipped without a worktree: section in the Charter", () => {
     const f = fixture({ charter: charterWithoutWorktree() });
-    const res = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const res = checkTaskDatabases(f.primary, f.deps());
     expect(res.status).toBe("ok");
     expect(res.message).toMatch(/^skipped: /);
   });
@@ -283,7 +264,7 @@ describe("doctor task-databases", () => {
       "lunarhunt_t88",
       "other_t5",
     ];
-    const res = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const res = checkTaskDatabases(f.primary, f.deps());
     expect(res.status).toBe("warn");
     expect(res.message).toContain("lunarhunt_t77, lunarhunt_t88");
     expect(res.message).not.toContain("lunarhunt_t42");
@@ -298,28 +279,24 @@ describe("doctor task-databases", () => {
       JSON.stringify({ issue: 55, allowed_paths: ["wardens/**"] }),
     );
     f.databases.list = ["lunarhunt_t55"];
-    expect(checkTaskDatabases(f.primary, f.primary, f.deps()).status).toBe(
-      "ok",
-    );
+    expect(checkTaskDatabases(f.primary, f.deps()).status).toBe("ok");
   });
 
   it("is ok when every task database has a worktree", () => {
     const f = fixture({ database: TEMPLATE });
     f.addWorktree("42-offer-crud", "feat/42-offer-crud");
     f.databases.list = ["lunarhunt_t42"];
-    expect(checkTaskDatabases(f.primary, f.primary, f.deps()).status).toBe(
-      "ok",
-    );
+    expect(checkTaskDatabases(f.primary, f.deps()).status).toBe("ok");
   });
 
   it("warns, and never fails, when the database is unreachable", () => {
     const f = fixture({ database: TEMPLATE });
     f.databases.list = { unavailable: "unreachable" };
-    const unreachable = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const unreachable = checkTaskDatabases(f.primary, f.deps());
     expect(unreachable.status).toBe("warn");
     expect(unreachable.message).toContain("unreachable");
     f.databases.list = "throw";
-    const thrown = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const thrown = checkTaskDatabases(f.primary, f.deps());
     expect(thrown.status).toBe("warn");
     expect(thrown.message).toContain("unreachable");
   });
@@ -327,7 +304,7 @@ describe("doctor task-databases", () => {
   it("names a missing psql as the cause", () => {
     const f = fixture({ database: TEMPLATE });
     f.databases.list = { unavailable: "psql-missing" };
-    const res = checkTaskDatabases(f.primary, f.primary, f.deps());
+    const res = checkTaskDatabases(f.primary, f.deps());
     expect(res.status).toBe("warn");
     expect(res.message).toContain("psql is not installed");
     expect(res.message).not.toContain("unreachable");
@@ -423,6 +400,14 @@ describe("doctor worktree-exclusions", () => {
   });
 });
 
+function byId(results: CheckResult[], id: string): CheckResult {
+  const found = results.find((r) => r.id === id);
+  if (!found) {
+    throw new Error(`no result for ${id}`);
+  }
+  return found;
+}
+
 describe("doctor with the worktree checks", () => {
   function doctorDeps(f: Fixture): DoctorDeps {
     return {
@@ -450,15 +435,36 @@ describe("doctor with the worktree checks", () => {
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     const results = runChecks(false, doctorDeps(f));
     const ids = results.map((r) => r.id);
-    expect(ids.slice(-5)).toEqual([
+    expect(ids.slice(-6)).toEqual([
       "duplicates",
       "disable-all-hooks",
       "claude-version",
       "worktrees",
       "task-databases",
+      "charter-drift",
     ]);
     expect(ids).toContain("worktree-exclusions");
     expect(results.find((r) => r.id === "worktrees")?.status).toBe("warn");
+  });
+
+  it("applies the primary's Charter inside a worktree whose own Charter differs, and reports the drift", () => {
+    const f = fixture();
+    const wt = f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
+    const ownCharter = join(wt, "panopticon.charter.yaml");
+    const inWorktree = { ...doctorDeps(f), cwd: wt };
+    expect(byId(runChecks(false, inWorktree), "charter-drift").status).toBe(
+      "ok",
+    );
+    // Dropping the worktree: section would skip both checks if it were read.
+    writeFileSync(ownCharter, charterWithoutWorktree());
+    const results = runChecks(false, inWorktree);
+    expect(byId(results, "worktrees").status).toBe("warn");
+    expect(byId(results, "worktrees").message).toContain("no setup.ok");
+    expect(byId(results, "charter-drift").status).toBe("warn");
+    expect(byId(results, "charter-drift").message).toContain(
+      "differs from the primary's",
+    );
+    expect(readFileSync(ownCharter, "utf8")).toBe(charterWithoutWorktree());
   });
 
   it("--ci fails on a missing exclusion", () => {
