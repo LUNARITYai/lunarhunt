@@ -114,62 +114,165 @@ function isWrapper(word: string): boolean {
 }
 
 /**
- * A word a wrapper may put between itself and the command it runs: an option,
- * another wrapper, an assignment, a number or duration (`timeout 5`), or the
- * value of a short option (`sudo -u root`, `nice -n 5`).
+ * Per-wrapper option arity, used to find the command a wrapper runs. `short`
+ * letters and `long` names take a value (`-u root`, `-uroot`, `--user root`,
+ * `--user=root`); any other short flag is boolean. `operand` is one positional
+ * before the command (`timeout 5`, `chroot jail`, `flock file`). `string` /
+ * `stringLong` flag a wrapper option that makes the rest ONE command string
+ * (`sudo -s`, `sudo --login`).
  */
-function skippable(word: string, prev: string): boolean {
-  return (
-    word.startsWith("-") ||
-    isWrapper(word) ||
-    ENV_ASSIGNMENT.test(word) ||
-    /^\d+[smhd]?$/.test(word) ||
-    /^-[A-Za-z]$/.test(prev)
-  );
-}
+type Arity = {
+  short: string;
+  long: string[];
+  operand?: "duration" | "any";
+  string?: string;
+  stringLong?: RegExp;
+};
 
-/** End (exclusive) of the run of skippable words that follows `at`. */
-function skippableEnd(argv: readonly string[], at: number): number {
-  let end = at + 1;
-  while (end < argv.length && skippable(argv[end] ?? "", argv[end - 1] ?? "")) {
-    end += 1;
-  }
-  return end;
-}
+const NONE: Arity = { short: "", long: [] };
+const ARITY: Record<string, Arity> = {
+  sudo: {
+    short: "ugChprtTDUR",
+    long: [
+      "user",
+      "group",
+      "close-from",
+      "host",
+      "prompt",
+      "role",
+      "type",
+      "command-timeout",
+      "chdir",
+      "other-user",
+    ],
+    string: "si",
+    stringLong: /^--(?:sh|lo)/,
+  },
+  timeout: { short: "sk", long: ["signal", "kill-after"], operand: "duration" },
+  env: { short: "u", long: ["unset"] },
+  xargs: {
+    short: "ILnPsdaE",
+    long: ["arg-file", "delimiter", "max-args", "max-procs", "max-chars"],
+  },
+  nice: { short: "n", long: ["adjustment"] },
+  ionice: {
+    short: "cnpPu",
+    long: ["class", "classdata", "pid", "pgid", "uid"],
+  },
+  stdbuf: { short: "ioe", long: ["input", "output", "error"] },
+  chroot: { short: "", long: ["userspec", "groups"], operand: "any" },
+  flock: {
+    short: "wE",
+    long: ["timeout", "conflict-exit-code"],
+    operand: "any",
+  },
+  exec: { short: "a", long: [] },
+  doas: { short: "uC", long: [] },
+  caffeinate: { short: "tw", long: [] },
+  command: NONE,
+  builtin: NONE,
+  nohup: NONE,
+  time: NONE,
+  setsid: NONE,
+  busybox: NONE,
+  unbuffer: NONE,
+  watch: NONE,
+  parallel: NONE,
+};
+const DURATION = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e\d+)?[smhd]?$|^infinity$/;
+/** More words than this behind a wrapper: unparseable (matching is cubic in them). */
+const WRAPPER_WORD_LIMIT = 64;
 
 /**
- * Positions that can be the effective command word: 0, and behind a wrapper the
- * skippable words and the first word after them. `xargs grep eval` has no
- * `eval` command; `find` runs commands only after `-exec`, `-ok`.
+ * Walks `argv` from its first word through the wrappers to every word that can
+ * be the command they run. An option of unknown arity (a long option without
+ * `=` that the table does not list) is read BOTH ways, as a flag and as taking
+ * the next word, so a bypass needs both readings to miss. `stringFlag` is set
+ * when a wrapper option turns the rest into one command string.
  */
-function commandCandidates(argv: readonly string[]): number[] {
-  const out = [0];
-  if (!isWrapper(argv[0] ?? "")) {
-    return out;
-  }
-  if (commandName(argv[0] ?? "") === "find") {
-    for (let at = 1; at < argv.length; at += 1) {
-      if (/^-(?:exec|execdir|ok|okdir)$/.test(argv[at - 1] ?? "")) {
-        out.push(at);
+function walkCommands(argv: readonly string[]): {
+  at: Set<number>;
+  stringFlag: boolean;
+} {
+  const at = new Set<number>();
+  const seen = new Set<string>();
+  let stringFlag = false;
+  const visit = (index: number): void => {
+    if (index >= argv.length || at.has(index)) {
+      return;
+    }
+    at.add(index);
+    const name = commandName(argv[index] ?? "");
+    if (name === "find") {
+      for (let next = index + 1; next < argv.length; next += 1) {
+        if (/^-(?:exec|execdir|ok|okdir)$/.test(argv[next - 1] ?? "")) {
+          visit(next);
+        }
+      }
+    } else if (Object.hasOwn(ARITY, name)) {
+      options(
+        index,
+        index + 1,
+        ARITY[name] ?? NONE,
+        ARITY[name]?.operand ? 1 : 0,
+      );
+    }
+  };
+  const options = (
+    start: number,
+    from: number,
+    spec: Arity,
+    operands: number,
+  ): void => {
+    const key = `${start}:${from}:${operands}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    let index = from;
+    while (index < argv.length) {
+      const word = argv[index] ?? "";
+      if (word === "--") {
+        visit(index + 1);
+        return;
+      }
+      if (word.startsWith("--")) {
+        const eq = word.indexOf("=");
+        stringFlag ||= spec.stringLong?.test(word) ?? false;
+        if (eq < 0 && !spec.long.includes(word.slice(2))) {
+          options(start, index + 2, spec, operands);
+        }
+        index += eq < 0 && spec.long.includes(word.slice(2)) ? 2 : 1;
+      } else if (word.length > 1 && word.startsWith("-")) {
+        let used = 1;
+        for (const [pos, letter] of [...word].slice(1).entries()) {
+          if (spec.short.includes(letter)) {
+            used = pos + 2 === word.length ? 2 : 1;
+            break;
+          }
+          stringFlag ||= spec.string?.includes(letter) ?? false;
+        }
+        index += used;
+      } else if (ENV_ASSIGNMENT.test(word)) {
+        index += 1;
+      } else if (
+        operands > 0 &&
+        (spec.operand === "any" || DURATION.test(word))
+      ) {
+        operands -= 1;
+        index += 1;
+      } else {
+        visit(index);
+        return;
       }
     }
-    return out;
-  }
-  for (let at = 1; at <= skippableEnd(argv, 0) && at < argv.length; at += 1) {
-    out.push(at);
-  }
-  return out;
+  };
+  visit(0);
+  return { at, stringFlag };
 }
 
 /** Shell options that take the next word as a value, so it is not the script operand. */
-const SHELL_VALUE_OPTIONS = new Set([
-  "-o",
-  "+o",
-  "-O",
-  "+O",
-  "--rcfile",
-  "--init-file",
-]);
+const SHELL_VALUE_OPTION = /^(?:[-+][A-Za-z]*[oO]|--rcfile|--init-file)$/;
 
 /** `-c` among the options before the first operand: `bash script.sh -vc` is not it. */
 function shellCommandFlag(args: readonly string[]): boolean {
@@ -178,7 +281,7 @@ function shellCommandFlag(args: readonly string[]): boolean {
     if (COMMAND_STRING_FLAG.test(word)) {
       return true;
     }
-    if (SHELL_VALUE_OPTIONS.has(word)) {
+    if (SHELL_VALUE_OPTION.test(word)) {
       at += 1;
     } else if (!/^[-+]/.test(word)) {
       return false;
@@ -195,22 +298,20 @@ function shellCommandFlag(args: readonly string[]): boolean {
  * command word counts, so `xargs grep eval` and `find . -name eval` pass.
  */
 function runsCommandString(argv: readonly string[]): boolean {
-  for (const at of commandCandidates(argv)) {
-    const name = commandName(argv[at] ?? "");
-    const rest = argv.slice(at + 1);
+  const { at, stringFlag } = walkCommands(argv);
+  if (stringFlag) {
+    return true;
+  }
+  for (const index of at) {
+    const name = commandName(argv[index] ?? "");
+    const rest = argv.slice(index + 1);
     if (
       name === "eval" ||
       name === "watch" ||
       name === "parallel" ||
       (SHELLS.has(name) && shellCommandFlag(rest)) ||
       (name === "flock" &&
-        rest.some(
-          (w) => COMMAND_STRING_FLAG.test(w) || w.startsWith("--com"),
-        )) ||
-      (name === "sudo" &&
-        argv
-          .slice(at + 1, skippableEnd(argv, at))
-          .some((w) => /^-[A-Za-z]*[si]/.test(w) || /^--(?:sh|lo)/.test(w)))
+        rest.some((w) => COMMAND_STRING_FLAG.test(w) || w.startsWith("--com")))
     ) {
       return true;
     }
@@ -429,9 +530,14 @@ export function tokenize(command: string, comments = true): Pipeline {
     prepare(segment.words, segment.meta, segment.expand),
   );
   if (
-    segments.some((segment) =>
-      runsCommandString(segment.argv.slice(commandWordIndex(segment.argv))),
-    ) ||
+    segments.some((segment) => {
+      const argv = segment.argv.slice(commandWordIndex(segment.argv));
+      // Denied, never truncated: a long wrapped command costs too much to match.
+      return (
+        (argv.length > WRAPPER_WORD_LIMIT && isWrapper(argv[0] ?? "")) ||
+        runsCommandString(argv)
+      );
+    }) ||
     !heredocSafe(raw, segments)
   ) {
     return { ok: false };

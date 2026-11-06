@@ -597,6 +597,38 @@ describe("command-guard: compound commands and subshells (#63)", () => {
       (c: string) => `find . -exec sh -c '${c}' \\;`,
       (c: string) => `sh -- -c '${c}'`,
       (c: string) => `command eval '${c}'`,
+      // A shell option cluster ending in o/O takes a value.
+      (c: string) => `bash -eo pipefail -c '${c}'`,
+      (c: string) => `bash -euo pipefail -c '${c}'`,
+      (c: string) => `bash -xo pipefail -c '${c}'`,
+      (c: string) => `bash -eO extglob -c '${c}'`,
+      (c: string) => `zsh -eo errexit -c '${c}'`,
+      (c: string) => `sh -eo pipefail -c '${c}'`,
+      (c: string) => `env bash -eo pipefail -c '${c}'`,
+      (c: string) => `nice -n 5 bash -eo pipefail -c '${c}'`,
+      (c: string) => `xargs bash -eo pipefail -c '${c}'`,
+      // Wrapper option arity: long options with a separate value, operands.
+      (c: string) => `sudo --user root sh -c '${c}'`,
+      (c: string) => `sudo --user root eval '${c}'`,
+      (c: string) => `sudo --user root -s '${c}'`,
+      (c: string) => `sudo --prompt p -i '${c}'`,
+      (c: string) => `sudo -is '${c}'`,
+      (c: string) => `timeout --signal KILL 5 sh -c '${c}'`,
+      (c: string) => `timeout 1.5 sh -c '${c}'`,
+      (c: string) => `timeout .5 sh -c '${c}'`,
+      (c: string) => `timeout 1e3 sh -c '${c}'`,
+      (c: string) => `timeout infinity sh -c '${c}'`,
+      (c: string) => `stdbuf --output L sh -c '${c}'`,
+      (c: string) => `xargs --arg-file f sh -c '${c}'`,
+      (c: string) => `xargs --delimiter , sh -c '${c}'`,
+      (c: string) => `xargs --unknown-flag sh -c '${c}'`,
+      (c: string) => `env --unset A sh -c '${c}'`,
+      (c: string) => `chroot jail sh -c '${c}'`,
+      (c: string) => `sudo chroot . sh -c '${c}'`,
+      (c: string) => `find . -exec env sh -c '${c}' \\;`,
+      (c: string) => `find . -exec timeout 5 sh -c '${c}' \\;`,
+      (c: string) => `find . -exec nice sh -c '${c}' \\;`,
+      (c: string) => `find . -exec sudo -u root sh -c '${c}' \\;`,
       (c: string) => `x | & ${c}`,
       (c: string) => `x |& ${c}`,
       (c: string) => `x |\n\n${c}`,
@@ -642,10 +674,20 @@ describe("command-guard: compound commands and subshells (#63)", () => {
   it("matches a long wrapped command in linear-ish time", () => {
     const root = tempRepo();
     // No pattern matches, so every variant explores the whole search space.
-    const command = `nice ${"gh issue edit ".repeat(100)}1 --title x`;
+    const command = `nice ${"gh issue edit ".repeat(20)}1 --title x`;
     const start = Date.now();
     expect(shell(root, command).decision).toBe("allow");
     expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it("denies a wrapper segment of more than 64 words without matching it", () => {
+    const root = tempRepo();
+    const start = Date.now();
+    const verdict = shell(root, `nice ${"kubectl ".repeat(2000)}x`);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.message).toBe(UNPARSEABLE);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(shell(root, `nice ${"a ".repeat(30)}`).decision).toBe("allow");
   });
 
   it("denies a shell given a command string, and a path-qualified command", () => {
@@ -743,6 +785,19 @@ describe("command-guard: compound commands and subshells (#63)", () => {
       "timeout 5 rg eval",
       "bash x.sh -c cfg",
       "bash script.sh -vc",
+      "bash x -c",
+      "bash -- x -c",
+      "bash -O extglob x -c",
+      "xargs -r grep eval",
+      "xargs -0 -r grep -n eval",
+      "xargs -p grep foo",
+      "sudo -u admin ls",
+      "sudo -ugit ls",
+      "sudo -ualice ls",
+      "sudo -uadmin cmd",
+      "sudo -gadmin ls",
+      "sudo -Eu admin ls",
+      "env -uSHELL ls",
       "timeout 5 pnpm check",
       "env CI=1 pnpm check",
       "env -i pnpm check",

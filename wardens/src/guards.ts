@@ -684,7 +684,8 @@ function environmentDeny(segment: Segment): Objection | null {
       if (
         // `-S` / `-C` also inside a cluster (`-iS`), and any unambiguous
         // abbreviation of `--split-string` / `--chdir` (`--sp`, `--c`).
-        /^-[A-Za-z0-9]*[SC]/.test(word) ||
+        // (`-u` takes the rest as its value: `env -uSHELL ls` is fine.)
+        /^-[^uSC-]*[SC]/.test(word) ||
         longOption(word, "--split-string", 3) ||
         longOption(word, "--chdir", 3) ||
         (words[index - 1] === "-u" && REDIRECTING_ENV.test(word))
