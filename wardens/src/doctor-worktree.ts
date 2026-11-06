@@ -1,10 +1,14 @@
-import { spawnSync } from "node:child_process";
+import {
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+  spawnSync,
+} from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "./charter.ts";
 import type { CheckResult, CheckStatus } from "./doctor.ts";
 import { git, listWorktrees } from "./worktree/git.ts";
-import { issueOf, prState } from "./worktree/index.ts";
+import { GH_FAILED_STATE, issueOf, prState } from "./worktree/index.ts";
 import { type Deps, realDeps } from "./worktree/types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -15,7 +19,11 @@ const EXCLUSION_FILES = [
   "tsconfig.base.json",
   "pyproject.toml",
 ] as const;
-const GH_FAILED = "unknown (gh failed)";
+
+/** Why the database names could not be read. */
+export type DatabasesUnavailable = {
+  unavailable: "psql-missing" | "unreachable";
+};
 
 /** Side effects of the worktree checks; tests inject them. */
 export type WorktreeCheckDeps = {
@@ -23,16 +31,26 @@ export type WorktreeCheckDeps = {
   now: () => number;
   /** Runs `gh <args>`, like `worktree/types.ts`. */
   gh: Deps["gh"];
-  /** Names of every database on the server, or null when it is unreachable. */
-  listDatabases: (env: NodeJS.ProcessEnv) => string[] | null;
+  /** Names of every database on the server, or the reason they cannot be read. */
+  listDatabases: (env: NodeJS.ProcessEnv) => string[] | DatabasesUnavailable;
 };
 
-/** Reads database names with `psql`; null when `psql` or the server is unavailable. */
-export function psqlDatabases(env: NodeJS.ProcessEnv): string[] | null {
-  const res = spawnSync(
+type Spawn = (
+  command: string,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => SpawnSyncReturns<string>;
+
+/** Reads database names with `psql`; `spawn` is injected for tests. */
+export function psqlDatabases(
+  env: NodeJS.ProcessEnv,
+  spawn: Spawn = spawnSync,
+): string[] | DatabasesUnavailable {
+  const res = spawn(
     "psql",
     [
       "-X",
+      "-w",
       "-A",
       "-t",
       "-d",
@@ -47,8 +65,11 @@ export function psqlDatabases(env: NodeJS.ProcessEnv): string[] | null {
       timeout: 15_000,
     },
   );
+  if ((res.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+    return { unavailable: "psql-missing" };
+  }
   if (res.status !== 0 || typeof res.stdout !== "string") {
-    return null;
+    return { unavailable: "unreachable" };
   }
   return res.stdout
     .split("\n")
@@ -122,7 +143,7 @@ function worktreeReasons(
       );
     }
   }
-  return { reasons, ghFailed: state === GH_FAILED };
+  return { reasons, ghFailed: state === GH_FAILED_STATE };
 }
 
 export function checkWorktrees(
@@ -149,12 +170,12 @@ export function checkWorktrees(
     ? result(
         "worktrees",
         "warn",
-        `${problems.join("; ")}. Run wardens worktree prune or remove them${note}`,
+        `${problems.join("; ")}. Run wardens worktree prune for merged/closed PRs; set up or remove the others with wardens worktree setup/remove${note}`,
       )
     : result(
         "worktrees",
         "ok",
-        `${linked.length} linked worktrees are in use${note}`,
+        `${linked.length} linked ${linked.length === 1 ? "worktree is" : "worktrees are"} in use${note}`,
       );
 }
 
@@ -176,11 +197,13 @@ export function checkTaskDatabases(
     );
   }
   const names = listDatabaseNames(deps);
-  if (names === null) {
+  if ("unavailable" in names) {
     return result(
       "task-databases",
       "warn",
-      "the database server is unreachable, so orphan task databases were not checked",
+      names.unavailable === "psql-missing"
+        ? "psql is not installed, so orphan task databases were not checked"
+        : "the database server is unreachable, so orphan task databases were not checked",
     );
   }
   const [head = "", ...rest] = template.split("{issue}");
@@ -209,11 +232,13 @@ export function checkTaskDatabases(
       );
 }
 
-function listDatabaseNames(deps: WorktreeCheckDeps): string[] | null {
+function listDatabaseNames(
+  deps: WorktreeCheckDeps,
+): string[] | DatabasesUnavailable {
   try {
     return deps.listDatabases(deps.env);
   } catch {
-    return null;
+    return { unavailable: "unreachable" };
   }
 }
 

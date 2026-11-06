@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -16,8 +16,11 @@ import {
   checkTaskDatabases,
   checkWorktreeExclusions,
   checkWorktrees,
+  type DatabasesUnavailable,
+  psqlDatabases,
   type WorktreeCheckDeps,
 } from "../src/doctor-worktree.ts";
+import { GH_FAILED_STATE, prState } from "../src/worktree/index.ts";
 import {
   charterWithoutWorktree,
   normativeCharter,
@@ -53,7 +56,7 @@ type Fixture = {
   addWorktree: (name: string, branch: string, setupOk?: boolean) => string;
   prs: Map<string, string>;
   ghFail: { on: boolean };
-  databases: { list: string[] | null | "throw" };
+  databases: { list: string[] | DatabasesUnavailable | "throw" };
   deps: (now?: number) => WorktreeCheckDeps;
 };
 
@@ -132,13 +135,28 @@ describe("doctor worktrees", () => {
     expect(res).toEqual({
       id: "worktrees",
       status: "ok",
-      message: "1 linked worktrees are in use",
+      message: "1 linked worktree is in use",
     });
   });
 
-  it("is ok with no linked worktree", () => {
+  it("pluralises the count", () => {
     const f = fixture();
-    expect(checkWorktrees(f.primary, f.primary, f.deps()).status).toBe("ok");
+    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toBe(
+      "0 linked worktrees are in use",
+    );
+    f.addWorktree("42-a", "feat/42-a");
+    f.addWorktree("43-b", "feat/43-b");
+    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toBe(
+      "2 linked worktrees are in use",
+    );
+  });
+
+  it("gives advice that matches what prune does", () => {
+    const f = fixture();
+    f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
+    expect(checkWorktrees(f.primary, f.primary, f.deps()).message).toContain(
+      "Run wardens worktree prune for merged/closed PRs; set up or remove the others with wardens worktree setup/remove",
+    );
   });
 
   it("warns about a worktree without setup.ok and names it", () => {
@@ -296,14 +314,69 @@ describe("doctor task-databases", () => {
 
   it("warns, and never fails, when the database is unreachable", () => {
     const f = fixture({ database: TEMPLATE });
-    f.databases.list = null;
+    f.databases.list = { unavailable: "unreachable" };
     const unreachable = checkTaskDatabases(f.primary, f.primary, f.deps());
     expect(unreachable.status).toBe("warn");
     expect(unreachable.message).toContain("unreachable");
     f.databases.list = "throw";
-    expect(checkTaskDatabases(f.primary, f.primary, f.deps()).status).toBe(
-      "warn",
+    const thrown = checkTaskDatabases(f.primary, f.primary, f.deps());
+    expect(thrown.status).toBe("warn");
+    expect(thrown.message).toContain("unreachable");
+  });
+
+  it("names a missing psql as the cause", () => {
+    const f = fixture({ database: TEMPLATE });
+    f.databases.list = { unavailable: "psql-missing" };
+    const res = checkTaskDatabases(f.primary, f.primary, f.deps());
+    expect(res.status).toBe("warn");
+    expect(res.message).toContain("psql is not installed");
+    expect(res.message).not.toContain("unreachable");
+  });
+});
+
+describe("psqlDatabases", () => {
+  type Call = { args: string[] };
+  function stub(reply: Partial<SpawnSyncReturns<string>>, calls: Call[] = []) {
+    return ((_command: string, args: string[]) => {
+      calls.push({ args });
+      return reply as SpawnSyncReturns<string>;
+    }) as unknown as Parameters<typeof psqlDatabases>[1];
+  }
+
+  it("reads the names and never prompts for a password", () => {
+    const calls: Call[] = [];
+    const res = psqlDatabases(
+      {},
+      stub({ status: 0, stdout: "postgres\nlunarhunt_t7\n\n" }, calls),
     );
+    expect(res).toEqual(["postgres", "lunarhunt_t7"]);
+    expect(calls[0]?.args).toContain("-w");
+  });
+
+  it("reports a missing psql (ENOENT)", () => {
+    const error = Object.assign(new Error("spawn psql ENOENT"), {
+      code: "ENOENT",
+    });
+    expect(psqlDatabases({}, stub({ error, status: null }))).toEqual({
+      unavailable: "psql-missing",
+    });
+  });
+
+  it.each([
+    ["a non-zero exit", { status: 2, stdout: "" }],
+    ["a timeout", { status: null, stdout: "" }],
+  ])("reports an unreachable server on %s", (_name, reply) => {
+    expect(psqlDatabases({}, stub(reply))).toEqual({
+      unavailable: "unreachable",
+    });
+  });
+});
+
+describe("gh failed state", () => {
+  it("is the value prState returns when gh fails", () => {
+    const failing = { gh: () => ({ status: 1, stdout: "" }) };
+    expect(prState(failing, repoRoot, "feat/1-x")).toBe(GH_FAILED_STATE);
+    expect(GH_FAILED_STATE).toBe("unknown (gh failed)");
   });
 });
 

@@ -139,7 +139,10 @@ function prList(
   }
 }
 
-/** PR state of a branch: a state, `none`, or `unknown` when gh failed. */
+/** What `prState` returns when gh failed. */
+export const GH_FAILED_STATE = "unknown (gh failed)";
+
+/** PR state of a branch: a state, `none`, or `GH_FAILED_STATE` when gh failed. */
 export function prState(
   deps: Pick<Deps, "gh">,
   cwd: string,
@@ -150,7 +153,7 @@ export function prState(
   }
   const items = prList(deps, cwd, branch, "all");
   if (items === null) {
-    return "unknown (gh failed)";
+    return GH_FAILED_STATE;
   }
   return items[0]?.state ?? "none";
 }
