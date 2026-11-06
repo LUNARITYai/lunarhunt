@@ -44,8 +44,17 @@ export function defaultRunCheck(root: string): CheckResult {
   return { status: result.status === 0 ? "green" : "red", output };
 }
 
+/** The fingerprint only reads: no repository-configured program may run, and no optional lock is taken. */
+const GIT_SAFE = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "--no-optional-locks",
+];
+
 function git(root: string, args: string[]): Buffer {
-  return execFileSync("git", ["-C", root, ...args], {
+  return execFileSync("git", [...GIT_SAFE, "-C", root, ...args], {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 256 * 1024 * 1024,
   });
@@ -81,7 +90,15 @@ export function fingerprint(root: string): string {
   );
   part(
     "diff",
-    gitOrNull(root, ["diff", "HEAD", "--binary", "--", ...EXCLUDE]) ?? "",
+    gitOrNull(root, [
+      "diff",
+      "HEAD",
+      "--binary",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--",
+      ...EXCLUDE,
+    ]) ?? "",
   );
   const untracked = git(root, [
     "ls-files",

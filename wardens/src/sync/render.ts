@@ -76,12 +76,51 @@ function permissions(charter: Charter): {
   };
 }
 
+/** Trusted primary checkouts, one absolute path per line, relative to `$HOME`. Written by `wardens sync`. */
+export const ANCHOR_REL = ".config/panopticon/primaries";
+
+export const LAUNCHER_BLOCK_MESSAGE =
+  "Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.";
+
+const BUNDLE = "wardens/dist/wardens.mjs";
+export const LAUNCHER_BUNDLE_MESSAGE =
+  "Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.";
+
+/**
+ * Launcher body (POSIX sh, no single quotes so it can sit inside `sh -c '...'`).
+ * It never consults git or any repository data: the session directory is
+ * resolved physically and must equal a primary listed in the anchor file or lie
+ * under `<primary>/.claude/worktrees/` (Cursor: also `~/.cursor/worktrees/<name>/`).
+ */
+function launcher(tool: "claude" | "cursor", event: string): string {
+  const session =
+    tool === "claude"
+      ? 's=; case "$CLAUDE_PROJECT_DIR" in /*) s=$(cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P);; esac'
+      : // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
+        'c=${CURSOR_PROJECT_DIR:-.}; s=; case "$c" in /*|.) s=$(cd -P -- "$c" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- "$HOME" 2>/dev/null && pwd -P) || h=/dev/null';
+  const patterns = ['"$p"', '"$p"/.claude/worktrees/*'];
+  if (tool === "cursor") {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
+    patterns.push('"$h/.cursor/worktrees/${p##*/}"/*');
+  }
+  const parts = [
+    session,
+    `a="$HOME/${ANCHOR_REL}"`,
+    "r=",
+    `[ -n "$HOME" ] && [ -n "$s" ] && [ -r "$a" ] && while IFS= read -r p || [ -n "$p" ]; do case "$p" in /*) ;; *) continue;; esac; p=$(cd -P -- "$p" 2>/dev/null && pwd -P) || continue; case "$s" in ${patterns.join("|")}) r=$p; break;; esac; done < "$a"`,
+    `[ -n "$r" ] || { echo "${LAUNCHER_BLOCK_MESSAGE}" >&2; exit 2; }`,
+    `[ -f "$r/${BUNDLE}" ] || { echo "${LAUNCHER_BUNDLE_MESSAGE}" >&2; exit 2; }`,
+    `exec node "$r/${BUNDLE}" hook --tool ${tool} --event ${event}`,
+  ];
+  return parts.join("; ");
+}
+
 function claudeCommand(event: string): string {
-  return `d=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node "$(dirname "$d")/wardens/dist/wardens.mjs" hook --tool claude --event ${event}`;
+  return `sh -c '${launcher("claude", event)}'`;
 }
 
 function cursorCommand(event: string): string {
-  return `sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node "$(dirname "$d")/wardens/dist/wardens.mjs" hook --tool cursor --event ${event}'`;
+  return `sh -c '${launcher("cursor", event)}'`;
 }
 
 function claudeHook(event: string, timeout: number) {

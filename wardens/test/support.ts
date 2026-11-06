@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +42,26 @@ export function writeRepoFile(root: string, rel: string, text: string): void {
   const file = join(root, rel);
   mkdirSync(join(file, ".."), { recursive: true });
   writeFileSync(file, text);
+}
+
+/**
+ * Turns `worktree` into a directory whose `.git` file names a gitdir inside
+ * itself, which in turn links back to the worktree and belongs to a repository
+ * of its own (`<worktree>/.evil`). Returns that fake primary's path.
+ */
+export function forgePointer(worktree: string): string {
+  mkdirSync(worktree, { recursive: true });
+  const fake = join(realpathSync(worktree), ".evil");
+  const entry = join(fake, ".git/worktrees/x");
+  mkdirSync(entry, { recursive: true });
+  mkdirSync(join(fake, ".git/objects"), { recursive: true });
+  mkdirSync(join(fake, ".git/refs"), { recursive: true });
+  writeFileSync(join(fake, ".git/HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(entry, "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(entry, "commondir"), "../..\n");
+  writeFileSync(join(entry, "gitdir"), `${realpathSync(worktree)}/.git\n`);
+  writeFileSync(join(worktree, ".git"), `gitdir: ${entry}\n`);
+  return fake;
 }
 
 export const cliPath = join(repoRoot, "wardens/src/cli.ts");
