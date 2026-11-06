@@ -233,7 +233,10 @@ function walkCommands(argv: readonly string[]): {
     while (index < argv.length) {
       const word = argv[index] ?? "";
       if (word === "--") {
+        // The operands (`timeout -- 5 cmd`) still precede the command; read it
+        // both ways: with them consumed, and as if they were absent.
         visit(index + 1);
+        visit(index + 1 + operands);
         return;
       }
       if (word.startsWith("--")) {
