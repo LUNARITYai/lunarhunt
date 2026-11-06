@@ -2,8 +2,8 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
 import { gitToplevel, primaryCheckout } from "../git.ts";
+import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
-import { homeOf } from "../sync/anchor.ts";
 import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
 import { detectAgent } from "../trailer.ts";
@@ -599,7 +599,16 @@ export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
   // `wardens doctor` does, and not from the pointers git data names.
   let charterRoot = deps.charterRoot;
   if (charterRoot === undefined) {
-    const derived = structuralPrimary(toplevel, homeOf(deps.env));
+    const home = trustedHome(deps.env);
+    if (home === null) {
+      return fail(
+        msg(
+          "cannot resolve HOME, so the primary checkout cannot be verified",
+          "Set HOME to an absolute path of an existing directory",
+        ),
+      );
+    }
+    const derived = structuralPrimary(toplevel, home);
     if (!derived.ok) {
       return fail(
         msg(

@@ -514,6 +514,15 @@ describe("launcher-anchor", () => {
     );
   });
 
+  it("fails for a home that is not absolute, without reading a relative anchor (#73)", () => {
+    for (const home of ["", "relative/home"]) {
+      const { deps } = fixture();
+      const res = check({ ...deps, home });
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("cannot resolve HOME");
+    }
+  });
+
   it("fails when the anchor is missing", () => {
     const { home, deps } = fixture();
     rmSync(anchorPath(home));

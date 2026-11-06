@@ -473,3 +473,59 @@ describe("device paths in shell", () => {
     }
   });
 });
+
+describe("a home that cannot be resolved (#73)", () => {
+  function viaEnv(f: Fixture, command: string, env: NodeJS.ProcessEnv): string {
+    return runHook(
+      "claude",
+      "PreToolUse",
+      JSON.stringify({
+        cwd: f.root,
+        tool_name: "Bash",
+        tool_input: { command },
+      }),
+      { cwd: () => f.root, env },
+    ).stdout;
+  }
+
+  function withHomeGlob(f: Fixture): void {
+    const doc = parse(charterWithoutWorktree());
+    doc.paths.external = { read: ["~/.wardens-cache/**"], write: [] };
+    writeFileSync(join(f.root, "panopticon.charter.yaml"), stringify(doc));
+  }
+
+  it("grants a ~ external read only when HOME resolves", () => {
+    const f = fixture();
+    withHomeGlob(f);
+    const command = "cat ~/.wardens-cache/x";
+    expect(allowed(viaEnv(f, command, { HOME: f.home }))).toBe(true);
+    for (const HOME of ["", "relative/home"]) {
+      expect(allowed(viaEnv(f, command, { HOME }))).toBe(false);
+    }
+  });
+
+  it("denies writes to and reads of home-relative paths as unprovable", () => {
+    const f = fixture();
+    for (const HOME of ["", "relative/home"]) {
+      for (const command of [
+        "echo hi > ~/x",
+        "tee ~/x",
+        "cat ~/.ssh/id_rsa",
+        "cd ~ && touch y",
+      ]) {
+        expect(allowed(viaEnv(f, command, { HOME })), command).toBe(false);
+      }
+      const write = runHook(
+        "claude",
+        "PreToolUse",
+        JSON.stringify({
+          cwd: f.root,
+          tool_name: "Write",
+          tool_input: { file_path: "~/x", content: "x" },
+        }),
+        { cwd: () => f.root, env: { HOME } },
+      ).stdout;
+      expect(allowed(write)).toBe(false);
+    }
+  });
+});

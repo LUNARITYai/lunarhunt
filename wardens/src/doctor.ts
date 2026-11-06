@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
   checkCharterDrift,
@@ -23,13 +23,13 @@ import {
 } from "./doctor-worktree.ts";
 import { mapPayload, type ToolName } from "./event.ts";
 import { gitToplevel } from "./git.ts";
+import { trustedHome, UNRESOLVED_HOME } from "./home.ts";
 import { MAPPING_ROWS } from "./mapping.ts";
 import { CHARTER_INVALID_MESSAGE } from "./messages.ts";
 import { embeddedHash, hashSources } from "./source-hash.ts";
 import {
   anchorListsPrimary,
   anchorPath,
-  homeOf,
   parseAnchor,
   readAnchorText,
   writeAnchor,
@@ -448,6 +448,13 @@ function checkLauncherAnchor(
   home: string,
   uid: number | undefined,
 ): CheckResult {
+  if (!isAbsolute(home)) {
+    return result(
+      "launcher-anchor",
+      "fail",
+      "cannot resolve HOME, so the launcher anchor was not checked. Set HOME to an absolute path of an existing directory",
+    );
+  }
   const file = anchorPath(home);
   const text = readAnchorText(home);
   if (text === null) {
@@ -610,7 +617,7 @@ function checkDuplicates(toplevel: string, now: number): CheckResult {
 function checkDisableAllHooks(toplevel: string, home: string): CheckResult {
   const files = [
     join(toplevel, ".claude", "settings.local.json"),
-    join(home, ".claude", "settings.json"),
+    ...(isAbsolute(home) ? [join(home, ".claude", "settings.json")] : []),
   ];
   const offenders = files.filter(
     (file) => readJsonFile(file)?.disableAllHooks === true,
@@ -666,7 +673,7 @@ export function defaultDoctorDeps(): DoctorDeps {
   return {
     cwd: process.cwd(),
     env: process.env,
-    home: homeOf(process.env),
+    home: trustedHome(process.env) ?? "",
     now: () => Date.now(),
     claudeVersion: defaultClaudeVersion,
   };
@@ -679,7 +686,10 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
   }
   let primary = deps.primary;
   if (primary === undefined) {
-    const derived = structuralPrimary(toplevel, deps.home);
+    const derived = structuralPrimary(
+      toplevel,
+      isAbsolute(deps.home) ? deps.home : UNRESOLVED_HOME,
+    );
     if (!derived.ok) {
       return [
         result(

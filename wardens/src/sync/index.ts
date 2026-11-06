@@ -2,9 +2,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadCharterAt } from "../charter.ts";
 import { gitToplevel } from "../git.ts";
+import { trustedHome } from "../home.ts";
 import { engineMessage, wardenMessage } from "../messages.ts";
 import { detectAgent } from "../trailer.ts";
-import { anchorPath, homeOf, writeAnchor } from "./anchor.ts";
+import { anchorPath, writeAnchor } from "./anchor.ts";
 import { structuralPrimary } from "./primary.ts";
 import { render } from "./render.ts";
 
@@ -77,7 +78,18 @@ export function runSync(
   }
   // The primary comes from the file system, never from what git reports: a
   // worktree's git files are not trusted to name it.
-  const home = homeOf(env);
+  const home = trustedHome(env);
+  if (home === null) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `${wardenMessage(
+        "charter-drift",
+        "cannot resolve HOME, so the launcher anchor cannot be written and nothing was changed",
+        "Set HOME to an absolute path of an existing directory",
+      )}\n`,
+    };
+  }
   const verified = structuralPrimary(toplevel, home);
   if (!verified.ok) {
     return {

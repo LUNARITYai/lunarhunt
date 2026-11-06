@@ -14,7 +14,10 @@ import { primaryProblem } from "./sync/primary.ts";
  * otherwise (a bundle built in a worktree, a run from TypeScript source, a
  * missing or foreign anchor entry).
  */
-export function bundlePrimary(moduleUrl: string, home: string): string | null {
+export function bundlePrimary(
+  moduleUrl: string,
+  home: string | null,
+): string | null {
   try {
     return resolveBundlePrimary(moduleUrl, home);
   } catch {
@@ -22,8 +25,11 @@ export function bundlePrimary(moduleUrl: string, home: string): string | null {
   }
 }
 
-function resolveBundlePrimary(moduleUrl: string, home: string): string | null {
-  if (typeof home !== "string" || !isAbsolute(home)) {
+function resolveBundlePrimary(
+  moduleUrl: string,
+  home: string | null,
+): string | null {
+  if (home === null || typeof home !== "string" || !isAbsolute(home)) {
     return null;
   }
   const bundle = realpathSync(fileURLToPath(moduleUrl));

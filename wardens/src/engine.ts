@@ -9,6 +9,7 @@ import {
 } from "./event.ts";
 import { EngineFailure } from "./failures.ts";
 import { gitToplevel, siblingToplevel } from "./git.ts";
+import { homeOrUnresolved } from "./home.ts";
 import { evaluateStop, postEditAudit } from "./lifecycle.ts";
 import { appendFallback, appendVerdict, type LogLine, logLine } from "./log.ts";
 import {
@@ -28,7 +29,6 @@ import {
   type RuleId,
 } from "./rules.ts";
 import { type BundleProbe, staleWarning } from "./stale.ts";
-import { homeOf } from "./sync/anchor.ts";
 import { loadTask, type TaskState } from "./task.ts";
 import { allowVerdict, checkExitCode, type Verdict } from "./verdict.ts";
 import { crossWorktreeDeny } from "./worktree-guard.ts";
@@ -508,7 +508,10 @@ export function runHook(
     fallbackCwd,
     toplevel,
     env: deps.env,
-    external: { charter: policy.charter, home: deps.home ?? homeOf(deps.env) },
+    external: {
+      charter: policy.charter,
+      home: deps.home ?? homeOrUnresolved(deps.env),
+    },
   });
   if (!normalized.ok) {
     if (
@@ -543,7 +546,7 @@ export function runHook(
       charter: policy.charter,
       task: policy.task,
       root: toplevel,
-      home: deps.home ?? homeOf(deps.env),
+      home: deps.home ?? homeOrUnresolved(deps.env),
       ...(deps.dod ? { dod: deps.dod } : {}),
       ...(deps.bundle ? { bundle: deps.bundle } : {}),
     }),

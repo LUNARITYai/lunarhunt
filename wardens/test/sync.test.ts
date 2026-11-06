@@ -418,6 +418,42 @@ describe("wardens sync: launcher anchor", () => {
   });
 });
 
+describe("sync with a home that is not an absolute directory (#73)", () => {
+  const noPasswd = join(import.meta.dirname, "no-passwd.mjs");
+
+  function expectRefused(
+    repo: string,
+    run: { status: number | null; stderr: string },
+  ) {
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("cannot resolve HOME");
+    expect(existsSync(join(repo, ".config"))).toBe(false);
+    for (const file of FILES) {
+      expect(existsSync(join(repo, file))).toBe(false);
+    }
+  }
+
+  it("refuses and writes nothing for an empty or a relative HOME", () => {
+    for (const home of ["", "relative/home"]) {
+      const repo = tempRepo();
+      expectRefused(
+        repo,
+        runCli(repo, ["sync"], { PATH: process.env.PATH ?? "", HOME: home }),
+      );
+    }
+  });
+
+  it("refuses and writes nothing when HOME is unset and the uid has no passwd entry", () => {
+    const repo = tempRepo();
+    const result = spawnSync(
+      process.execPath,
+      ["--import", noPasswd, "--experimental-strip-types", cliPath, "sync"],
+      { cwd: repo, env: { PATH: process.env.PATH ?? "" }, encoding: "utf8" },
+    );
+    expectRefused(repo, result);
+  });
+});
+
 describe("wardens package check script", () => {
   it("runs sync --check after charter-validate", () => {
     const pkg = JSON.parse(
