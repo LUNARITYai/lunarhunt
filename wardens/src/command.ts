@@ -861,6 +861,146 @@ export function writeTargets(segment: Segment): string[] {
     .map((candidate) => candidate.path);
 }
 
+/** `--opt=value` options whose value is a file the command writes. */
+const OUTPUT_OPTIONS = new Set([
+  "--output",
+  "--out",
+  "--outfile",
+  "--output-file",
+  "--output-document",
+  "--target-directory",
+  "--file",
+  "--log-file",
+  "--destination",
+  "--dest",
+  "--to",
+]);
+const PATH_MUTATORS = new Set(["chmod", "chown", "chgrp", "unlink", "shred"]);
+const IN_PLACE_EDITORS = new Set(["sed", "gsed", "perl"]);
+/** `rsync` options that take the next word as a value, never a path. */
+const RSYNC_VALUE_OPTIONS = new Set([
+  "--exclude",
+  "--include",
+  "--filter",
+  "-f",
+  "-e",
+  "--rsh",
+  "--exclude-from",
+  "--include-from",
+  "--files-from",
+]);
+
+function positionals(
+  argv: readonly string[],
+  skipValueOf: ReadonlySet<string>,
+) {
+  const out: string[] = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const word = argv[index] ?? "";
+    if (skipValueOf.has(word)) {
+      index += 1;
+    } else if (!word.startsWith("-") && word.length > 0) {
+      out.push(word);
+    }
+  }
+  return out;
+}
+
+const NO_SKIP: ReadonlySet<string> = new Set();
+
+/**
+ * Everything `writeTargets` lists, plus the writes that need a command's own
+ * grammar: in-place editors (`sed -i`, `perl -i`), `dd of=`, the destination of
+ * `install` and `rsync`, owners and modes, `curl -o`, and the value of an
+ * `--output=file` style option. Words that merely name a path (`find -name`,
+ * `tar --exclude=...`, `git --git-dir=...`) are not targets.
+ */
+export function shellWriteTargets(segment: Segment): string[] {
+  const out = [...writeTargets(segment)];
+  const argv = segment.argv;
+  const command = commandName(argv[0] ?? "");
+  const rest = argv.slice(1);
+  if (
+    IN_PLACE_EDITORS.has(command) &&
+    rest.some(
+      (word) => word.startsWith("--in-place") || /^-[a-zA-Z0-9]*i/.test(word),
+    )
+  ) {
+    out.push(...positionals(argv, NO_SKIP));
+  }
+  if (command === "dd") {
+    out.push(
+      ...rest.filter((word) => word.startsWith("of=")).map((w) => w.slice(3)),
+    );
+  }
+  if (command === "install" || command === "rsync") {
+    const last = positionals(
+      argv,
+      command === "rsync" ? RSYNC_VALUE_OPTIONS : NO_SKIP,
+    ).at(-1);
+    if (last !== undefined) {
+      out.push(last);
+    }
+    for (let index = 1; index < argv.length - 1; index += 1) {
+      if (argv[index] === "-t") {
+        out.push(argv[index + 1] ?? "");
+      }
+    }
+  }
+  if (PATH_MUTATORS.has(command)) {
+    out.push(...positionals(argv, NO_SKIP));
+  }
+  if (command === "curl" || command === "wget") {
+    for (let index = 1; index < argv.length - 1; index += 1) {
+      if (
+        ["-o", "-O", "--output", "--output-document"].includes(
+          argv[index] ?? "",
+        )
+      ) {
+        out.push(argv[index + 1] ?? "");
+      }
+    }
+  }
+  for (const word of rest) {
+    const eq = word.indexOf("=");
+    if (
+      word.startsWith("--") &&
+      eq > 0 &&
+      OUTPUT_OPTIONS.has(word.slice(0, eq))
+    ) {
+      out.push(word.slice(eq + 1));
+    }
+  }
+  return out.filter((path) => path.length > 0 && !isDevicePath(path));
+}
+
+/**
+ * The directory change a segment makes, or null when it makes none. The path
+ * is null when the tracker cannot follow the change: `cd` without an
+ * argument, `pushd` and `popd` (any form). `cd -` and `cd ""` return their
+ * literal word. Redirect words and `cd` options are not arguments.
+ */
+export function directoryChange(
+  segment: Segment,
+): { path: string | null } | null {
+  const command = segment.argv[0] ?? "";
+  if (command === "pushd" || command === "popd") {
+    return { path: null };
+  }
+  if (command !== "cd") {
+    return null;
+  }
+  const args = segment.argv
+    .slice(1)
+    .filter(
+      (word) =>
+        !/^\d*[<>&]/.test(word) &&
+        word !== "--" &&
+        !(word.startsWith("-") && word.length > 1),
+    );
+  return { path: args[0] ?? null };
+}
+
 /** Standard streams and descriptors: exact match only, so `/dev/../etc` and `/dev/sda` stay candidates. */
 const DEVICE_PATH = /^\/dev\/(?:null|stdout|stderr|stdin|fd\/[0-9]+)$/;
 

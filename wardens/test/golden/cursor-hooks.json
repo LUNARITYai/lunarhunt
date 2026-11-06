@@ -3,14 +3,14 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event sessionStart'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event sessionStart'",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "preToolUse": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event preToolUse'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event preToolUse'",
         "matcher": "^(Shell|Read|Write|Delete|MCP:.*)$",
         "timeout": 10,
         "failClosed": true
@@ -18,35 +18,35 @@
     ],
     "beforeShellExecution": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeShellExecution'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeShellExecution'",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "beforeMCPExecution": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeMCPExecution'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeMCPExecution'",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "beforeReadFile": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeReadFile'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event beforeReadFile'",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "afterFileEdit": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event afterFileEdit'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event afterFileEdit'",
         "timeout": 10,
         "failClosed": true
       }
     ],
     "stop": [
       {
-        "command": "sh -c 'd=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2; exec node \"$(dirname \"$d\")/wardens/dist/wardens.mjs\" hook --tool cursor --event stop'",
+        "command": "sh -c 'c=${CURSOR_PROJECT_DIR:-.}; s=; case \"$c\" in /*|.) s=$(cd -P -- \"$c\" 2>/dev/null && pwd -P);; esac; h=$(cd -P -- \"$HOME\" 2>/dev/null && pwd -P) || h=/dev/null; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*|\"$h/.cursor/worktrees/${p##*/}\"/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" hook --tool cursor --event stop'",
         "timeout": 900,
         "loop_limit": 3,
         "failClosed": true
