@@ -12,8 +12,10 @@ import { type Pipeline, type Segment, tokenizeAll } from "./command.ts";
  * One generic rule, applied only to a segment whose executable resolves to the
  * Wardens entrypoint (`wardens`, or a path ending in `wardens.mjs` or `cli.ts`, after the
  * wrappers `env`, `exec`, `node`, `tsx`, `pnpm exec`, `pnpm --filter ... exec`,
- * `npx`, `sh -c` and `eval`): deny a dynamic construct in the arguments, any
- * `--tool` flag, and the subcommands `worktree create` and `worktree remove`.
+ * `npx`, `xargs`, `sh -c` and `eval`, and leading `(`, `!`, `{` or compound
+ * keywords): deny a dynamic construct in the arguments, a `--tool` flag on the
+ * `worktree` subcommand, and the subcommands `worktree create` and
+ * `worktree remove`.
  * `wardens worktree list`, `wardens doctor` and the other plain forms pass. A
  * segment whose executable word is itself dynamic (`$bundle`, `{node,x}`) is
  * denied when it names the entrypoint. Words inside text commands (commit
@@ -23,7 +25,22 @@ import { type Pipeline, type Segment, tokenizeAll } from "./command.ts";
  * `git config alias.x ...`, `gh alias set`, `alias w=...`) are denied too.
  */
 
+/** Shell syntax that can stand before the executable: grouping, negation and compound-command keywords. */
+const LEADING = new Set([
+  "(",
+  "!",
+  "{",
+  "if",
+  "then",
+  "elif",
+  "else",
+  "do",
+  "while",
+  "until",
+  "time",
+]);
 const PASS_THROUGH = new Set([
+  "xargs",
   "env",
   "exec",
   "command",
@@ -77,6 +94,10 @@ function resolve(
   let i = from;
   while (i < argv.length) {
     const word = argv[i] ?? "";
+    if (LEADING.has(word)) {
+      i += 1;
+      continue;
+    }
     if (expand.has(i) && word !== "[" && word !== "[[") {
       return { kind: "dynamic" };
     }
@@ -150,13 +171,15 @@ function entryArgsDenied(
   if (args.some(dynamicWord) || [...expand].some((k) => k > at)) {
     return true;
   }
-  if (args.some((w) => w === "--tool" || w.startsWith("--tool="))) {
-    return true;
-  }
-  const worktree = args.indexOf("worktree");
+  // A closing `)` or `}` can stick to the last word: `(wardens worktree create)`.
+  const words = args.map((w) => w.replace(/[)}]+$/, ""));
+  // Only the `worktree` subcommand has hook entrypoints; `wardens hook --tool`
+  // and `wardens check <rule> --tool` are plain forms.
+  const worktree = words.indexOf("worktree");
   return (
     worktree !== -1 &&
-    args.slice(worktree + 1).some((w) => w === "create" || w === "remove")
+    (words.some((w) => w === "--tool" || w.startsWith("--tool=")) ||
+      words.slice(worktree + 1).some((w) => w === "create" || w === "remove"))
   );
 }
 

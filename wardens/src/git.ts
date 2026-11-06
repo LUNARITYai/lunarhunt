@@ -8,9 +8,28 @@ export type CwdClass = {
   branch: string | null;
 };
 
+/**
+ * The one place that builds a git command line for a directory whose
+ * repository configuration is not trusted: it switches off the settings that
+ * make git run a program named in that configuration (`core.fsmonitor`) or
+ * hooks (`core.hooksPath`). Every git call in this file and, in hook mode, in
+ * `worktree/git.ts` goes through it.
+ */
+export function gitArgv(cwd: string, args: readonly string[]): string[] {
+  return [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-C",
+    cwd,
+    ...args,
+  ];
+}
+
 function gitOut(cwd: string, args: string[]): string | null {
   try {
-    return execFileSync("git", ["-C", cwd, ...args], {
+    return execFileSync("git", gitArgv(cwd, args), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
@@ -90,7 +109,7 @@ export function primaryCheckout(cwd: string): string | null {
   try {
     const out = execFileSync(
       "git",
-      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      gitArgv(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     ).trim();
     return out.length > 0 ? dirname(out) : null;
@@ -104,7 +123,7 @@ export function gitToplevel(cwd: string): string | null {
   try {
     const out = execFileSync(
       "git",
-      ["-C", cwd, "rev-parse", "--show-toplevel"],
+      gitArgv(cwd, ["rev-parse", "--show-toplevel"]),
       {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -121,7 +140,7 @@ export function gitTracked(root: string, path: string): boolean {
   try {
     execFileSync(
       "git",
-      ["-C", root, "ls-files", "--error-unmatch", "--", path],
+      gitArgv(root, ["ls-files", "--error-unmatch", "--", path]),
       {
         stdio: "ignore",
       },

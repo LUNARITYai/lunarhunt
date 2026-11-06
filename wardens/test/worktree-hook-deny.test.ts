@@ -64,8 +64,14 @@ const DENIED = [
   'wardens worktree create --tool "$t"',
   'wardens worktree "$verb" "$flag" claude',
   "wardens\tworktree\tcreate\t--tool\tclaude",
-  // The other hook entrypoint of the same flag.
-  "node wardens/dist/wardens.mjs hook --tool claude --event Stop",
+  // Grouping, negation, compound commands and xargs in front of the executable.
+  "(wardens worktree create --tool claude)",
+  "if true; then wardens worktree create --tool claude; fi",
+  "! wardens worktree remove --tool claude",
+  "xargs wardens worktree create --tool claude",
+  "{ wardens worktree create --tool claude; }",
+  "while true; do wardens worktree create --tool claude; done",
+  "time wardens worktree remove --tool claude",
   // Not a hook, but the agent marker refuses it anyway: denied up front.
   "wardens worktree remove 42-x",
 ];
@@ -94,7 +100,10 @@ const ALLOWED = [
   "pnpm --filter wardens exec vitest run test/worktree.test.ts -t remove",
   'pnpm --filter wardens exec vitest run worktree -t "create"',
   "claude --worktree 50-wardens-worktree-new-setup-list-remove-prune",
-  // Plain entrypoint forms.
+  // Plain entrypoint forms; --tool is only an entrypoint flag on `worktree`.
+  "wardens hook --tool claude --event PreToolUse",
+  "node wardens/dist/wardens.mjs hook --tool claude --event Stop",
+  "wardens check scope-guard --tool claude",
   "wardens worktree list",
   "node wardens/dist/wardens.mjs doctor --json",
   "node --experimental-strip-types wardens/src/cli.ts check charter-validate",

@@ -747,9 +747,88 @@ describe("WorktreeRemove (provisional payload)", () => {
     commit(wt, "lost.txt");
     const out = run("remove", r, body(r, wt));
     expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("unpushed");
+    expect(out.stderr).toContain("kept the worktree");
     expect(existsSync(wt)).toBe(true);
     expect(sh(wt, "log", "--oneline", "-1")).toContain("lost.txt");
+  });
+
+  it("keeps a clean worktree on another branch (N1)", () => {
+    const r = repo();
+    const wt = r.path("scratch");
+    sh(
+      r.primary,
+      "worktree",
+      "add",
+      "-q",
+      "-b",
+      "my-feature",
+      wt,
+      "origin/main",
+    );
+    const out = run("remove", r, body(r, wt));
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe("");
+    expect(out.stderr).toContain("not worktree-scratch");
+    expect(existsSync(wt)).toBe(true);
+    expect(branches(r)).toContain("my-feature");
+    const log = readFileSync(
+      join(r.primary, ".panopticon", "wardens.log.jsonl"),
+      "utf8",
+    );
+    expect(log).toContain("worktree-remove");
+    expect(log).toContain("did not make it");
+  });
+
+  it("keeps a clean detached worktree (N1)", () => {
+    const r = repo();
+    const wt = detachedParent(r, r.path("detached-clean"));
+    const out = run("remove", r, body(r, wt));
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("not worktree-detached-clean");
+    expect(existsSync(wt)).toBe(true);
+    expect(
+      readFileSync(join(r.primary, ".panopticon", "wardens.log.jsonl"), "utf8"),
+    ).toContain("did not make it");
+  });
+
+  it("never runs a program or hooks named in the repository configuration (N2)", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const wt = subagent(r, "agent-g1");
+    const marker = join(r.base, "marker");
+    const hookMarker = join(r.base, "hook-marker");
+    const script = join(r.base, "fsmonitor.sh");
+    writeFileSync(script, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    const hooks = join(r.base, "hooks");
+    mkdirSync(hooks);
+    writeFileSync(
+      join(hooks, "post-checkout"),
+      `#!/bin/sh\ntouch ${hookMarker}\n`,
+      { mode: 0o755 },
+    );
+    sh(r.primary, "config", "core.fsmonitor", script);
+    sh(r.primary, "config", "core.hooksPath", hooks);
+    const created = run("create", r, createBody(parent, "agent-g2"));
+    const removed = run("remove", r, body(r, wt));
+    expect(created.exitCode).toBe(0);
+    expect(removed.exitCode).toBe(0);
+    expect(existsSync(r.path("agent-g2"))).toBe(true);
+    expect(existsSync(wt)).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(hookMarker)).toBe(false);
+    // Control: plain git does run both.
+    sh(
+      r.primary,
+      "worktree",
+      "add",
+      "-q",
+      "--detach",
+      r.path("control"),
+      "origin/main",
+    );
+    sh(r.path("control"), "status");
+    expect(existsSync(hookMarker)).toBe(true);
+    expect(existsSync(marker)).toBe(true);
   });
 
   it("keeps a locked worktree", () => {

@@ -12,12 +12,11 @@ import {
 import { appendVerdict, type LogLine, logLine } from "../log.ts";
 import { wardenMessage } from "../messages.ts";
 import { loadTask, type TaskState } from "../task.ts";
-import { git, listWorktrees } from "./git.ts";
+import { git, listWorktrees, withHardenedGit } from "./git.ts";
 import {
   baseBranchOf,
   type Created,
   fill,
-  HOOK_BRANCH,
   newWorktree,
   removeOne,
 } from "./index.ts";
@@ -493,12 +492,9 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
   }
 }
 
-/** A subagent worktree: branch `worktree-<name>`, or a non-task name. */
+/** A worktree this hook made for a subagent: on exactly the branch `worktree-<its directory name>`. */
 function isSubagentWorktree(name: string, branch: string | null): boolean {
-  return (
-    (branch !== null && HOOK_BRANCH.test(branch)) ||
-    (NAME_PATTERN.test(name) && !DIGITS_PREFIX.test(name))
-  );
+  return branch === `worktree-${name}`;
 }
 
 /** Never deletes work: every refusal exits 0 and keeps the worktree. */
@@ -544,10 +540,15 @@ function remove(stdin: string, deps: Deps, anchor: string | null): Result {
     );
   }
   if (!isSubagentWorktree(basename(real), entry.branch)) {
-    return keep(
-      "it is a task worktree, which only a human removes",
-      `Run wardens worktree remove ${basename(real)} or wardens worktree prune`,
-    );
+    return DIGITS_PREFIX.test(basename(real))
+      ? keep(
+          "it is a task worktree, which only a human removes",
+          `Run wardens worktree remove ${basename(real)} or wardens worktree prune`,
+        )
+      : keep(
+          `its branch is not worktree-${basename(real)}, so this hook did not make it`,
+          byHand,
+        );
   }
   const res = removeOne(
     entry,
@@ -584,7 +585,9 @@ export function runWorktreeHook(
       ),
     );
   }
-  return kind === "create"
-    ? create(stdin, deps, anchor)
-    : remove(stdin, deps, anchor);
+  return withHardenedGit(() =>
+    kind === "create"
+      ? create(stdin, deps, anchor)
+      : remove(stdin, deps, anchor),
+  );
 }
