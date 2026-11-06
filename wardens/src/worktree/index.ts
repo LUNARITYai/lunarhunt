@@ -568,10 +568,21 @@ function prune(
   return ok(out.map((l) => `${l}\n`).join(""));
 }
 
+/** The refusal for an agent running a human-only subcommand, or null. Needs no repository, home or primary. */
+export function agentRefusal(
+  sub: string,
+  env: NodeJS.ProcessEnv,
+): Result | null {
+  return HUMAN_ONLY.has(sub) && detectAgent(env) !== null
+    ? fail(AGENT_REFUSAL)
+    : null;
+}
+
 /** `wardens worktree <sub>`. */
 export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
-  if (HUMAN_ONLY.has(args.sub) && detectAgent(deps.env) !== null) {
-    return fail(AGENT_REFUSAL);
+  const refusal = agentRefusal(args.sub, deps.env);
+  if (refusal !== null) {
+    return refusal;
   }
   const toplevel = gitToplevel(deps.cwd);
   const primary = primaryCheckout(deps.cwd);

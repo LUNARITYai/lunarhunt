@@ -527,6 +527,18 @@ describe("bundlePrimary: the trusted primary of a running bundle (#73)", () => {
     expect(bundlePrimary(url(worktree), home)).toBeNull();
   });
 
+  it("is null, and never throws, for a home that is undefined, empty, relative or missing", () => {
+    const primary = primaryWithBundle();
+    for (const home of [
+      undefined,
+      "",
+      "relative/home",
+      join(tmp(), "no-such-dir"),
+    ]) {
+      expect(bundlePrimary(url(primary), home as string)).toBeNull();
+    }
+  });
+
   it("is null when run from TypeScript source or from a bundle with another name or place", () => {
     const home = tmp();
     const primary = primaryWithBundle();

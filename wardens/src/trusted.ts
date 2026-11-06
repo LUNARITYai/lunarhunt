@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { anchorListsPrimary, readAnchor } from "./sync/anchor.ts";
 import { primaryProblem } from "./sync/primary.ts";
@@ -15,12 +15,18 @@ import { primaryProblem } from "./sync/primary.ts";
  * missing or foreign anchor entry).
  */
 export function bundlePrimary(moduleUrl: string, home: string): string | null {
-  let bundle: string;
   try {
-    bundle = realpathSync(fileURLToPath(moduleUrl));
+    return resolveBundlePrimary(moduleUrl, home);
   } catch {
     return null;
   }
+}
+
+function resolveBundlePrimary(moduleUrl: string, home: string): string | null {
+  if (typeof home !== "string" || !isAbsolute(home)) {
+    return null;
+  }
+  const bundle = realpathSync(fileURLToPath(moduleUrl));
   const dist = dirname(bundle);
   if (
     basename(bundle) !== "wardens.mjs" ||

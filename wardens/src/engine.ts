@@ -1,4 +1,4 @@
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { type Charter, loadCharterAt } from "./charter.ts";
 import { type DodDeps, stopEngineFailure } from "./dod.ts";
 import {
@@ -28,6 +28,7 @@ import {
   type RuleId,
 } from "./rules.ts";
 import { type BundleProbe, staleWarning } from "./stale.ts";
+import { homeOf } from "./sync/anchor.ts";
 import { loadTask, type TaskState } from "./task.ts";
 import { allowVerdict, checkExitCode, type Verdict } from "./verdict.ts";
 import { crossWorktreeDeny } from "./worktree-guard.ts";
@@ -507,7 +508,7 @@ export function runHook(
     fallbackCwd,
     toplevel,
     env: deps.env,
-    external: { charter: policy.charter, home: deps.home ?? homedir() },
+    external: { charter: policy.charter, home: deps.home ?? homeOf(deps.env) },
   });
   if (!normalized.ok) {
     if (
@@ -542,7 +543,7 @@ export function runHook(
       charter: policy.charter,
       task: policy.task,
       root: toplevel,
-      home: deps.home ?? homedir(),
+      home: deps.home ?? homeOf(deps.env),
       ...(deps.dod ? { dod: deps.dod } : {}),
       ...(deps.bundle ? { bundle: deps.bundle } : {}),
     }),

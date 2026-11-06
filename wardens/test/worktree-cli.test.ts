@@ -23,6 +23,8 @@ import {
 } from "../src/worktree/index.ts";
 import { cliPath, forgePointer, normativeCharter } from "./support.ts";
 
+const noPasswd = join(import.meta.dirname, "no-passwd.mjs");
+
 type Issue = {
   title: string;
   labels: string[];
@@ -445,6 +447,28 @@ describe("agent refusal", () => {
     const res = spawnSync(
       process.execPath,
       ["--experimental-strip-types", cliPath, "worktree", "prune"],
+      {
+        cwd: f.primary,
+        env: { PATH: process.env.PATH ?? "", CLAUDECODE: "1" },
+        encoding: "utf8",
+      },
+    );
+    expect(res.status).toBe(2);
+    expect(res.stderr).toBe(REFUSAL);
+  });
+
+  it("refuses an agent before resolving any primary, with no HOME and no passwd entry", () => {
+    const f = fixture();
+    const res = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        noPasswd,
+        "--experimental-strip-types",
+        cliPath,
+        "worktree",
+        "prune",
+      ],
       {
         cwd: f.primary,
         env: { PATH: process.env.PATH ?? "", CLAUDECODE: "1" },

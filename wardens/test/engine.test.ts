@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateRules, runCheck, runHook } from "../src/engine.ts";
-import { MESSAGE_PATTERN, wardenMessage } from "../src/messages.ts";
+import {
+  MESSAGE_PATTERN,
+  NO_PRIMARY_MESSAGE,
+  wardenMessage,
+} from "../src/messages.ts";
 import type { Rule } from "../src/rules.ts";
 import { cliPath, tempRepo, writeRepoFile } from "./support.ts";
 
@@ -230,6 +234,36 @@ describe("trusted primary (#73)", () => {
 });
 
 describe("hook CLI", () => {
+  it("fails closed with the no-primary message when HOME cannot be resolved", () => {
+    const root = tempRepo();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        join(import.meta.dirname, "no-passwd.mjs"),
+        "--experimental-strip-types",
+        cliPath,
+        "hook",
+        "--tool",
+        "claude",
+        "--event",
+        "PreToolUse",
+      ],
+      {
+        cwd: root,
+        env: { PATH: process.env.PATH ?? "" },
+        encoding: "utf8",
+        input: JSON.stringify({
+          tool_name: "Read",
+          tool_input: { file_path: "wardens/src/cli.ts" },
+          cwd: root,
+        }),
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(NO_PRIMARY_MESSAGE);
+  });
+
   it("fails closed from TypeScript source: no bundle of a trusted primary, no Charter", () => {
     const root = tempRepo();
     const result = spawnSync(

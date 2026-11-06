@@ -9,7 +9,7 @@ import { homeOf } from "./sync/anchor.ts";
 import { runSync } from "./sync/index.ts";
 import { runAgentTrailer } from "./trailer.ts";
 import { bundlePrimary } from "./trusted.ts";
-import { runWorktree } from "./worktree/index.ts";
+import { agentRefusal, runWorktree } from "./worktree/index.ts";
 import { realDeps } from "./worktree/types.ts";
 
 function readStdin(): Promise<string> {
@@ -137,11 +137,18 @@ async function main(): Promise<void> {
         arg: string | undefined,
         opts: { slug?: string; force?: boolean; refresh?: boolean },
       ) => {
-        const trusted = bundlePrimary(import.meta.url, homeOf(process.env));
-        const result = runWorktree(
-          { sub, arg, ...opts },
-          trusted === null ? realDeps : { ...realDeps, charterRoot: trusted },
-        );
+        // An agent is refused before any primary is resolved.
+        const refusal = agentRefusal(sub, realDeps.env);
+        const trusted =
+          refusal === null
+            ? bundlePrimary(import.meta.url, homeOf(process.env))
+            : null;
+        const result =
+          refusal ??
+          runWorktree(
+            { sub, arg, ...opts },
+            trusted === null ? realDeps : { ...realDeps, charterRoot: trusted },
+          );
         if (result.stdout.length > 0) {
           process.stdout.write(result.stdout);
         }
