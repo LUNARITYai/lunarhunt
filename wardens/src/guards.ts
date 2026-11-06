@@ -4,8 +4,8 @@ import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import {
   directoryChange,
+  expandsDdOperand,
   firstDeny,
-  looksLikePath,
   rewriteCommand,
   type Segment,
   secretCandidates,
@@ -336,16 +336,15 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       return expansionBlock();
     }
   }
-  // `out=$HOME/x`, `--log-file=~root/x` (#75): a key=value value that reads as
-  // a path must be provable too. Plain values (`--format=%H`) are not paths.
+  // `out=$HOME/x`, `--sink=x$X`, `of=~root/x` (#75): a key=value value the
+  // shell may rewrite must be provably inside, whatever the key. So must any
+  // operand of `dd` that the shell fills in: it may be `of=`.
   for (const { segment, cwd } of trackedSteps(ctx, ctx.event.command)) {
-    const expandingWords = segment.expand.map((i) => segment.argv[i] ?? "");
+    if (expandsDdOperand(segment)) {
+      return expansionBlock();
+    }
     for (const value of valueTargets(segment)) {
-      if (
-        looksLikePath(value) &&
-        expandingWords.some((word) => word.endsWith(value)) &&
-        !provablyInside(ctx, value, cwd, home)
-      ) {
+      if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
         return expansionBlock();
       }
     }
@@ -364,7 +363,9 @@ function shellEditPaths(ctx: RuleContext, command: string): string[] {
   for (const { segment, cwd } of trackedSteps(ctx, command)) {
     for (const target of [
       ...shellWriteTargets(segment),
-      ...valueTargets(segment),
+      ...valueTargets(segment)
+        .filter((value) => !value.pattern)
+        .map((value) => value.path),
     ]) {
       const resolved = resolveRepoPath(expandHome(target, home), cwd, ctx.root);
       // A secret is already denied as a candidate by `secret-read-guard`, which
@@ -453,6 +454,25 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
       (absolute !== null && isGitMetadataPath(absolute))
     ) {
       return gitMetadataBlock();
+    }
+  }
+  // `foo out=.git/x`, `foo --sink=.git` (#75): the value of any key=value word.
+  for (const { segment, cwd } of trackedSteps(ctx, command)) {
+    for (const value of valueTargets(segment)) {
+      const path = expandHome(value.path, home);
+      const absolute = resolveAbsolutePath(path, cwd);
+      if (value.pattern) {
+        continue;
+      }
+      if (
+        isGitMetadataPath(path) ||
+        (absolute !== null && isGitMetadataPath(absolute))
+      ) {
+        return gitMetadataBlock();
+      }
+      if (absolute !== null && ANCHOR_DIR.test(absolute)) {
+        return anchorBlock();
+      }
     }
   }
   return null;

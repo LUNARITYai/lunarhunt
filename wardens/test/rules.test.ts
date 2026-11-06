@@ -975,6 +975,13 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "~",
     "sub/../../outside",
     "/tmp/wardens-nowhere/x",
+    // Forms the shell rewrites: none can be proven inside the worktree.
+    "x$X",
+    "$HOME/x",
+    "~root/x",
+    "~-/x",
+    "~+/x",
+    "a`id`b",
   ])("treats %s alike for cp, dd of=, --out= and key=", (target) => {
     const root = tempRepo();
     const reference = shell(root, `cp x ${target}`);
@@ -1043,6 +1050,90 @@ describe("key=path and --opt=path arguments (#75)", () => {
     }
     // A glob inside the worktree stays provably inside.
     expect(shell(root, "tool --filter=./apps/*").decision).toBe("allow");
+  });
+
+  // Round 1: the key, the operand or any part of the value may be a variable.
+  const EXPANDING = [
+    "K=of; dd $K=/opt/p/x",
+    'K=of; dd "$K"=/opt/p/x',
+    "X=of=/opt/p/x; dd $X",
+    'K=of; dd "$K"',
+    "X=/../../opt/p/y; tsc --outFile=x$X f.ts",
+    "X=/../../opt/p/y; node --redirect-warnings=x$X a.js",
+    "foo out=a$X",
+    "make DESTDIR=x$X install",
+    "dd of=~root/x",
+    "dd of=~-/x",
+    "dd of=~+/x",
+    "tool out=~root/x",
+    "tool --sink=x$X",
+    "tool --sink=~root/x",
+    "env dd $X",
+    // Accepted false positives: a variable in a value of a non-read-only command.
+    "git log --since=$X",
+    'gh api -f body="$MSG"',
+    "curl -d a=$B",
+    "make VAR=$PWD",
+  ];
+
+  it.each(EXPANDING)("denies %s as an unprovable path", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // Builtins that only assign or print take no path: their redirects still count.
+  const BUILTINS_ALLOWED = [
+    "export FOO=$BAR",
+    "export PATH=$PATH:/x",
+    "export PATH=$HOME/.local/bin:$PATH",
+    "export UV_PROJECT_ENVIRONMENT=/abs/venv",
+    "declare A=/x",
+    "typeset A=/x",
+    "local A=/x",
+    "readonly A=/x",
+    "set -o errexit",
+    "echo a=/etc/b",
+    "echo --x=/etc/b",
+    "printf a=/etc/b",
+    "dd of=/dev/tty",
+  ];
+
+  it.each(BUILTINS_ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it.each([
+    "echo x > /abs/y",
+    "echo a=/etc/b > /abs/y",
+    "export A=1 && dd of=/abs",
+    "export A=1; echo x >> ../y",
+  ])("still denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // F3: git metadata and the launcher anchor, for values of unclassified commands.
+  it.each([
+    "foo out=.git/x",
+    "foo --sink=.git",
+    "foo --sink=.git/hooks/pre-commit",
+    "cd x; foo out=../.git/x",
+    "foo out=.config/panopticon/primaries",
+    "foo --sink=~/.config/panopticon/primaries",
+  ])("denies %s as git metadata or the anchor", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "tar --exclude=.git -cf x.tar .",
+    "git --git-dir=.git status",
+    "rg --glob=!.git x",
+    "foo --exclude=.git/x",
+  ])("allows %s: a pattern or a read, not a write", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
   });
 });
 

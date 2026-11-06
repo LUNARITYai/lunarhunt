@@ -1350,7 +1350,7 @@ export function writeTargets(segment: Segment): string[] {
  * neither are the assignments a wrapper takes before its command
  * (`env A=/tmp/x pnpm check`).
  */
-export function valueTargets(segment: Segment): string[] {
+export function valueTargets(segment: Segment): ValueTarget[] {
   return collectCandidates(segment)
     .filter(
       (candidate) =>
@@ -1358,16 +1358,38 @@ export function valueTargets(segment: Segment): string[] {
         (candidate.origin === "kv" || candidate.origin === "opt") &&
         !isDevicePath(candidate.path),
     )
-    .map((candidate) => candidate.path);
+    .map((candidate) => ({
+      path: candidate.path,
+      expanding:
+        segment.expand.includes(candidate.index ?? -1) ||
+        /[$`]/.test(candidate.path) ||
+        /^~(?!\/|$)/.test(candidate.path),
+      pattern: candidate.pattern === true,
+    }));
 }
 
+export type ValueTarget = {
+  path: string;
+  /** The shell may rewrite the value (a variable, a glob, `~user`): it must be proven inside the worktree. */
+  expanding: boolean;
+  /** Names a pattern or a git option, not a file written: skipped by the write checks. */
+  pattern: boolean;
+};
+
 /**
- * A value that reads as a path before any glob is applied: absolute, `~`,
- * `./`, `../`, a variable, or any `/`. Expansion checks use it, so a plain
- * `--format=%H` needs no proof, while `out=$HOME/x` does.
+ * `dd` takes its files from `of=` operands, and a variable can be the whole
+ * operand (`dd $X`, `dd "$K"=/abs`). Any expanding operand of a `dd` that a
+ * wrapper may run is a possible `of=` target that cannot be read from the text.
  */
-export function looksLikePath(value: string): boolean {
-  return /^(?:[/~$]|\.\.?(?:\/|$))/.test(value) || value.includes("/");
+export function expandsDdOperand(segment: Segment): boolean {
+  const argv = segment.argv;
+  const runsDd = [...walkCommands(argv).at].some(
+    (index) => commandName(argv[index] ?? "") === "dd",
+  );
+  return (
+    runsDd &&
+    segment.expand.some((index) => index > 0 && !segment.meta.includes(index))
+  );
 }
 
 /** `--opt=value` options whose value is a file the command writes. */
@@ -1518,15 +1540,48 @@ export function isDevicePath(path: string): boolean {
 }
 
 type Origin = "head" | "redirect" | "arg" | "glued" | "opt" | "kv";
+type Candidate = PathCandidate & {
+  origin: Origin;
+  /** Word index of an `opt` or `kv` candidate. */
+  index?: number;
+  pattern?: boolean;
+};
 
 /** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
-const KEY_VALUE = /^[A-Za-z_][A-Za-z0-9_.-]*=(.+)$/s;
+const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
 /**
- * Byte sources and sinks `dd` is made for (`if=/dev/zero`). Only a `key=value`
- * value is excused: `cat /dev/zero` stays an escape, as on `main`.
+ * Byte sources and sinks `dd` is made for (`if=/dev/zero`, `of=/dev/tty`). Only
+ * a `key=value` value is excused: `cat /dev/zero` stays an escape, as on `main`.
  */
-const KEY_VALUE_DEVICE = /^\/dev\/(?:zero|random|urandom|full)$/;
+const KEY_VALUE_DEVICE = /^\/dev\/(?:zero|random|urandom|full|tty)$/;
+
+/** Builtins that only assign or print: their `a=b` words are data, not paths. Their redirects still count. */
+const ASSIGNING_BUILTINS = new Set([
+  "export",
+  "declare",
+  "typeset",
+  "local",
+  "readonly",
+  "set",
+  "echo",
+  "printf",
+]);
+
+/** Options that take a pattern or a path to read, never a file to write: not write targets for the protected-path checks. */
+const PATTERN_OPTIONS = new Set([
+  "--exclude",
+  "--include",
+  "--exclude-from",
+  "--include-from",
+  "--files-from",
+  "--filter",
+  "--glob",
+  "--iglob",
+  "--grep",
+  "--pattern",
+  "--ignore",
+]);
 
 /**
  * Index of the first word a wrapper runs as its command (`env A=1 pnpm check`
@@ -1542,13 +1597,12 @@ function wrappedCommandIndex(argv: readonly string[]): number {
   return later.length > 0 ? Math.min(...later) : argv.length;
 }
 
-function collectCandidates(
-  segment: Segment,
-): Array<PathCandidate & { origin: Origin }> {
-  const found: Array<PathCandidate & { origin: Origin }> = [];
+function collectCandidates(segment: Segment): Candidate[] {
+  const found: Candidate[] = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
   const assignmentsEnd = wrappedCommandIndex(argv);
+  const keyless = ASSIGNING_BUILTINS.has(commandName(command));
   const readOnly = READ_ONLY.has(command);
   const writeAll = WRITE_ALL.has(command);
   const copyLike = command === "cp" || command === "mv" || command === "ln";
@@ -1573,8 +1627,14 @@ function collectCandidates(
         continue;
       }
       const value = word.slice(eq + 1);
-      if (value.length > 0) {
-        found.push({ path: value, write: !readOnly, origin: "opt" });
+      if (value.length > 0 && !keyless) {
+        found.push({
+          path: value,
+          write: !readOnly,
+          origin: "opt",
+          index,
+          pattern: command === "git" || PATTERN_OPTIONS.has(word.slice(0, eq)),
+        });
       }
     }
     const redirect = REDIRECT.exec(word);
@@ -1611,15 +1671,26 @@ function collectCandidates(
       found.push({ path: glued[1] ?? "", write: false, origin: "glued" });
     }
     if (!word.startsWith("-")) {
-      const keyValue = index > 0 ? KEY_VALUE.exec(word) : null;
+      const eq = index > 0 && !keyless ? word.indexOf("=") : -1;
+      const value = eq > 0 ? word.slice(eq + 1) : "";
+      // A key the shell fills in (`$K=/abs`, `"$K"=/abs`) is a key we cannot read.
+      const keyed =
+        eq > 0 &&
+        (KEY_NAME.test(word.slice(0, eq)) || /[$`]/.test(word.slice(0, eq)));
       if (
-        keyValue &&
+        keyed &&
+        value.length > 0 &&
         !(index < assignmentsEnd && ENV_ASSIGNMENT.test(word)) &&
-        !KEY_VALUE_DEVICE.test(keyValue[1] ?? "")
+        !KEY_VALUE_DEVICE.test(value)
       ) {
         // `dd of=/abs/x` and its kind: the value is a path argument (#75).
         // The whole word stays a candidate below, for a file named `a=b`.
-        found.push({ path: keyValue[1] ?? "", write: !readOnly, origin: "kv" });
+        found.push({
+          path: value,
+          write: !readOnly,
+          origin: "kv",
+          index,
+        });
       }
       const write =
         index === 0 ||
