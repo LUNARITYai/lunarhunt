@@ -892,10 +892,12 @@ function scan(
     }
     if (
       /[$}{*?[]/.test(ch) ||
-      // A tilde expands only at the start of a word, and only `~` alone or `~/`
-      // is safe: `~user`, `~+` and `~-` name other directories.
+      // A tilde expands at the start of a word, and right after the first `=`
+      // of one (`dd of=~root/x`, `--out=~root/x`). Only `~` alone or `~/` is
+      // safe: `~user`, `~+` and `~-` name other directories.
       (ch === "~" &&
-        !wordStarted &&
+        (!wordStarted ||
+          (bare.endsWith("=") && bare.indexOf("=") === bare.length - 1)) &&
         !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))
     ) {
       wordExpand = true;
@@ -1360,11 +1362,11 @@ export function valueTargets(segment: Segment): ValueTarget[] {
     )
     .map((candidate) => ({
       path: candidate.path,
-      expanding:
-        segment.expand.includes(candidate.index ?? -1) ||
-        /[$`]/.test(candidate.path) ||
-        /^~(?!\/|$)/.test(candidate.path),
+      // Only what the tokenizer saw unquoted (or in double quotes): a `$` or
+      // `~root` inside single quotes is literal text.
+      expanding: segment.expand.includes(candidate.index ?? -1),
       pattern: candidate.pattern === true,
+      gitGlobal: candidate.gitGlobal === true,
     }));
 }
 
@@ -1372,8 +1374,10 @@ export type ValueTarget = {
   path: string;
   /** The shell may rewrite the value (a variable, a glob, `~user`): it must be proven inside the worktree. */
   expanding: boolean;
-  /** Names a pattern or a git option, not a file written: skipped by the write checks. */
+  /** A reader's pattern option (`tar --exclude=`, `rg --glob=`): not a file written, skipped by the write checks. */
   pattern: boolean;
+  /** `git --git-dir=` and `--work-tree=`: named globals, skipped by the `.git` check only. */
+  gitGlobal: boolean;
 };
 
 /**
@@ -1545,6 +1549,7 @@ type Candidate = PathCandidate & {
   /** Word index of an `opt` or `kv` candidate. */
   index?: number;
   pattern?: boolean;
+  gitGlobal?: boolean;
 };
 
 /** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
@@ -1567,6 +1572,9 @@ const ASSIGNING_BUILTINS = new Set([
   "echo",
   "printf",
 ]);
+
+/** Commands whose pattern options (below) only select what to read or skip. */
+const PATTERN_READERS = new Set(["rg", "grep", "tar", "rsync", "git"]);
 
 /** Options that take a pattern or a path to read, never a file to write: not write targets for the protected-path checks. */
 const PATTERN_OPTIONS = new Set([
@@ -1602,7 +1610,7 @@ function collectCandidates(segment: Segment): Candidate[] {
   const argv = segment.argv;
   const command = argv[0] ?? "";
   const assignmentsEnd = wrappedCommandIndex(argv);
-  const keyless = ASSIGNING_BUILTINS.has(commandName(command));
+  const keyless = ASSIGNING_BUILTINS.has(command);
   const readOnly = READ_ONLY.has(command);
   const writeAll = WRITE_ALL.has(command);
   const copyLike = command === "cp" || command === "mv" || command === "ln";
@@ -1633,7 +1641,12 @@ function collectCandidates(segment: Segment): Candidate[] {
           write: !readOnly,
           origin: "opt",
           index,
-          pattern: command === "git" || PATTERN_OPTIONS.has(word.slice(0, eq)),
+          pattern:
+            PATTERN_READERS.has(commandName(command)) &&
+            PATTERN_OPTIONS.has(word.slice(0, eq)),
+          gitGlobal:
+            commandName(command) === "git" &&
+            (word.startsWith("--git-dir=") || word.startsWith("--work-tree=")),
         });
       }
     }
@@ -1676,7 +1689,8 @@ function collectCandidates(segment: Segment): Candidate[] {
       // A key the shell fills in (`$K=/abs`, `"$K"=/abs`) is a key we cannot read.
       const keyed =
         eq > 0 &&
-        (KEY_NAME.test(word.slice(0, eq)) || /[$`]/.test(word.slice(0, eq)));
+        (KEY_NAME.test(word.slice(0, eq)) ||
+          (segment.expand.includes(index) && word.slice(0, eq).includes("$")));
       if (
         keyed &&
         value.length > 0 &&

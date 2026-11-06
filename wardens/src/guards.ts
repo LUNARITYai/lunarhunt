@@ -461,7 +461,7 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
     for (const value of valueTargets(segment)) {
       const path = expandHome(value.path, home);
       const absolute = resolveAbsolutePath(path, cwd);
-      if (value.pattern) {
+      if (value.pattern || value.gitGlobal) {
         continue;
       }
       if (

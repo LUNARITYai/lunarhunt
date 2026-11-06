@@ -1113,6 +1113,119 @@ describe("key=path and --opt=path arguments (#75)", () => {
     expect(shell(root, command).decision).toBe("deny");
   });
 
+  // Round 2: only the shell's own expansion counts, so quoting decides.
+  const QUOTED_ALLOWED = [
+    "git log --grep='^fix$'",
+    "git log --grep='fix$' --oneline",
+    "git log --author='a$'",
+    "git log --grep='$x'",
+    "git log --format='%H $x'",
+    "git log --pretty=format:'%h $x'",
+    "tar --exclude='*.log$' -cf a.tar .",
+    "tool out='~root/x'",
+    "tool --out='~root/x'",
+    "dd of='~-/x'",
+    "tool out='a$X'",
+    "tool --sink='x${X}'",
+    "tool --out='$HOME/x'",
+  ];
+
+  it.each(QUOTED_ALLOWED)(
+    "allows %s: the quoting makes it literal",
+    (command) => {
+      const root = tempRepo();
+      expect(shell(root, command).decision).toBe("allow");
+    },
+  );
+
+  it.each([
+    "dd of=~root/x",
+    "dd of=~-/x",
+    "tool out=~root/x",
+    "tool --out=~root/x",
+    "K=of; dd $K=/abs",
+    "X=/../../abs; tsc --outFile=x$X f.ts",
+    'tool --out=x"$X"',
+    "tool --out=x${X}",
+    'git log --grep="$x"',
+    "dd of=$((1))",
+  ])("denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // The class: every expansion form is denied unquoted and allowed single-quoted.
+  it.each([
+    ["tool out=a$X", "tool out='a$X'"],
+    ["tool --out=a$X", "tool --out='a$X'"],
+    ["tool --sink=$X", "tool --sink='$X'"],
+    ["tool --sink=x${X}", "tool --sink='x${X}'"],
+    ['tool --sink=x"$X"', "tool --sink='x$X'"],
+    ["tool out=~root/x", "tool out='~root/x'"],
+    ["tool --out=~root/x", "tool --out='~root/x'"],
+    ["tool out=~-/x", "tool out='~-/x'"],
+    ["tool out=~+/x", "tool out='~+/x'"],
+    ["dd of=~root/x", "dd of='~root/x'"],
+    ["dd of=$HOME/x", "dd of='$HOME/x'"],
+    ["git log --grep=$x", "git log --grep='$x'"],
+  ])("denies %s and allows %s", (unquoted, quoted) => {
+    const root = tempRepo();
+    expect(shell(root, unquoted).decision, unquoted).toBe("deny");
+    expect(shell(root, quoted).decision, quoted).toBe("allow");
+  });
+
+  // Round 2: the git exemption covers --git-dir and --work-tree against .git only.
+  it.each([
+    "git fast-export --all --export-marks=panopticon.charter.yaml",
+    "git fast-import --export-marks=panopticon.charter.yaml",
+    "git fast-export --all --export-marks=packages/contracts/openapi.json",
+  ])("denies %s as a protected or generated write", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "git --git-dir=.git status",
+    "git log --grep=panopticon",
+    "git log --grep=.git",
+  ])("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Round 2: pattern options are patterns only for the readers that take them.
+  it.each([
+    "tool --pattern=panopticon.charter.yaml",
+    "tool --ignore=panopticon.charter.yaml",
+    "sort --filter=panopticon.charter.yaml",
+    "tool --exclude=.git/x",
+  ])("denies %s: not a reader's pattern option", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "tar --exclude=.git -cf x.tar .",
+    "tar --exclude=panopticon.charter.yaml -cf x.tar .",
+    "rg --glob=panopticon.charter.yaml x",
+    "rsync -a --exclude=.git a/ b/",
+    "grep --include=panopticon.charter.yaml x f",
+  ])("allows %s: a reader's pattern option", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Round 2: a builtin is the bare word, not a script that happens to share its name.
+  it.each([
+    "./echo of=/abs",
+    "bin/set out=/abs",
+    "x/printf out=/abs",
+    "tools/export --out=/abs",
+  ])("denies %s: not the builtin", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
   // F3: git metadata and the launcher anchor, for values of unclassified commands.
   it.each([
     "foo out=.git/x",
@@ -1130,7 +1243,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "tar --exclude=.git -cf x.tar .",
     "git --git-dir=.git status",
     "rg --glob=!.git x",
-    "foo --exclude=.git/x",
+    "rsync -a --exclude=.git/x a/ b/",
   ])("allows %s: a pattern or a read, not a write", (command) => {
     const root = tempRepo();
     expect(shell(root, command).decision).toBe("allow");
