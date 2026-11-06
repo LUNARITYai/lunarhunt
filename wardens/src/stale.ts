@@ -1,6 +1,7 @@
 import { join } from "node:path";
-import { primaryCheckout } from "./git.ts";
 import { hashSources } from "./source-hash.ts";
+import { homeOf } from "./sync/anchor.ts";
+import { structuralPrimary } from "./sync/primary.ts";
 
 export const STALE_MESSAGE =
   "Wardens bundle is stale. Run pnpm --filter wardens build in the primary checkout.";
@@ -24,7 +25,8 @@ function embedded(): string | null {
 export const defaultBundleProbe: BundleProbe = {
   running: embedded(),
   current: (root) => {
-    const primary = primaryCheckout(root);
+    const derived = structuralPrimary(root, homeOf(process.env));
+    const primary = derived.ok ? derived.primary : null;
     return primary ? hashSources(join(primary, "wardens", "src")) : null;
   },
 };

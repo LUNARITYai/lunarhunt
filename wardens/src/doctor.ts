@@ -1,7 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
   checkTaskDatabases,
@@ -11,12 +17,26 @@ import {
   type WorktreeCheckDeps,
 } from "./doctor-worktree.ts";
 import { mapPayload, type ToolName } from "./event.ts";
-import { gitToplevel, primaryCheckout } from "./git.ts";
+import { gitToplevel } from "./git.ts";
 import { MAPPING_ROWS } from "./mapping.ts";
 import { embeddedHash, hashSources } from "./source-hash.ts";
 import {
+  anchorListsPrimary,
+  anchorPath,
+  homeOf,
+  parseAnchor,
+  readAnchorText,
+  writeAnchor,
+} from "./sync/anchor.ts";
+import {
+  primaryProblem,
+  structuralPrimary,
+  underWorktreeDir,
+} from "./sync/primary.ts";
+import {
   CLAUDE_SETTINGS_PATH,
   CURSOR_HOOKS_PATH,
+  LAUNCHER_BLOCK_MESSAGE,
   render,
 } from "./sync/render.ts";
 
@@ -27,13 +47,15 @@ export type DoctorResult = { exitCode: 0 | 2; stdout: string };
 export type DoctorDeps = {
   cwd: string;
   env: NodeJS.ProcessEnv;
-  /** Home dir for `~/.claude/settings.json`; tests inject it. */
+  /** Home dir for `~/.claude/settings.json` and the launcher anchor; tests inject it. */
   home: string;
   now: () => number;
   /** Output of `claude --version`, or null when `claude` is not on PATH. */
   claudeVersion: () => string | null;
-  /** Override of the primary checkout; defaults to the git common dir's parent. */
+  /** Override of the primary checkout; defaults to the one derived from the file system, never from git. */
   primary?: string;
+  /** Owner the anchor file and its directory must have; defaults to the current user. */
+  uid?: number;
   /** Override of the real bundle; defaults to `<primary>/wardens/dist/wardens.mjs`. */
   bundlePath?: string;
   /** Overrides of `gh` and the database listing for the worktree checks; tests inject them. */
@@ -339,27 +361,42 @@ function breakHookMissingBundle(
     return [loaded.message];
   }
   const problems: string[] = [];
-  for (const sub of loaded.subs) {
-    const label = `${sub.tool} ${sub.event}`;
-    const command = sub.entry.command;
-    if (typeof command !== "string" || !command.includes(BUNDLE_REL)) {
-      problems.push(`${label} command does not run ${BUNDLE_REL}`);
-      continue;
+  // The launcher reads `$HOME/.config/panopticon/primaries`. Give it a throwaway
+  // home whose anchor trusts this checkout, so only the missing bundle can fail it.
+  const home = mkdtempSync(join(tmpdir(), "wardens-doctor-home-"));
+  try {
+    writeAnchor(home, toplevel);
+    for (const sub of loaded.subs) {
+      const label = `${sub.tool} ${sub.event}`;
+      const command = sub.entry.command;
+      if (typeof command !== "string" || !command.includes(BUNDLE_REL)) {
+        problems.push(`${label} command does not run ${BUNDLE_REL}`);
+        continue;
+      }
+      const broken = command.replaceAll(
+        BUNDLE_REL,
+        "wardens/dist/missing-bundle.mjs",
+      );
+      const res = spawnSync("sh", ["-c", broken], {
+        cwd: toplevel,
+        env: {
+          ...env,
+          HOME: home,
+          CLAUDE_PROJECT_DIR: toplevel,
+          CURSOR_PROJECT_DIR: toplevel,
+        },
+        input: sampleFor(sub, toplevel),
+        encoding: "utf8",
+        timeout: CHILD_TIMEOUT_MS,
+      });
+      if (typeof res.status !== "number" || res.status === 0) {
+        problems.push(`${label} does not fail when the bundle is missing`);
+      } else if ((res.stderr ?? "").includes(LAUNCHER_BLOCK_MESSAGE)) {
+        problems.push(`${label} launcher did not accept the checkout`);
+      }
     }
-    const broken = command.replace(
-      BUNDLE_REL,
-      "wardens/dist/missing-bundle.mjs",
-    );
-    const res = spawnSync("sh", ["-c", broken], {
-      cwd: toplevel,
-      env: { ...env, CLAUDE_PROJECT_DIR: toplevel },
-      input: sampleFor(sub, toplevel),
-      encoding: "utf8",
-      timeout: CHILD_TIMEOUT_MS,
-    });
-    if (typeof res.status !== "number" || res.status === 0) {
-      problems.push(`${label} does not fail when the bundle is missing`);
-    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
   return problems;
 }
@@ -417,6 +454,69 @@ function checkBreakHook(
         "ok",
         "hooks fail closed on a missing bundle, an invalid Charter and malformed stdin",
       );
+}
+
+/** Machine-dependent: the hook launcher trusts only the primaries listed in the anchor file. */
+function checkLauncherAnchor(
+  primary: string,
+  home: string,
+  uid: number | undefined,
+): CheckResult {
+  const file = anchorPath(home);
+  const text = readAnchorText(home);
+  if (text === null) {
+    return result(
+      "launcher-anchor",
+      "fail",
+      `${file} is missing. Ask Krzysztof to run wardens sync.`,
+    );
+  }
+  const problems: string[] = [];
+  const entries = parseAnchor(text);
+  if (text.includes("\r")) {
+    problems.push("the anchor contains a carriage return");
+  }
+  for (const entry of entries) {
+    const problem = primaryProblem(entry);
+    if (problem !== null) {
+      problems.push(`entry ${entry} ${problem}`);
+    }
+    for (const other of entries) {
+      if (
+        other !== entry &&
+        `${entry}/`.startsWith(`${other}/.claude/worktrees/`)
+      ) {
+        problems.push(`entry ${entry} lies under ${other}/.claude/worktrees`);
+      }
+    }
+  }
+  const own = primaryProblem(primary);
+  if (own !== null) {
+    problems.push(`this primary ${primary} ${own}`);
+  }
+  if (!anchorListsPrimary(entries, primary) || underWorktreeDir(primary)) {
+    problems.push(`${file} does not list ${primary}`);
+  }
+  for (const path of [dirname(file), file]) {
+    try {
+      const stat = statSync(path);
+      if ((stat.mode & 0o022) !== 0) {
+        problems.push(`${path} must not be writable by group or other`);
+      }
+      if (uid !== undefined && stat.uid !== uid) {
+        problems.push(`${path} is not owned by the current user`);
+      }
+    } catch {
+      problems.push(`${path} cannot be read`);
+    }
+  }
+  return problems.length > 0
+    ? result(
+        "launcher-anchor",
+        "fail",
+        `${problems.join("; ")}. Ask Krzysztof to run wardens sync.`,
+      )
+    : result("launcher-anchor", "ok", `${file} lists this primary checkout`);
 }
 
 function checkBundle(primary: string, bundlePath: string): CheckResult {
@@ -580,7 +680,7 @@ export function defaultDoctorDeps(): DoctorDeps {
   return {
     cwd: process.cwd(),
     env: process.env,
-    home: homedir(),
+    home: homeOf(process.env),
     now: () => Date.now(),
     claudeVersion: defaultClaudeVersion,
   };
@@ -588,9 +688,22 @@ export function defaultDoctorDeps(): DoctorDeps {
 
 export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
   const toplevel = gitToplevel(deps.cwd);
-  const primary = deps.primary ?? primaryCheckout(deps.cwd);
-  if (!toplevel || !primary) {
+  if (!toplevel) {
     return [result("drift", "fail", "git toplevel could not be resolved")];
+  }
+  let primary = deps.primary;
+  if (primary === undefined) {
+    const derived = structuralPrimary(toplevel, deps.home);
+    if (!derived.ok) {
+      return [
+        result(
+          "launcher-anchor",
+          "fail",
+          `${toplevel} is not a verified primary checkout (${derived.reason})`,
+        ),
+      ];
+    }
+    primary = derived.primary;
   }
   const bundlePath = deps.bundlePath ?? join(primary, BUNDLE_REL);
   const results = [
@@ -607,6 +720,7 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       ...deps.worktree,
     };
     results.push(
+      checkLauncherAnchor(primary, deps.home, deps.uid ?? process.getuid?.()),
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),

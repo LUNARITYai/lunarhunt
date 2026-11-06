@@ -1,18 +1,30 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { loadCharterYaml } from "../src/charter.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { anchorPath, readAnchor } from "../src/sync/anchor.ts";
 import { render } from "../src/sync/index.ts";
-import { cliPath, normativeCharter, repoRoot, tempRepo } from "./support.ts";
+import {
+  cliPath,
+  forgePointer,
+  normativeCharter,
+  repoRoot,
+  tempRepo,
+} from "./support.ts";
 
 const loaded = loadCharterYaml(normativeCharter());
 if (!loaded.ok) {
@@ -21,9 +33,18 @@ if (!loaded.ok) {
 const rendered = render(loaded.charter);
 const FILES = [".claude/settings.json", ".cursor/hooks.json", "lefthook.yml"];
 
+/** Every sync run gets a throwaway home, so the launcher anchor never lands in the real one. */
+const TEST_HOME = realpathSync(mkdtempSync(join(tmpdir(), "wardens-home-")));
+const homes: string[] = [TEST_HOME];
+afterAll(() => {
+  for (const home of homes) {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 const CLEAN_ENV = {
   PATH: process.env.PATH ?? "",
-  HOME: process.env.HOME ?? "",
+  HOME: TEST_HOME,
 };
 
 function runCli(cwd: string, args: string[], env: Record<string, string>) {
@@ -141,7 +162,10 @@ describe("render", () => {
     expect(remove.command).toContain(
       'wardens/dist/wardens.mjs" worktree remove --tool claude',
     );
-    expect(create.command).toContain("--git-common-dir");
+    // Same launcher as the other hooks: anchor file, no git.
+    expect(create.command).toContain(".config/panopticon/primaries");
+    expect(create.command).not.toContain("git");
+    expect(remove.command).not.toContain("git");
     // Setup steps (pnpm install, uv sync) need far more than a guard hook.
     expect(create.timeout).toBeGreaterThanOrEqual(600);
     expect(create.onFailure).toBeUndefined();
@@ -175,11 +199,16 @@ describe("render", () => {
     }
   });
 
-  it("runs the primary checkout bundle and exits 2 when git fails", () => {
+  it("renders a launcher that reads the anchor, never git, and exits 2 without a trusted primary", () => {
     for (const path of [".claude/settings.json", ".cursor/hooks.json"]) {
       const text = rendered.get(path) ?? "";
-      expect(text).toContain("--git-common-dir) || exit 2;");
-      expect(text).toContain('"$(dirname \\"$d\\")/wardens/dist/wardens.mjs');
+      expect(text).toContain('a=\\"$HOME/.config/panopticon/primaries\\"');
+      expect(text).toContain('{ echo \\"Blocked by Warden launcher:');
+      expect(text).toContain(
+        'exit 2; }; exec node \\"$r/wardens/dist/wardens.mjs',
+      );
+      expect(text).not.toContain("--git-common-dir");
+      expect(text).not.toContain("dirname");
     }
   });
 
@@ -291,6 +320,124 @@ describe("wardens sync", () => {
     const result = runCli(dir, ["sync", "--check"], CLEAN_ENV);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("Blocked by Warden engine");
+  });
+});
+
+describe("wardens sync: launcher anchor", () => {
+  function freshHome(): { PATH: string; HOME: string } {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "wardens-home-")));
+    homes.push(home);
+    return { PATH: process.env.PATH ?? "", HOME: home };
+  }
+  const mode = (path: string) => statSync(path).mode & 0o777;
+
+  it("writes its own primary toplevel to the anchor with private modes", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    expect(runCli(repo, ["sync"], env).status).toBe(0);
+    expect(readAnchor(env.HOME)).toEqual([realpathSync(repo)]);
+    expect(mode(anchorPath(env.HOME))).toBe(0o600);
+    expect(mode(join(env.HOME, ".config/panopticon"))).toBe(0o700);
+  });
+
+  it("is idempotent, keeps other entries and repairs loose modes", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    mkdirSync(join(env.HOME, ".config/panopticon"), { recursive: true });
+    writeFileSync(anchorPath(env.HOME), "/some/other/primary\n");
+    chmodSync(anchorPath(env.HOME), 0o666);
+    chmodSync(join(env.HOME, ".config/panopticon"), 0o777);
+    expect(runCli(repo, ["sync"], env).status).toBe(0);
+    const once = readFileSync(anchorPath(env.HOME), "utf8");
+    expect(once).toBe(`/some/other/primary\n${realpathSync(repo)}\n`);
+    expect(runCli(repo, ["sync"], env).status).toBe(0);
+    expect(readFileSync(anchorPath(env.HOME), "utf8")).toBe(once);
+    expect(mode(anchorPath(env.HOME))).toBe(0o600);
+    expect(mode(join(env.HOME, ".config/panopticon"))).toBe(0o700);
+  });
+
+  it("adds the primary, not the linked worktree, when run in a worktree", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    const git = (...args: string[]) =>
+      execFileSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args],
+        { cwd: repo, stdio: "ignore" },
+      );
+    git("add", "-A");
+    git("commit", "-q", "-m", "init");
+    const worktree = join(repo, ".claude/worktrees/1-t");
+    git("worktree", "add", "-q", worktree, "-b", "t");
+    expect(runCli(worktree, ["sync"], env).status).toBe(0);
+    expect(readAnchor(env.HOME)).toEqual([realpathSync(repo)]);
+  });
+
+  it("prints the primary it adds", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    const result = runCli(repo, ["sync"], env);
+    expect(result.stdout).toContain(realpathSync(repo));
+    expect(result.stdout).toContain(anchorPath(env.HOME));
+  });
+
+  it("derives the primary from the file system: a forged pointer in a task worktree adds no entry", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args],
+        { cwd, encoding: "utf8" },
+      );
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "init");
+    const worktree = join(repo, ".claude/worktrees/1-t");
+    git(repo, "worktree", "add", "-q", worktree, "-b", "t");
+    const fake = forgePointer(worktree);
+    // Git itself is fooled: it reports the fake repository's layout.
+    expect(git(worktree, "rev-parse", "--git-common-dir").trim()).toBe(
+      join(fake, ".git"),
+    );
+    const result = runCli(worktree, ["sync"], env);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("is not a verified primary checkout");
+    expect(result.stderr.split("\n")[0]).toMatch(MESSAGE_PATTERN);
+    expect(existsSync(join(env.HOME, ".config"))).toBe(false);
+    expect(existsSync(join(worktree, ".claude/settings.json"))).toBe(false);
+  });
+
+  it("refuses a worktree whose pointer names a primary outside its own worktrees directory", () => {
+    const env = freshHome();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "wardens-fake-")));
+    homes.push(outside);
+    const worktree = join(outside, "wt");
+    const fake = forgePointer(worktree);
+    writeFileSync(
+      join(worktree, "panopticon.charter.yaml"),
+      normativeCharter(),
+    );
+    expect(fake.startsWith(outside)).toBe(true);
+    const result = runCli(worktree, ["sync"], env);
+    expect(result.status).toBe(2);
+    expect(existsSync(join(env.HOME, ".config"))).toBe(false);
+  });
+
+  it("--check neither reads nor writes the anchor", () => {
+    const repo = tempRepo();
+    expect(runCli(repo, ["sync"], CLEAN_ENV).status).toBe(0);
+    const env = freshHome();
+    const result = runCli(repo, ["sync", "--check"], env);
+    expect(result.status).toBe(0);
+    expect(existsSync(join(env.HOME, ".config"))).toBe(false);
+  });
+
+  it("an agent session writes nothing, anchor included", () => {
+    const repo = tempRepo();
+    const env = freshHome();
+    const result = runCli(repo, ["sync"], { ...env, CLAUDECODE: "1" });
+    expect(result.status).toBe(2);
+    expect(existsSync(join(env.HOME, ".config"))).toBe(false);
   });
 });
 

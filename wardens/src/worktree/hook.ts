@@ -11,6 +11,7 @@ import {
 } from "../git.ts";
 import { appendVerdict, type LogLine, logLine } from "../log.ts";
 import { wardenMessage } from "../messages.ts";
+import { primaryProblem } from "../sync/primary.ts";
 import { loadTask, type TaskState } from "../task.ts";
 import { git, listWorktrees, withHardenedGit } from "./git.ts";
 import {
@@ -217,6 +218,13 @@ function context(cwd: string, anchor: string | null): Context | string {
     );
   }
   const primary = dirname(anchorCommon);
+  const notPrimary = primaryProblem(primary);
+  if (notPrimary !== null) {
+    return msg(
+      `the primary checkout ${primary} ${notPrimary}`,
+      "Rebuild the bundle in the primary checkout with pnpm --filter wardens build",
+    );
+  }
   // The Charter comes from the primary checkout only: a parent worktree's copy
   // can be changed by shell writes.
   const loaded = loadCharterAt(primary);

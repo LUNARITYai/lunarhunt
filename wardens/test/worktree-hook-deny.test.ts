@@ -80,8 +80,6 @@ const ALLOWED = [
   "wardens worktree list",
   "wardens doctor",
   "git worktree list",
-  "git worktree add x -b feat/1-x",
-  "git worktree remove x",
   "claude --worktree 42-offer-crud",
   "pnpm --filter wardens test",
   "pnpm check",
@@ -126,6 +124,15 @@ describe("agents cannot invoke the worktree hook entrypoints from a shell", () =
   });
 
   // Command substitution is denied as unparseable before this rule runs.
+  // Denied by the ring-0 git rules (main), consistent with this design.
+  it.each([
+    "git worktree add x -b feat/1-x",
+    "git worktree remove x",
+    "git worktree prune",
+  ])("denies by the git worktree rule: %s", (command) => {
+    expect(bash(command)).toContain('"deny"');
+  });
+
   it.each([
     "wardens worktree create $(echo --tool) claude",
     "wardens worktree create `echo --tool` claude",

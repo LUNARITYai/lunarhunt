@@ -1,9 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,8 +24,15 @@ import {
 } from "../src/doctor.ts";
 import { MAPPING_ROWS } from "../src/mapping.ts";
 import { embeddedHash, hashSources } from "../src/source-hash.ts";
+import { anchorPath, writeAnchor } from "../src/sync/anchor.ts";
 import { render } from "../src/sync/index.ts";
-import { cliPath, normativeCharter, repoRoot, tempRepo } from "./support.ts";
+import {
+  cliPath,
+  forgePointer,
+  normativeCharter,
+  repoRoot,
+  tempRepo,
+} from "./support.ts";
 
 const loaded = loadCharterYaml(normativeCharter());
 if (!loaded.ok) {
@@ -87,7 +96,9 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
   cpSync(join(repoRoot, "wardens/src"), join(primary, "wardens/src"), {
     recursive: true,
   });
-  const home = scratchDir();
+  mkdirSync(join(primary, ".git"));
+  const home = realpathSync(scratchDir());
+  writeAnchor(home, primary);
   const deps: DoctorDeps = {
     cwd: root,
     env: { PATH: process.env.PATH ?? "", HOME: home },
@@ -161,6 +172,7 @@ describe("wardens doctor", () => {
       "ok break-hook",
       "ok bundle",
       "ok worktree-exclusions",
+      "ok launcher-anchor",
       "ok duplicates",
       "ok disable-all-hooks",
       "ok claude-version",
@@ -512,5 +524,127 @@ describe("claude-version", () => {
     expect(status("3.0.0")).toBe("ok");
     expect(status("garbage")).toBe("warn");
     expect(status(null)).toBe("ok");
+  });
+});
+
+describe("launcher-anchor", () => {
+  const check = (deps: DoctorDeps) =>
+    byId(runChecks(false, deps), "launcher-anchor");
+
+  it("is ok when the anchor lists this primary and is private", () => {
+    const { deps } = fixture();
+    expect(check(deps).status).toBe("ok");
+  });
+
+  it("is not part of --ci", () => {
+    const { deps } = fixture();
+    expect(runChecks(true, deps).map((r) => r.id)).not.toContain(
+      "launcher-anchor",
+    );
+  });
+
+  it("fails when the anchor is missing", () => {
+    const { home, deps } = fixture();
+    rmSync(anchorPath(home));
+    const res = check(deps);
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("is missing");
+    expect(runDoctor({ ci: false, json: false }, deps).exitCode).toBe(2);
+  });
+
+  it("fails when the anchor does not list this primary", () => {
+    const { home, deps } = fixture();
+    writeFileSync(anchorPath(home), "/some/other/primary\n");
+    const res = check(deps);
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("does not list");
+  });
+
+  it("fails when the anchor file is writable by group or other", () => {
+    const { home, deps } = fixture();
+    chmodSync(anchorPath(home), 0o620);
+    const res = check(deps);
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("must not be writable");
+  });
+
+  it("fails when the anchor directory is writable by group or other", () => {
+    const { home, deps } = fixture();
+    chmodSync(join(home, ".config/panopticon"), 0o770);
+    expect(check(deps).status).toBe("fail");
+    chmodSync(join(home, ".config/panopticon"), 0o702);
+    expect(check(deps).status).toBe("fail");
+  });
+
+  it("break-hook does not depend on the real anchor", () => {
+    const { home, deps } = fixture();
+    rmSync(anchorPath(home));
+    expect(byId(runChecks(false, deps), "break-hook").status).toBe("ok");
+  });
+
+  describe("verifies every entry", () => {
+    const withEntries = (
+      extra: (primary: string) => string[],
+      overrides: Partial<DoctorDeps> = {},
+    ) => {
+      const { home, primary, deps } = fixture(overrides);
+      const lines = [primary, ...extra(primary)].join("\n");
+      writeFileSync(anchorPath(home), `${lines}\n`);
+      return check({ ...deps, ...overrides });
+    };
+    const linkedWorktree = (path: string) => {
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, ".git"), "gitdir: /nowhere\n");
+      return path;
+    };
+
+    it("fails on an entry that is a linked worktree", () => {
+      const res = withEntries(() => [linkedWorktree(scratchDir())]);
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("is a linked worktree");
+    });
+
+    it("fails on an entry under another entry's .claude/worktrees", () => {
+      const res = withEntries((primary) => {
+        const inner = join(primary, ".claude/worktrees/1-t");
+        mkdirSync(join(inner, ".git"), { recursive: true });
+        return [inner];
+      });
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("lies under");
+    });
+
+    it("fails on an entry that is not a checkout", () => {
+      const res = withEntries(() => ["/some/other/primary"]);
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("entry /some/other/primary");
+    });
+
+    it("fails on a carriage return", () => {
+      const { home, primary, deps } = fixture();
+      writeFileSync(anchorPath(home), `${primary}\r\n${primary}\n`);
+      const res = check(deps);
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("carriage return");
+    });
+
+    it("fails when the anchor or its directory is not owned by the user", () => {
+      const res = withEntries(() => [], { uid: (process.getuid?.() ?? 0) + 1 });
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("is not owned by the current user");
+    });
+  });
+
+  it("derives the primary from the file system: a forged pointer in a task worktree fails", () => {
+    const { root, deps, home } = fixture();
+    const worktree = join(root, ".claude/worktrees/1-t");
+    forgePointer(worktree);
+    const { primary: _unused, ...rest } = deps;
+    const results = runChecks(false, { ...rest, cwd: worktree });
+    const res = byId(results, "launcher-anchor");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("is not a verified primary checkout");
+    // Nor does the anchor gain an entry from running doctor.
+    expect(readFileSync(anchorPath(home), "utf8")).not.toContain(".evil");
   });
 });
