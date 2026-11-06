@@ -74,6 +74,14 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     mkdirSync(join(root, path, ".."), { recursive: true });
     writeFileSync(join(root, path), text);
   }
+  for (const file of [
+    ".gitignore",
+    "biome.json",
+    "tsconfig.base.json",
+    "pyproject.toml",
+  ]) {
+    writeFileSync(join(root, file), ".claude/worktrees\n");
+  }
   const primary = scratchDir();
   cpSync(join(repoRoot, "wardens/src"), join(primary, "wardens/src"), {
     recursive: true,
@@ -151,9 +159,12 @@ describe("wardens doctor", () => {
       "ok coverage",
       "ok break-hook",
       "ok bundle",
+      "ok worktree-exclusions",
       "ok duplicates",
       "ok disable-all-hooks",
       "ok claude-version",
+      "ok worktrees",
+      "ok task-databases",
     ]);
   });
 
@@ -179,6 +190,7 @@ describe("wardens doctor", () => {
       "coverage",
       "break-hook",
       "bundle",
+      "worktree-exclusions",
     ]);
   });
 
@@ -187,7 +199,7 @@ describe("wardens doctor", () => {
     const out = runDoctor({ ci: true, json: true }, deps);
     const parsed = JSON.parse(out.stdout);
     expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(5);
+    expect(parsed).toHaveLength(6);
     for (const item of parsed) {
       expect(Object.keys(item).sort()).toEqual(["id", "message", "status"]);
       expect(item.status).toBe("ok");

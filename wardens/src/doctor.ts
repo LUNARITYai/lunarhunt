@@ -3,6 +3,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
+import {
+  checkTaskDatabases,
+  checkWorktreeExclusions,
+  checkWorktrees,
+  defaultWorktreeDeps,
+  type WorktreeCheckDeps,
+} from "./doctor-worktree.ts";
 import { mapPayload, type ToolName } from "./event.ts";
 import { gitToplevel, primaryCheckout } from "./git.ts";
 import { MAPPING_ROWS } from "./mapping.ts";
@@ -29,6 +36,8 @@ export type DoctorDeps = {
   primary?: string;
   /** Override of the real bundle; defaults to `<primary>/wardens/dist/wardens.mjs`. */
   bundlePath?: string;
+  /** Overrides of `gh` and the database listing for the worktree checks; tests inject them. */
+  worktree?: Partial<WorktreeCheckDeps>;
 };
 
 export const DUPLICATES_WARNING =
@@ -553,11 +562,18 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
     checkBreakHook(toplevel, bundlePath, deps.env),
     checkBundle(primary, bundlePath),
   ];
+  results.push(checkWorktreeExclusions(toplevel));
   if (!ci) {
+    const worktreeDeps: WorktreeCheckDeps = {
+      ...defaultWorktreeDeps(deps.env, deps.now),
+      ...deps.worktree,
+    };
     results.push(
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),
+      checkWorktrees(toplevel, primary, worktreeDeps),
+      checkTaskDatabases(toplevel, primary, worktreeDeps),
     );
   }
   return results;
