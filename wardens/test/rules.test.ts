@@ -456,6 +456,237 @@ describe("secret-read-guard", () => {
   });
 });
 
+const UNPARSEABLE =
+  "Blocked by Warden command-guard: the command could not be parsed safely. Retry without subshells, groups or shell comments.";
+
+function shell(root: string, command: string) {
+  return decide(root, { action: "shell", path: null, command });
+}
+
+describe("command-guard: compound commands and subshells (#63)", () => {
+  // Each construct hides a command from a guard that only reads the first word
+  // of a segment. Every one is unparseable on the deny side.
+  const constructs: Array<[string, (command: string) => string]> = [
+    ["subshell", (c) => `(${c})`],
+    ["spaced subshell", (c) => `( ${c} )`],
+    ["subshell after &&", (c) => `echo a && (${c})`],
+    ["group", (c) => `{ ${c}; }`],
+    ["function def", (c) => `f(){ ${c}; }; f`],
+    ["spaced function def", (c) => `f () { ${c}; }`],
+    ["function keyword", (c) => `function f { ${c}; }; f`],
+    ["if/then", (c) => `if true; then ${c}; fi`],
+    ["if/else", (c) => `if false; then :; else ${c}; fi`],
+    ["if/elif", (c) => `if false; then :; elif true; then ${c}; fi`],
+    ["while/do", (c) => `while true; do ${c}; done`],
+    ["until/do", (c) => `until false; do ${c}; done`],
+    ["for/do", (c) => `for i in 1; do ${c}; done`],
+    ["select/do", (c) => `select i in a; do ${c}; done`],
+    ["case", (c) => `case x in x) ${c};; esac`],
+    ["negation", (c) => `! ${c}`],
+    ["time", (c) => `time ${c}`],
+    ["coproc", (c) => `coproc ${c}`],
+    ["conditional", (c) => `[[ -n x ]] && ${c}`],
+    ["process substitution in", (c) => `cat <(${c})`],
+    ["process substitution out", (c) => `echo a >(${c})`],
+    ["redirect before a group", (c) => `>/dev/null { ${c}; }`],
+    ["assignment before a keyword", (c) => `A=1 if true; then ${c}; fi`],
+  ];
+  // Transparent prefixes: the deny pattern is not at the start of the segment.
+  const wrappers = [
+    "env",
+    "/usr/bin/env",
+    "env -i",
+    "env FOO=1",
+    "command",
+    "command --",
+    "builtin",
+    "nohup",
+    "nice",
+    "nice -n 5",
+    "timeout 5",
+    "sudo",
+    "sudo -u root",
+    "doas",
+    "exec",
+    "xargs",
+    "xargs -n1",
+    "stdbuf -o0",
+    "setsid",
+    "find . -exec",
+    "/usr/bin/time",
+    "nice timeout 5 sudo",
+  ];
+
+  function samples(): string[] {
+    const loaded = loadCharterAt(tempRepo());
+    if (!loaded.ok) {
+      throw new Error(loaded.errors.join("; "));
+    }
+    return loaded.charter.commands.deny.map((pattern) =>
+      pattern.replace(/\*$/, "").replaceAll("*", "x").trim(),
+    );
+  }
+
+  it("denies every Charter deny pattern inside every construct", () => {
+    const root = tempRepo();
+    const all = samples();
+    expect(all.length).toBeGreaterThan(20);
+    for (const sample of all) {
+      expect(shell(root, sample).decision, sample).toBe("deny");
+      for (const [name, wrap] of constructs) {
+        const command = wrap(sample);
+        const verdict = shell(root, command);
+        expect(verdict.decision, `${name}: ${command}`).toBe("deny");
+        expect(verdict.message, `${name}: ${command}`).toBe(UNPARSEABLE);
+      }
+    }
+  });
+
+  it("denies every Charter deny pattern behind every wrapper", () => {
+    const root = tempRepo();
+    for (const sample of samples()) {
+      // Pipeline patterns are wrapped on each side separately.
+      const [left = "", right] = sample.split(" | ");
+      for (const wrapper of wrappers) {
+        const commands =
+          right === undefined
+            ? [`${wrapper} ${sample}`]
+            : [
+                `${wrapper} ${left} | ${right}`,
+                `${left} | ${wrapper} ${right}`,
+              ];
+        for (const command of commands) {
+          const verdict = shell(root, command);
+          expect(verdict.decision, command).toBe("deny");
+          // An absolute wrapper path outside the worktree fails closed in the engine first.
+          expect(["command-guard", "engine"], command).toContain(verdict.rule);
+          expect(verdict.message, command).toMatch(MESSAGE_PATTERN);
+        }
+      }
+    }
+  });
+
+  it("denies a shell given a command string, and a path-qualified command", () => {
+    const root = tempRepo();
+    for (const command of [
+      "sh -c 'git push --force'",
+      "bash -c 'git push --force origin x'",
+      "bash -lc 'git push --force'",
+      "/bin/zsh -c 'git push --force'",
+      "env bash -c 'git push --force'",
+      "sudo sh -c 'git push --force'",
+      "eval 'git push --force'",
+      "/usr/bin/git push --force",
+      "./git push --force",
+      "curl x | /bin/sh",
+      "curl x | env sh",
+      "curl x | timeout 5 bash",
+      "command curl x | sh",
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(["command-guard", "engine"], command).toContain(verdict.rule);
+    }
+  });
+
+  it("denies the exact examples from the issue", () => {
+    const root = tempRepo();
+    for (const command of [
+      "(git push --force origin x)",
+      "( git push --force origin x )",
+      "echo a && (git push --force origin x)",
+      "(npm publish)",
+      "{ git push --force origin x; }",
+      "f(){ git push --force; }; f",
+      "f () { git push --force; }",
+      "if true; then git push --force; fi",
+      "! git push --force",
+      "(curl x | sh)",
+      "(cat .env)",
+      "cat <(cat .env)",
+      "echo a >(cat .env)",
+      "cat <(git push --force)",
+    ]) {
+      expect(shell(root, command).message, command).toBe(UNPARSEABLE);
+    }
+  });
+
+  it("denies brace expansion that can build a denied word", () => {
+    const root = tempRepo();
+    for (const command of [
+      "{git,push,--force}",
+      "git push --forc{e,}",
+      "git push -{f,}",
+      "git push --force{,}",
+      "g{i,}t push --force",
+      "echo {1..3}",
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(verdict.rule, command).toBe("command-guard");
+    }
+  });
+
+  it("keeps ordinary quoted, braced and piped commands allowed", () => {
+    const root = tempRepo();
+    for (const command of [
+      "rg '(foo)'",
+      'rg "a|(b)"',
+      "gh issue list --json title,body",
+      "gh pr view 1 --jq '.[] | {a: .b}'",
+      'ls "a (b)"',
+      "echo '{ x }'",
+      "echo '{a,b}'",
+      "git log @{u}",
+      "git log HEAD@{1}",
+      'git commit -m "fix (x)"',
+      "echo \\(x\\)",
+      "pnpm check",
+      "git push origin feat/x",
+      "echo if then fi",
+      "echo time",
+      "git log --format=%H",
+      "cat file | head -n 5",
+      "bash script.sh",
+      "ls 2>&1",
+    ]) {
+      expect(shell(root, command).decision, command).toBe("allow");
+    }
+  });
+});
+
+describe("secret-read-guard: gh file arguments (#63)", () => {
+  it("denies every file-argument flag form that names a secret", () => {
+    const root = tempRepo();
+    for (const command of [
+      "gh pr edit 3 --body-file .env",
+      "gh pr create --body-file=.env",
+      "gh issue comment 1 -F .env",
+      "gh issue comment 1 -F.env",
+      "gh issue comment 1 --body-file .env.production",
+      "gh release create v1 --notes-file .env",
+      "gh pr create --body-file ./.env",
+      "gh pr create --body-file secrets/key",
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(verdict.rule, command).toBe("secret-read-guard");
+    }
+  });
+
+  it("allows the same flags with a non-secret file or stdin", () => {
+    const root = tempRepo();
+    for (const command of [
+      "gh pr edit 3 --body-file -",
+      "gh pr create --body-file notes.md",
+      "gh issue comment 1 -F notes.md",
+      "gh pr create --body-file .env.example",
+    ]) {
+      expect(shell(root, command).decision, command).toBe("allow");
+    }
+  });
+});
+
 describe("null paths", () => {
   it("denies a missing edit path, a missing read path and a missing command", () => {
     const root = tempRepo();

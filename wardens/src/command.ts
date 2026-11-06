@@ -2,6 +2,155 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
 
 /**
+ * Brace expansion in unquoted text (`{a,b}`, `{1..3}`), matched against a word
+ * whose quoted characters are NUL. It needs a top-level `,` or `..`; a bare
+ * `{u}` (`git log @{u}`) or `{}` (`xargs -I{}`) is literal. It is unparseable
+ * in ANY position, not just the command word: `git push --forc{e,}` builds
+ * the denied `--force`, and `{git,push,--force}` builds the whole command. So
+ * the deny side cannot read either form from the text. The cost is that
+ * `cp a{,.bak}` is denied too; spell it out.
+ */
+const BRACE_EXPANSION = /\{[^{}]*(?:,|\.\.)[^{}]*\}/;
+
+/**
+ * Shell reserved words (bash and zsh) that start a compound command, plus the
+ * zsh precommand modifiers. In command position each one makes the real
+ * command start later in the segment, where a deny pattern anchored on the
+ * first word does not see it. A bare `{` or `}` is a group. Quoting is not
+ * tracked: a quoted `'if'` in command position is denied too, which is fine.
+ */
+const RESERVED_WORDS = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "do",
+  "done",
+  "while",
+  "until",
+  "for",
+  "case",
+  "esac",
+  "select",
+  "function",
+  "coproc",
+  "time",
+  "!",
+  "[[",
+  "]]",
+  "{",
+  "}",
+  "repeat",
+  "foreach",
+  "nocorrect",
+  "noglob",
+]);
+
+/** `>x`, `2>x`, `&>x`, `>>`, `<`, `<<<`, `>&2`, `>|`: the part after the operator is the target, possibly the next word. */
+const REDIRECT_WORD = /^(?:\d+|&)?(?:>>|>\||>&|>|<<<|<&|<>|<)(.*)$/;
+
+/**
+ * Index of the command word: the first word that is not an environment
+ * assignment or a redirect (with its target).
+ */
+function commandWordIndex(words: readonly string[]): number {
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (ENV_ASSIGNMENT.test(word)) {
+      index += 1;
+      continue;
+    }
+    const redirect = REDIRECT_WORD.exec(word);
+    if (!redirect) {
+      break;
+    }
+    index += redirect[1] === "" ? 2 : 1;
+  }
+  return index;
+}
+
+/**
+ * Commands that run their remaining arguments as another command. A deny
+ * pattern for the inner command must still match (`env git push --force`).
+ * Not a list of interpreters: `python -c` and friends are out of reach of a
+ * text match. `find` is here for `-exec`.
+ */
+const WRAPPERS = new Set([
+  "env",
+  "command",
+  "builtin",
+  "exec",
+  "nohup",
+  "time",
+  "nice",
+  "ionice",
+  "timeout",
+  "sudo",
+  "doas",
+  "xargs",
+  "stdbuf",
+  "setsid",
+  "busybox",
+  "watch",
+  "unbuffer",
+  "caffeinate",
+  "chroot",
+  "flock",
+  "parallel",
+  "find",
+]);
+
+/** Shells whose `-c` argument (and `eval`'s arguments) is a command line we do not parse. */
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"]);
+const COMMAND_STRING_FLAG = /^-[a-zA-Z]*c[a-zA-Z]*$/;
+
+function isWrapper(word: string): boolean {
+  return WRAPPERS.has(commandName(word));
+}
+
+/**
+ * `sh -c '<command line>'` and `eval <words>` carry a second command line as a
+ * string. Re-parsing it is open-ended (nested quoting, nested wrappers), so it
+ * is unparseable instead; run the command directly.
+ */
+function runsCommandString(argv: readonly string[]): boolean {
+  const limit = isWrapper(argv[0] ?? "") ? argv.length : 1;
+  for (let at = 0; at < limit; at += 1) {
+    const name = commandName(argv[at] ?? "");
+    if (name === "eval") {
+      return true;
+    }
+    if (
+      SHELLS.has(name) &&
+      argv.slice(at + 1).some((word) => COMMAND_STRING_FLAG.test(word))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The segment itself plus, when its command word is a wrapper, the segment
+ * that starts at each later word (`sudo -u x env A=1 git push --force` also
+ * reads as `git push --force`). Over-broad on purpose, and only on the deny
+ * side: `nice echo git push --force` is denied too.
+ */
+export function segmentVariants(segment: Segment): Segment[] {
+  const out = [segment];
+  if (!isWrapper(segment.argv[0] ?? "")) {
+    return out;
+  }
+  for (let at = 1; at < segment.argv.length; at += 1) {
+    const inner = prepare(segment.argv.slice(at), [], []);
+    out.push({ ...inner, env: { ...segment.env, ...inner.env } });
+  }
+  return out;
+}
+
+/**
  * Both readings of a command: comment-aware, and `#` as an ordinary character.
  * Every deny-side consumer must hold for BOTH (deny if either matches, yields a
  * candidate, or is unparseable), so a `#` the shell reads differently from us
@@ -17,6 +166,15 @@ const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
  * closed rather than chased one by one: any unquoted `#` together with a
  * backslash-newline continuation, and a `#` right after an operator character
  * (`&`, `!`, `|`, `;`, `<`, `>`, `(`, `)`, `{`), as in zsh `&!#`.
+ *
+ * Also unparseable (#63), because a deny pattern only matches the first word of
+ * a segment and these hide the real command behind other syntax: any unquoted
+ * `(` or `)` (subshell, function definition, `case` pattern, `<(`, `>(`); a
+ * reserved word or a bare `{` / `}` in command position (`if`, `then`, `do`,
+ * `!`, `time`, ...); unquoted brace expansion (`{a,b}`, `{1..3}`) in any
+ * position; and `sh -c` / `eval`. Transparent wrappers (`env`, `sudo`,
+ * `timeout`, ...) are not unparseable: `segmentVariants` lets the patterns see
+ * through them.
  */
 export function tokenizeAll(command: string): Pipeline[] {
   const aware = tokenize(command, true);
@@ -152,10 +310,20 @@ export function tokenize(command: string, comments = true): Pipeline {
     return { ok: false };
   }
   const raw = scanned.segments;
+  if (
+    raw.some((segment) =>
+      RESERVED_WORDS.has(segment.words[commandWordIndex(segment.words)] ?? ""),
+    )
+  ) {
+    return { ok: false };
+  }
   const segments = raw.map((segment) =>
     prepare(segment.words, segment.meta, segment.expand),
   );
-  if (!heredocSafe(raw, segments)) {
+  if (
+    segments.some((segment) => runsCommandString(segment.argv)) ||
+    !heredocSafe(raw, segments)
+  ) {
     return { ok: false };
   }
   const pipes = raw.slice(0, -1).map((segment) => segment.pipeAfter);
@@ -259,6 +427,10 @@ function scan(
   let metas: number[] = [];
   let expands: number[] = [];
   let buf = "";
+  // The current word with every quoted or escaped character replaced by NUL,
+  // so brace expansion is looked for in unquoted text only.
+  let bare = "";
+  let unsafe = false;
   let wordStarted = false;
   let wordMeta = false;
   let wordExpand = false;
@@ -272,6 +444,10 @@ function scan(
     if (buf === "case") {
       special = true;
     }
+    if (BRACE_EXPANSION.test(bare)) {
+      unsafe = true;
+    }
+    bare = "";
     if (wordMeta) {
       metas.push(words.length);
     }
@@ -303,6 +479,7 @@ function scan(
         quote = null;
       } else {
         buf += ch;
+        bare += "\0";
         wordStarted = true;
       }
       continue;
@@ -321,11 +498,13 @@ function scan(
         }
         if (next === "\\" || next === '"') {
           buf += next;
+          bare += "\0";
           wordStarted = true;
           index += 1;
           continue;
         }
         buf += ch;
+        bare += "\0";
         wordStarted = true;
         continue;
       }
@@ -343,6 +522,7 @@ function scan(
         special = true;
       }
       buf += ch;
+      bare += "\0";
       wordStarted = true;
       continue;
     }
@@ -358,6 +538,7 @@ function scan(
         continue;
       }
       buf += next;
+      bare += "\0";
       wordStarted = true;
       index += 1;
       continue;
@@ -391,6 +572,7 @@ function scan(
     if (ch === "<" && command[index + 1] === "<") {
       if (command[index + 2] === "<") {
         buf += "<<<";
+        bare += "<<<";
         wordStarted = true;
         wordMeta = true;
         index += 2;
@@ -445,6 +627,7 @@ function scan(
       // command before it, so what follows is a new segment.
       if (command[index + 1] === ">" || afterGt) {
         buf += ch;
+        bare += ch;
         wordStarted = true;
         wordMeta = true;
         continue;
@@ -475,23 +658,26 @@ function scan(
     if (/[$(){}[\]]/.test(ch)) {
       special = true;
     }
+    // Every unquoted parenthesis is unparseable: a subshell, a group, a
+    // function definition, a `case` pattern, an array, an extended glob or
+    // process substitution (`<(`, `>(`), each able to hide a command from the
+    // deny patterns. No legitimate agent command needs one outside quotes.
+    if (ch === "(" || ch === ")") {
+      return null;
+    }
     buf += ch;
+    bare += ch;
     wordStarted = true;
-    if (ch === "<" || ch === ">" || ch === "(" || ch === ")") {
+    if (ch === "<" || ch === ">") {
       wordMeta = true;
       lastGt = ch === ">";
     }
-    if (ch === "(" || ch === ")") {
-      // A parenthesis ends the word, so a `#` right after it starts a comment,
-      // as in the shell. The paren stays in the word and keeps it flagged.
-      flushWord();
-    }
   }
 
-  if (quote !== null || pending.length > 0) {
+  flushWord();
+  if (quote !== null || pending.length > 0 || unsafe) {
     return null;
   }
-  flushWord();
   segments.push({
     words,
     pipeAfter: false,
@@ -683,7 +869,11 @@ export function segmentMatches(pattern: string, segment: Segment): boolean {
     return matchRest(parts, 1, segment.tokens, 0);
   }
   const first = segment.tokens[0];
-  if (!first || !tokenMatches(head, first)) {
+  // `/usr/bin/git push --force` is `git push --force`.
+  if (
+    !first ||
+    !tokenMatches(head, { ...first, text: commandName(first.text) })
+  ) {
     return false;
   }
   return matchRest(parts, 1, segment.tokens, 1);
@@ -694,11 +884,12 @@ function rightSideMatches(pattern: string, segment: Segment): boolean {
     .trim()
     .split(/\s+/)
     .filter((part) => part.length > 0);
+  const head = commandName(segment.argv[0] ?? "");
   if (parts.length === 1) {
-    return segment.argv[0] === parts[0];
+    return head === parts[0];
   }
   if (parts.length === 2) {
-    return segment.argv[0] === parts[0] && segment.argv[1] === parts[1];
+    return head === parts[0] && segment.argv[1] === parts[1];
   }
   return false;
 }
@@ -718,15 +909,17 @@ export function pipelineMatches(
         continue;
       }
       if (
-        segmentMatches(left, leftSegment) &&
-        rightSideMatches(right, rightSegment)
+        segmentVariants(leftSegment).some((v) => segmentMatches(left, v)) &&
+        segmentVariants(rightSegment).some((v) => rightSideMatches(right, v))
       ) {
         return true;
       }
     }
     return false;
   }
-  return pipeline.segments.some((segment) => segmentMatches(pattern, segment));
+  return pipeline.segments.some((segment) =>
+    segmentVariants(segment).some((v) => segmentMatches(pattern, v)),
+  );
 }
 
 export function firstDeny(
@@ -1068,6 +1261,12 @@ function collectCandidates(
     if (word.startsWith("<") && word.length > 1) {
       found.push({ path: word.slice(1), write: false, origin: "arg" });
       continue;
+    }
+    // A short option with its value glued on (`gh issue comment 1 -F.env`,
+    // `curl -K.env`). All-letter rests are combined flags (`-am`), not values.
+    const glued = index > 0 ? /^-[A-Za-z](.+)$/.exec(word) : null;
+    if (glued && !/^[A-Za-z]+$/.test(glued[1] ?? "")) {
+      found.push({ path: glued[1] ?? "", write: !readOnly, origin: "arg" });
     }
     if (!word.startsWith("-")) {
       const write =

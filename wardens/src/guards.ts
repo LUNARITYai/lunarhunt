@@ -173,6 +173,23 @@ function expansionBlock(): Objection {
 }
 
 /**
+ * The one verdict for a command the tokenizer rejects: a subshell, group,
+ * process substitution, reserved word in command position, brace expansion,
+ * command substitution, a `-c` command string, or a `#` the two readings
+ * disagree on. Returned by `command-guard` and, as defence in depth, by
+ * `expansionDeny` (so `protected-paths` and `secret-read-guard` never skip a
+ * pipeline they cannot read).
+ */
+function unparseableBlock(): Objection {
+  return block(
+    "command-guard",
+    "deny",
+    "the command could not be parsed safely",
+    "Retry without subshells, groups or shell comments",
+  );
+}
+
+/**
  * A word the shell rewrites (a variable, an unquoted glob or brace, `~user`)
  * names a path we cannot read from the text. It is provably inside the
  * worktree only when it has no variable, brace or `~user`, no glob segment can
@@ -287,6 +304,9 @@ function shellTargets(ctx: RuleContext, command: string): ShellTarget[] {
 export function expansionDeny(ctx: RuleContext): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
+  }
+  if (tokenizeAll(ctx.event.command).some((pipeline) => !pipeline.ok)) {
+    return unparseableBlock();
   }
   const home = ctx.home ?? homedir();
   for (const step of trackedSteps(ctx, ctx.event.command)) {
@@ -694,12 +714,7 @@ export function commandGuard(ctx: RuleContext): Objection | null {
   const pipelines = tokenizeAll(ctx.event.command);
   const parsed = pipelines.filter((pipeline) => pipeline.ok);
   if (parsed.length !== pipelines.length) {
-    return block(
-      "command-guard",
-      "deny",
-      "the command could not be parsed safely",
-      "Retry without shell comments or with a simpler command",
-    );
+    return unparseableBlock();
   }
   for (const pipeline of parsed) {
     const denied = firstDeny(ctx.charter.commands.deny, pipeline);
