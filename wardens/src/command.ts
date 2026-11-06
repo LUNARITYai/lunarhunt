@@ -1335,9 +1335,39 @@ export function writeTargets(segment: Segment): string[] {
         candidate.write &&
         !isDevicePath(candidate.path) &&
         (candidate.origin === "redirect" ||
-          (writer && candidate.origin === "arg")),
+          (writer &&
+            (candidate.origin === "arg" || candidate.origin === "opt"))),
     )
     .map((candidate) => candidate.path);
+}
+
+/**
+ * Values of `key=value` and `--opt=value` words of a command that is not
+ * read-only (#75). Which option names a path is the command's own grammar
+ * (`dd of=`, `sort --output=`, `foo --log-file=`), so every value counts and the
+ * guards decide by what it resolves to: outside the worktree, a protected or
+ * generated path, a secret. Leading environment assignments are not words, and
+ * neither are the assignments a wrapper takes before its command
+ * (`env A=/tmp/x pnpm check`).
+ */
+export function valueTargets(segment: Segment): string[] {
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.write &&
+        (candidate.origin === "kv" || candidate.origin === "opt") &&
+        !isDevicePath(candidate.path),
+    )
+    .map((candidate) => candidate.path);
+}
+
+/**
+ * A value that reads as a path before any glob is applied: absolute, `~`,
+ * `./`, `../`, a variable, or any `/`. Expansion checks use it, so a plain
+ * `--format=%H` needs no proof, while `out=$HOME/x` does.
+ */
+export function looksLikePath(value: string): boolean {
+  return /^(?:[/~$]|\.\.?(?:\/|$))/.test(value) || value.includes("/");
 }
 
 /** `--opt=value` options whose value is a file the command writes. */
@@ -1487,7 +1517,30 @@ export function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 
-type Origin = "head" | "redirect" | "arg" | "glued";
+type Origin = "head" | "redirect" | "arg" | "glued" | "opt" | "kv";
+
+/** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
+const KEY_VALUE = /^[A-Za-z_][A-Za-z0-9_.-]*=(.+)$/s;
+
+/**
+ * Byte sources and sinks `dd` is made for (`if=/dev/zero`). Only a `key=value`
+ * value is excused: `cat /dev/zero` stays an escape, as on `main`.
+ */
+const KEY_VALUE_DEVICE = /^\/dev\/(?:zero|random|urandom|full)$/;
+
+/**
+ * Index of the first word a wrapper runs as its command (`env A=1 pnpm check`
+ * gives 2), or `argv.length` when it runs none. Of the readings `walkCommands`
+ * allows, the earliest wins, so a word is called an assignment only when it
+ * precedes the command under every reading.
+ */
+function wrappedCommandIndex(argv: readonly string[]): number {
+  if (!isWrapper(argv[0] ?? "")) {
+    return 0;
+  }
+  const later = [...walkCommands(argv).at].filter((index) => index > 0);
+  return later.length > 0 ? Math.min(...later) : argv.length;
+}
 
 function collectCandidates(
   segment: Segment,
@@ -1495,6 +1548,7 @@ function collectCandidates(
   const found: Array<PathCandidate & { origin: Origin }> = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
+  const assignmentsEnd = wrappedCommandIndex(argv);
   const readOnly = READ_ONLY.has(command);
   const writeAll = WRITE_ALL.has(command);
   const copyLike = command === "cp" || command === "mv" || command === "ln";
@@ -1520,7 +1574,7 @@ function collectCandidates(
       }
       const value = word.slice(eq + 1);
       if (value.length > 0) {
-        found.push({ path: value, write: !readOnly, origin: "arg" });
+        found.push({ path: value, write: !readOnly, origin: "opt" });
       }
     }
     const redirect = REDIRECT.exec(word);
@@ -1557,6 +1611,16 @@ function collectCandidates(
       found.push({ path: glued[1] ?? "", write: false, origin: "glued" });
     }
     if (!word.startsWith("-")) {
+      const keyValue = index > 0 ? KEY_VALUE.exec(word) : null;
+      if (
+        keyValue &&
+        !(index < assignmentsEnd && ENV_ASSIGNMENT.test(word)) &&
+        !KEY_VALUE_DEVICE.test(keyValue[1] ?? "")
+      ) {
+        // `dd of=/abs/x` and its kind: the value is a path argument (#75).
+        // The whole word stays a candidate below, for a file named `a=b`.
+        found.push({ path: keyValue[1] ?? "", write: !readOnly, origin: "kv" });
+      }
       const write =
         index === 0 ||
         writeAll ||

@@ -864,6 +864,188 @@ describe("secret-read-guard: gh file arguments (#63)", () => {
   });
 });
 
+// #75: a word `key=path` or `--opt=path` is a path argument like any other.
+describe("key=path and --opt=path arguments (#75)", () => {
+  const ESCAPES = [
+    "dd if=x of=/abs/outside",
+    "dd of=../outside",
+    "dd of=~/x",
+    "printf x | dd of=/abs/y",
+    "dd if=/abs/outside of=x",
+    "sort --output=/abs/x f",
+    "foo --log-file=/abs/x",
+    "foo --out=../x",
+    "tool --anything=/abs/outside/file",
+    "tool anything=/abs/outside/file",
+    "tool out=../x",
+    "tool out=~/x",
+    "env dd of=/abs/y",
+    "cat --x=/abs",
+    "rg --file=/abs/x",
+  ];
+
+  it.each(ESCAPES)("denies %s as a path escape", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe("engine");
+    expect(verdict.message).toBe(
+      "Blocked by Warden engine: path escapes the worktree. Label the issue needs:human.",
+    );
+  });
+
+  const SECRETS = [
+    "dd of=.env",
+    "dd if=.env of=x",
+    "dd if=secrets/key of=x",
+    "tool key=.env",
+    "tool --config=.env",
+    "tool --anything=secrets/a",
+  ];
+
+  it.each(SECRETS)("denies %s as a secret", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe("secret-read-guard");
+  });
+
+  it("gives a protected or generated path the edit-tool verdict", () => {
+    const root = tempRepo();
+    const cases: Array<[string, string]> = [
+      ["panopticon.charter.yaml", "protected-paths"],
+      ["secrets/key", "protected-paths"],
+      ["packages/contracts/openapi.json", "generated-files-guard"],
+      ["packages/api-client/src/client.ts", "generated-files-guard"],
+    ];
+    for (const [target, rule] of cases) {
+      const edit = decide(root, { action: "edit", path: target });
+      expect(edit.rule).toBe(rule);
+      for (const command of [
+        `dd of=${target}`,
+        `dd if=x of=${target} bs=1`,
+        `tool --out=${target}`,
+        `tool out=${target}`,
+        `env dd of=${target}`,
+        `cp x ${target}`,
+        `tee ${target}`,
+        `echo x > ${target}`,
+      ]) {
+        const verdict = shell(root, command);
+        expect(verdict.decision, command).toBe(edit.decision);
+        expect(verdict.rule, command).toBe(
+          // `.env`-like secrets are also read candidates, so either rule may win.
+          target.startsWith("secrets/") ? verdict.rule : rule,
+        );
+        expect(verdict.message, command).toMatch(MESSAGE_PATTERN);
+      }
+    }
+  });
+
+  it("asks for an ask path exactly as the edit tool does", () => {
+    const root = tempRepo();
+    const target = "docs/specs/AGENTS.md";
+    const edit = decide(root, { action: "edit", path: target });
+    expect(edit.decision).toBe("ask");
+    for (const command of [
+      `dd of=${target}`,
+      `tool --out=${target}`,
+      `tool out=${target}`,
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("ask");
+      expect(verdict.rule, command).toBe("protected-paths");
+    }
+    const headless = decide(root, {
+      action: "shell",
+      path: null,
+      command: `dd of=${target}`,
+      interactive: false,
+    });
+    expect(headless.decision).toBe("deny");
+  });
+
+  // The class: a target that `cp x <target>` refuses is refused for every form.
+  it.each([
+    "/abs/outside/file",
+    "/etc/passwd",
+    "../outside",
+    "../../outside/x",
+    "~/x",
+    "~",
+    "sub/../../outside",
+    "/tmp/wardens-nowhere/x",
+  ])("treats %s alike for cp, dd of=, --out= and key=", (target) => {
+    const root = tempRepo();
+    const reference = shell(root, `cp x ${target}`);
+    expect(reference.decision).toBe("deny");
+    for (const command of [
+      `dd of=${target}`,
+      `dd if=x of=${target}`,
+      `tool --out=${target}`,
+      `tool --anything=${target}`,
+      `tool out=${target}`,
+      `tool anything=${target}`,
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(verdict.rule, command).toBe(reference.rule);
+      expect(verdict.message, command).toBe(reference.message);
+    }
+  });
+
+  const ALLOWED = [
+    "dd if=/dev/zero of=./tmp.bin bs=1 count=1",
+    "dd if=x of=out.bin",
+    "dd of=/dev/null",
+    "git log --format=%H",
+    "git log --pretty=format:%s",
+    "pnpm --filter=wardens test",
+    "node --experimental-strip-types wardens/src/cli.ts check charter-validate",
+    "env A=/tmp/x pnpm check",
+    "env -i A=/tmp/x B=../y pnpm check",
+    "sudo A=/tmp/x pnpm check",
+    "A=/tmp/x pnpm check",
+    "A=/tmp/x B=../y pnpm check",
+    "rg --glob=src/** x",
+    "gh pr list --json=number",
+    'git commit -m "path=/abs"',
+    'git commit -am "path=/abs"',
+    'gh pr create --title "a=/abs" --body "b=../c"',
+    "cut -d/ -f1 f",
+    "awk -F/ 1 f",
+    "tar --exclude=.git -cf x.tar .",
+    "git --git-dir=.git status",
+    "git -c color.ui=never log",
+    "curl https://example.com/?a=/b",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("still denies the command after an env assignment prefix", () => {
+    const root = tempRepo();
+    expect(shell(root, "env A=/tmp/x dd of=/abs/y").decision).toBe("deny");
+    expect(shell(root, "A=/tmp/x dd of=/abs/y").decision).toBe("deny");
+    expect(shell(root, "env A=/tmp/x cp x /abs/y").decision).toBe("deny");
+  });
+
+  it("denies an expansion that hides the path of a key=value word", () => {
+    const root = tempRepo();
+    for (const command of [
+      "dd of=$HOME/x",
+      "tool out=$HOME/x",
+      "tool --out=$HOME/x",
+    ]) {
+      expect(shell(root, command).decision, command).toBe("deny");
+    }
+    // A glob inside the worktree stays provably inside.
+    expect(shell(root, "tool --filter=./apps/*").decision).toBe("allow");
+  });
+});
+
 describe("null paths", () => {
   it("denies a missing edit path, a missing read path and a missing command", () => {
     const root = tempRepo();
