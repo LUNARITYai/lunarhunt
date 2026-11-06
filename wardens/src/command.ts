@@ -48,7 +48,8 @@ const RESERVED_WORDS = new Set([
 ]);
 
 /** `>x`, `2>x`, `&>x`, `>>`, `<`, `<<<`, `>&2`, `>|`: the part after the operator is the target, possibly the next word. */
-const REDIRECT_WORD = /^(?:\d+|&)?(?:>>|>\||>&|>|<<<|<&|<>|<)(.*)$/;
+const REDIRECT_WORD =
+  /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>>|>\||>&|>|<<<|<&|<>|<)(.*)$/;
 
 /**
  * Index of the command word: the first word that is not an environment
@@ -83,6 +84,8 @@ const WRAPPERS = new Set([
   "builtin",
   "exec",
   "nohup",
+  // The bare word `time` is reserved (unparseable); only `/usr/bin/time`, which
+  // `commandName` reduces to `time`, reaches this entry.
   "time",
   "nice",
   "ionice",
@@ -111,20 +114,103 @@ function isWrapper(word: string): boolean {
 }
 
 /**
- * `sh -c '<command line>'` and `eval <words>` carry a second command line as a
- * string. Re-parsing it is open-ended (nested quoting, nested wrappers), so it
- * is unparseable instead; run the command directly.
+ * A word a wrapper may put between itself and the command it runs: an option,
+ * another wrapper, an assignment, a number or duration (`timeout 5`), or the
+ * value of a short option (`sudo -u root`, `nice -n 5`).
  */
-function runsCommandString(argv: readonly string[]): boolean {
-  const limit = isWrapper(argv[0] ?? "") ? argv.length : 1;
-  for (let at = 0; at < limit; at += 1) {
-    const name = commandName(argv[at] ?? "");
-    if (name === "eval") {
+function skippable(word: string, prev: string): boolean {
+  return (
+    word.startsWith("-") ||
+    isWrapper(word) ||
+    ENV_ASSIGNMENT.test(word) ||
+    /^\d+[smhd]?$/.test(word) ||
+    /^-[A-Za-z]$/.test(prev)
+  );
+}
+
+/** End (exclusive) of the run of skippable words that follows `at`. */
+function skippableEnd(argv: readonly string[], at: number): number {
+  let end = at + 1;
+  while (end < argv.length && skippable(argv[end] ?? "", argv[end - 1] ?? "")) {
+    end += 1;
+  }
+  return end;
+}
+
+/**
+ * Positions that can be the effective command word: 0, and behind a wrapper the
+ * skippable words and the first word after them. `xargs grep eval` has no
+ * `eval` command; `find` runs commands only after `-exec`, `-ok`.
+ */
+function commandCandidates(argv: readonly string[]): number[] {
+  const out = [0];
+  if (!isWrapper(argv[0] ?? "")) {
+    return out;
+  }
+  if (commandName(argv[0] ?? "") === "find") {
+    for (let at = 1; at < argv.length; at += 1) {
+      if (/^-(?:exec|execdir|ok|okdir)$/.test(argv[at - 1] ?? "")) {
+        out.push(at);
+      }
+    }
+    return out;
+  }
+  for (let at = 1; at <= skippableEnd(argv, 0) && at < argv.length; at += 1) {
+    out.push(at);
+  }
+  return out;
+}
+
+/** Shell options that take the next word as a value, so it is not the script operand. */
+const SHELL_VALUE_OPTIONS = new Set([
+  "-o",
+  "+o",
+  "-O",
+  "+O",
+  "--rcfile",
+  "--init-file",
+]);
+
+/** `-c` among the options before the first operand: `bash script.sh -vc` is not it. */
+function shellCommandFlag(args: readonly string[]): boolean {
+  for (let at = 0; at < args.length; at += 1) {
+    const word = args[at] ?? "";
+    if (COMMAND_STRING_FLAG.test(word)) {
       return true;
     }
+    if (SHELL_VALUE_OPTIONS.has(word)) {
+      at += 1;
+    } else if (!/^[-+]/.test(word)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Commands that take another command line as ONE string: `sh -c`, `eval`,
+ * `watch` and `parallel` (always), `flock -c`, and `sudo -s` / `-i`. Re-parsing
+ * it is open-ended (nested quoting, nested wrappers), so the command is
+ * unparseable instead; run the inner command directly. Only the effective
+ * command word counts, so `xargs grep eval` and `find . -name eval` pass.
+ */
+function runsCommandString(argv: readonly string[]): boolean {
+  for (const at of commandCandidates(argv)) {
+    const name = commandName(argv[at] ?? "");
+    const rest = argv.slice(at + 1);
     if (
-      SHELLS.has(name) &&
-      argv.slice(at + 1).some((word) => COMMAND_STRING_FLAG.test(word))
+      name === "eval" ||
+      name === "watch" ||
+      name === "parallel" ||
+      (SHELLS.has(name) && shellCommandFlag(rest)) ||
+      (name === "flock" &&
+        rest.some(
+          (w) => COMMAND_STRING_FLAG.test(w) || w.startsWith("--com"),
+        )) ||
+      (name === "sudo" &&
+        argv
+          .slice(at + 1, skippableEnd(argv, at))
+          .some((w) => /^-[A-Za-z]*[si]/.test(w) || /^--(?:sh|lo)/.test(w)))
     ) {
       return true;
     }
@@ -132,20 +218,41 @@ function runsCommandString(argv: readonly string[]): boolean {
   return false;
 }
 
+/** The words without redirects and their targets (`2>&1`, `> x`, `{fd}>x`). */
+function withoutRedirects(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let at = 0; at < argv.length; at += 1) {
+    const redirect = REDIRECT_WORD.exec(argv[at] ?? "");
+    if (redirect) {
+      at += redirect[1] === "" ? 1 : 0;
+    } else {
+      out.push(argv[at] ?? "");
+    }
+  }
+  return out;
+}
+
+function inner(base: Segment, words: string[]): Segment {
+  const next = prepare(words, [], []);
+  return { ...next, env: { ...base.env, ...next.env } };
+}
+
 /**
- * The segment itself plus, when its command word is a wrapper, the segment
- * that starts at each later word (`sudo -u x env A=1 git push --force` also
- * reads as `git push --force`). Over-broad on purpose, and only on the deny
- * side: `nice echo git push --force` is denied too.
+ * The segment itself, the segment from its real command word (behind
+ * redirects: `2>&1 git push --force`), and, when that word is a wrapper, the
+ * segment from each later word (`sudo -u x env A=1 git push --force` also reads
+ * as `git push --force`). Over-broad on purpose, and only on the deny side:
+ * `nice echo git push --force` is denied too.
  */
 export function segmentVariants(segment: Segment): Segment[] {
-  const out = [segment];
-  if (!isWrapper(segment.argv[0] ?? "")) {
-    return out;
-  }
-  for (let at = 1; at < segment.argv.length; at += 1) {
-    const inner = prepare(segment.argv.slice(at), [], []);
-    out.push({ ...inner, env: { ...segment.env, ...inner.env } });
+  const plain = withoutRedirects(segment.argv);
+  const base =
+    plain.length === segment.argv.length ? segment : inner(segment, plain);
+  const out = base === segment ? [segment] : [segment, base];
+  if (isWrapper(base.argv[0] ?? "")) {
+    for (let next = 1; next < base.argv.length; next += 1) {
+      out.push(inner(base, base.argv.slice(next)));
+    }
   }
   return out;
 }
@@ -159,13 +266,14 @@ export function segmentVariants(segment: Segment): Segment[] {
  * The union is not enough when a real comment and a literal `#` are mixed
  * (`echo a # it's` then `echo ${x:- #}; git push --force`): neither reading
  * sees the push. So a command with an unquoted `#` anywhere (`hash`: at a word
- * start or inside a word, since the shell also starts a comment after `(` or
- * `)`) AND shell syntax able to change what `#` means (see `special`) is
+ * start or inside a word) AND shell syntax able to change what `#` means (see
+ * `special`) is
  * treated as unparseable. Both flags are taken from either reading. This is
  * intentionally conservative; false positives are accepted. Two more classes are
  * closed rather than chased one by one: any unquoted `#` together with a
  * backslash-newline continuation, and a `#` right after an operator character
- * (`&`, `!`, `|`, `;`, `<`, `>`, `(`, `)`, `{`), as in zsh `&!#`.
+ * (`&`, `!`, `|`, `;`, `<`, `>`, `{`), as in zsh `&!#`. Parentheses cannot
+ * precede a `#` here: an unquoted one is unparseable.
  *
  * Also unparseable (#63), because a deny pattern only matches the first word of
  * a segment and these hide the real command behind other syntax: any unquoted
@@ -196,7 +304,7 @@ export type Segment = {
   env: Record<string, string>;
   argv: string[];
   tokens: ArgToken[];
-  /** Indexes into `argv` of words that held an unquoted `<`, `>`, `(` or `)`: redirects, process substitution, fd forms. */
+  /** Indexes into `argv` of words that held an unquoted `<` or `>`: redirects and fd forms. */
   meta: number[];
   /**
    * Indexes into `argv` of words the shell may rewrite after we have read them:
@@ -215,13 +323,13 @@ export type Pipeline =
       comment: boolean;
       /** The command held an unquoted newline outside a heredoc body, followed by more text. */
       newline: boolean;
-      /** Shell syntax that can change what a `#` means: `$`, `(`, `)`, `{`, `}`, `[`, `]` outside single quotes, or a `case` word. */
+      /** Shell syntax that can change what a `#` means: `$`, `{`, `}`, `[`, `]` outside single quotes, or a `case` word. */
       special: boolean;
       /** The command held an unquoted `#` anywhere in a word, at its start or inside it. */
       hash: boolean;
       /** The command held an unquoted or double-quoted backslash-newline continuation. */
       continuation: boolean;
-      /** An unquoted `#` followed one of `& ! | ; < > ( ) {`. */
+      /** An unquoted `#` followed one of `& ! | ; < > {`. */
       adjacent: boolean;
     }
   | { ok: false };
@@ -321,7 +429,9 @@ export function tokenize(command: string, comments = true): Pipeline {
     prepare(segment.words, segment.meta, segment.expand),
   );
   if (
-    segments.some((segment) => runsCommandString(segment.argv)) ||
+    segments.some((segment) =>
+      runsCommandString(segment.argv.slice(commandWordIndex(segment.argv))),
+    ) ||
     !heredocSafe(raw, segments)
   ) {
     return { ok: false };
@@ -447,6 +557,19 @@ function scan(
     if (BRACE_EXPANSION.test(bare)) {
       unsafe = true;
     }
+    // The command word must be a plain literal, or a deny pattern cannot see
+    // it: `=git` (zsh), `-` (zsh precommand), `gi[t]`, `g?t`, `*`, `A+=1`.
+    if (
+      commandWordIndex(words) === words.length &&
+      !ENV_ASSIGNMENT.test(buf) &&
+      !REDIRECT_WORD.test(buf) &&
+      (buf.startsWith("=") ||
+        buf === "-" ||
+        /^[A-Za-z_]\w*\+=/.test(buf) ||
+        /[*?]|\[[^\]]*\]/.test(bare))
+    ) {
+      unsafe = true;
+    }
     bare = "";
     if (wordMeta) {
       metas.push(words.length);
@@ -461,8 +584,15 @@ function scan(
     wordExpand = false;
   };
 
+  // After `|`, the command to the right must follow in the same segment: an
+  // empty one (`a | & b`, `a |; b`) would desync the pipe from its right side.
+  let afterPipe = false;
   const endSegment = (pipeAfter: boolean): void => {
     flushWord();
+    if (afterPipe && words.length === 0) {
+      unsafe = true;
+    }
+    afterPipe = pipeAfter;
     segments.push({ words, pipeAfter, heredoc, meta: metas, expand: expands });
     words = [];
     metas = [];
@@ -553,7 +683,7 @@ function scan(
       wordStarted = true;
       continue;
     }
-    if (ch === "#" && /[&!|;<>(){]/.test(command[index - 1] ?? "")) {
+    if (ch === "#" && /[&!|;<>{]/.test(command[index - 1] ?? "")) {
       adjacent = true;
     }
     if (comments && ch === "#" && !wordStarted) {
@@ -605,6 +735,10 @@ function scan(
       if (ch === "\n" && command.slice(index + 1).trim() !== "") {
         newline = true;
       }
+      // A newline right after `|` continues the pipe on the next line.
+      if (ch === "\n" && afterPipe && words.length === 0 && !wordStarted) {
+        continue;
+      }
       endSegment(false);
       continue;
     }
@@ -614,6 +748,10 @@ function scan(
       continue;
     }
     if (ch === "|") {
+      // `|&` pipes stderr too.
+      if (command[index + 1] === "&") {
+        index += 1;
+      }
       endSegment(true);
       continue;
     }
@@ -639,7 +777,8 @@ function scan(
       endSegment(false);
       continue;
     }
-    if (ch === "`" || (ch === "$" && command[index + 1] === "(")) {
+    // `$'...'` and `$"..."` quote and decode escapes the text reader never sees.
+    if (ch === "`" || (ch === "$" && /[('"]/.test(command[index + 1] ?? ""))) {
       return null;
     }
     if (
@@ -655,7 +794,7 @@ function scan(
     if (ch === "#") {
       hash = true;
     }
-    if (/[$(){}[\]]/.test(ch)) {
+    if (/[${}[\]]/.test(ch)) {
       special = true;
     }
     // Every unquoted parenthesis is unparseable: a subshell, a group, a
@@ -670,7 +809,7 @@ function scan(
     wordStarted = true;
     if (ch === "<" || ch === ">") {
       wordMeta = true;
-      lastGt = ch === ">";
+      lastGt = true;
     }
   }
 
@@ -794,11 +933,18 @@ function isFlagPattern(token: string): boolean {
   return token.startsWith("-");
 }
 
+const GLOBS = new Map<string, RegExp>();
+
 function globToken(pattern: string, text: string): boolean {
-  const body = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("*", ".*");
-  return new RegExp(`^${body}$`).test(text);
+  let regex = GLOBS.get(pattern);
+  if (!regex) {
+    const body = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replaceAll("*", ".*");
+    regex = new RegExp(`^${body}$`);
+    GLOBS.set(pattern, regex);
+  }
+  return regex.test(text);
 }
 
 function tokenMatches(pattern: string, token: ArgToken): boolean {
@@ -811,15 +957,39 @@ function tokenMatches(pattern: string, token: ArgToken): boolean {
   return globToken(pattern, token.text);
 }
 
+/**
+ * `failed` memoizes the (part, token) states that did not match, so the search
+ * is O(parts * tokens^2) instead of exponential-ish: `segmentVariants` runs it
+ * once per word of a wrapped command.
+ */
 function matchRest(
   parts: string[],
   partIndex: number,
   tokens: ArgToken[],
   argIndex: number,
+  failed: Set<number> = new Set(),
 ): boolean {
   if (partIndex >= parts.length) {
     return true;
   }
+  const state = partIndex * (tokens.length + 1) + argIndex;
+  if (failed.has(state)) {
+    return false;
+  }
+  const matched = matchFrom(parts, partIndex, tokens, argIndex, failed);
+  if (!matched) {
+    failed.add(state);
+  }
+  return matched;
+}
+
+function matchFrom(
+  parts: string[],
+  partIndex: number,
+  tokens: ArgToken[],
+  argIndex: number,
+  failed: Set<number>,
+): boolean {
   const part = parts[partIndex] ?? "";
   const last = partIndex === parts.length - 1;
   if (part === "*") {
@@ -831,7 +1001,7 @@ function matchRest(
       return true;
     }
     for (let take = 1; argIndex + take <= tokens.length; take += 1) {
-      if (matchRest(parts, partIndex + 1, tokens, argIndex + take)) {
+      if (matchRest(parts, partIndex + 1, tokens, argIndex + take, failed)) {
         return true;
       }
     }
@@ -844,7 +1014,7 @@ function matchRest(
     }
     if (
       tokenMatches(part, token) &&
-      matchRest(parts, partIndex + 1, tokens, index + 1)
+      matchRest(parts, partIndex + 1, tokens, index + 1, failed)
     ) {
       return true;
     }
@@ -960,7 +1130,12 @@ export function rewriteCommand(
   return null;
 }
 
-export type PathCandidate = { path: string; write: boolean };
+export type PathCandidate = {
+  path: string;
+  write: boolean;
+  /** Checked against the secret patterns only: never an escape or a write. */
+  secretOnly?: boolean;
+};
 
 /**
  * Options whose value is message-like text, never a path. Long options are
@@ -1026,7 +1201,9 @@ function isMessageFlag(word: string, command: string): boolean {
 export function secretCandidates(segment: Segment): PathCandidate[] {
   return collectCandidates(segment)
     .filter((candidate) => !isDevicePath(candidate.path))
-    .map(({ path, write }) => ({ path, write }));
+    .map(({ path, write, origin }) =>
+      origin === "glued" ? { path, write, secretOnly: true } : { path, write },
+    );
 }
 
 /**
@@ -1201,7 +1378,7 @@ export function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 
-type Origin = "head" | "redirect" | "arg";
+type Origin = "head" | "redirect" | "arg" | "glued";
 
 function collectCandidates(
   segment: Segment,
@@ -1264,9 +1441,11 @@ function collectCandidates(
     }
     // A short option with its value glued on (`gh issue comment 1 -F.env`,
     // `curl -K.env`). All-letter rests are combined flags (`-am`), not values.
+    // Only a secret-read candidate: `cut -d/`, `sed -n'/x/p'` are delimiters and
+    // patterns, so it is never a write target and never an escape.
     const glued = index > 0 ? /^-[A-Za-z](.+)$/.exec(word) : null;
     if (glued && !/^[A-Za-z]+$/.test(glued[1] ?? "")) {
-      found.push({ path: glued[1] ?? "", write: !readOnly, origin: "arg" });
+      found.push({ path: glued[1] ?? "", write: false, origin: "glued" });
     }
     if (!word.startsWith("-")) {
       const write =

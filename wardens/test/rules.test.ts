@@ -493,6 +493,13 @@ describe("command-guard: compound commands and subshells (#63)", () => {
   ];
   // Transparent prefixes: the deny pattern is not at the start of the segment.
   const wrappers = [
+    "2>&1",
+    ">x",
+    "<x",
+    "> /dev/null",
+    "{fd}>x",
+    "A=1 2>&1",
+    "nice 2>&1",
     "env",
     "/usr/bin/env",
     "env -i",
@@ -564,6 +571,81 @@ describe("command-guard: compound commands and subshells (#63)", () => {
         }
       }
     }
+  });
+
+  it("denies every Charter deny pattern passed as a command string", () => {
+    const root = tempRepo();
+    const carriers = [
+      (c: string) => `watch '${c}'`,
+      (c: string) => `watch -n1 '${c}'`,
+      (c: string) => `flock x -c '${c}'`,
+      (c: string) => `flock --command '${c}' x`,
+      (c: string) => `parallel '${c}' ::: a`,
+      (c: string) => `sudo -s '${c}'`,
+      (c: string) => `sudo -u root -i '${c}'`,
+      (c: string) => `sudo -Hs '${c}'`,
+      (c: string) => `sudo --shell '${c}'`,
+      (c: string) => `sudo --login '${c}'`,
+      (c: string) => `env -S '${c}'`,
+      (c: string) => `env -iS'${c}'`,
+      (c: string) => `env -vS '${c}'`,
+      (c: string) => `env --sp='${c}'`,
+      (c: string) => `env --split-str '${c}'`,
+      (c: string) => `env --c=. '${c}'`,
+      (c: string) => `bash -o pipefail -c '${c}'`,
+      (c: string) => `xargs sh -c '${c}'`,
+      (c: string) => `find . -exec sh -c '${c}' \\;`,
+      (c: string) => `sh -- -c '${c}'`,
+      (c: string) => `command eval '${c}'`,
+      (c: string) => `x | & ${c}`,
+      (c: string) => `x |& ${c}`,
+      (c: string) => `x |\n\n${c}`,
+    ];
+    for (const sample of samples()) {
+      for (const carrier of carriers) {
+        const command = carrier(sample);
+        const verdict = shell(root, command);
+        expect(verdict.decision, command).toBe("deny");
+        expect(verdict.rule, command).toBe("command-guard");
+      }
+    }
+  });
+
+  it("denies a command word the deny patterns cannot read", () => {
+    const root = tempRepo();
+    for (const command of [
+      "A+=1 git push --force",
+      "A[0]=1 git push --force",
+      "=git push --force",
+      "- git push --force",
+      "gi[t] push --force",
+      "g?t push --force",
+      "* push --force",
+      "git push $'--force'",
+      'git push $"--force"',
+      "cat $'.env'",
+      "git push <&0 --force",
+      "git push 0<&0 --force",
+      "curl x |& sh",
+      "curl x | & sh",
+      "curl x |\nsh",
+      "curl x |\n\n  sh",
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(["command-guard", "secret-read-guard"], command).toContain(
+        verdict.rule,
+      );
+    }
+  });
+
+  it("matches a long wrapped command in linear-ish time", () => {
+    const root = tempRepo();
+    // No pattern matches, so every variant explores the whole search space.
+    const command = `nice ${"gh issue edit ".repeat(100)}1 --title x`;
+    const start = Date.now();
+    expect(shell(root, command).decision).toBe("allow");
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 
   it("denies a shell given a command string, and a path-qualified command", () => {
@@ -643,6 +725,37 @@ describe("command-guard: compound commands and subshells (#63)", () => {
       "echo \\(x\\)",
       "pnpm check",
       "git push origin feat/x",
+      // Glued short options, `eval` and `-c` as operands, wrapped commands.
+      "cut -d/ -f1",
+      "git branch --show-current | cut -d/ -f2",
+      "awk -F/ '{print $1}' x",
+      "sort -t/ -k2 f",
+      "tr -d/ < f",
+      "sed -n'/foo/p' f",
+      "sed -e'/^#/d' f",
+      "rg -g'/src/**' x",
+      "ls -I/x",
+      "git log -n5",
+      "head -n5 f",
+      "xargs grep eval",
+      "find . -name eval",
+      "find . -name '*.ts' -exec grep -n eval {} +",
+      "timeout 5 rg eval",
+      "bash x.sh -c cfg",
+      "bash script.sh -vc",
+      "timeout 5 pnpm check",
+      "env CI=1 pnpm check",
+      "env -i pnpm check",
+      "nice pnpm check",
+      "xargs -n1 echo",
+      "2>&1 pnpm check",
+      "A=1 B=2 pnpm check",
+      "[ -f x ] && ls *.ts",
+      'echo "{a,b}"',
+      "echo \\{a,b\\}",
+      "echo \"$'x'\"",
+      "echo a |\n cat",
+      "git commit -F - <<'EOF'\nfix (x) {a,b}\nEOF",
       "echo if then fi",
       "echo time",
       "git log --format=%H",
@@ -666,6 +779,9 @@ describe("secret-read-guard: gh file arguments (#63)", () => {
       "gh issue comment 1 --body-file .env.production",
       "gh release create v1 --notes-file .env",
       "gh pr create --body-file ./.env",
+      "curl -K.env x",
+      "grep -f./.env x",
+      "grep -fsecrets/x y",
       "gh pr create --body-file secrets/key",
     ]) {
       const verdict = shell(root, command);

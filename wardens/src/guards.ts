@@ -674,7 +674,7 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      word === "env" &&
+      (word.split("/").pop() ?? "") === "env" &&
       segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
   );
   if (envAt >= 0) {
@@ -682,7 +682,11 @@ function environmentDeny(segment: Segment): Objection | null {
     for (const [index, word] of words.entries()) {
       const name = word.split("=")[0] ?? "";
       if (
-        /^(-C|--chdir|-S|--split-string)/.test(word) ||
+        // `-S` / `-C` also inside a cluster (`-iS`), and any unambiguous
+        // abbreviation of `--split-string` / `--chdir` (`--sp`, `--c`).
+        /^-[A-Za-z0-9]*[SC]/.test(word) ||
+        longOption(word, "--split-string", 3) ||
+        longOption(word, "--chdir", 3) ||
         (words[index - 1] === "-u" && REDIRECTING_ENV.test(word))
       ) {
         return envBlock(word);
@@ -787,6 +791,12 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
     for (const candidate of secretCandidates(segment)) {
       const path = expandHome(candidate.path, home);
       const resolved = resolveRepoPath(path, cwd, ctx.root);
+      if (!resolved.ok && candidate.secretOnly) {
+        if (denyListMatches(secrets, basename(path))) {
+          return secretDeny(path);
+        }
+        continue;
+      }
       if (!resolved.ok) {
         // Same treatment as the Read and Write tools: an outside path must match
         // `paths.external` for this read or write, and only its basename is checked.
