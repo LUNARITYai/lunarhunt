@@ -108,7 +108,7 @@ type PrItem = { state?: string; headRefOid?: string; baseRefName?: string };
 
 /** `gh pr list` for a branch; `null` when gh failed or returned garbage. */
 function prList(
-  deps: Deps,
+  deps: Pick<Deps, "gh">,
   cwd: string,
   branch: string,
   state: "all" | "merged",
@@ -140,7 +140,11 @@ function prList(
 }
 
 /** PR state of a branch: a state, `none`, or `unknown` when gh failed. */
-function prState(deps: Deps, cwd: string, branch: string | null): string {
+export function prState(
+  deps: Pick<Deps, "gh">,
+  cwd: string,
+  branch: string | null,
+): string {
   if (branch === null) {
     return "none";
   }
@@ -372,7 +376,7 @@ function setupHere(
   return res.exitCode === 0 ? ok("", grantedNote(paths.paths)) : res;
 }
 
-function issueOf(entry: WorktreeEntry): number | null {
+export function issueOf(entry: WorktreeEntry): number | null {
   const task = loadTask(entry.path);
   return task.kind === "ok"
     ? task.issue
