@@ -57,7 +57,8 @@ The decision:
   - **write-protected:** the worktree's Charter, its `.panopticon/` and its git pointer;
   - **reads:** `denyRead` for the Charter's secret paths and for credential locations in the home directory;
   - **network:** an allowlist owned by The Charter, with no Anthropic API hosts.
-- **The hook launcher must not trust data that the agent can write** when it locates the Wardens bundle. Hooks run outside the sandbox with the user's privileges.
+- **The hook launcher runs only a bundle that matches a trust anchor recorded by a human step.** No agent-writable input may decide which bundle runs, because hooks run outside the sandbox with the user's privileges.
+- **A canary pass is bound to the effective sandbox settings.**
 - **An OVERSEER profile,** a separate generated settings file passed at launch, also denies writes to the repository working tree.
 - **A ring-0 rule, `sandbox-guard`:**
   - it denies `dangerouslyDisableSandbox`;
@@ -75,13 +76,14 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 
 ### Consequences
 
-- Good, because shell writes outside the worktree fail in the kernel, whatever the spelling. Tested for direct writes, a subshell redirect and git-invoked code. Other forms (`eval`, interpreter one-liners) are covered by construction, since the kernel sees the same syscalls.
+- Good, because writes by **Bash tool commands** outside the worktree fail in the kernel, whatever the spelling. Tested for direct writes, a subshell redirect and git-invoked code. Other forms (`eval`, interpreter one-liners) are covered by construction, since the kernel sees the same syscalls.
 - Good, because shell reads of secrets and of the home directory's credential locations fail in the kernel. That removes the read half of #63's risk for Claude Code.
 - Good, because Bash network egress gets an allowlist for the first time. **Only for Bash:** the allowlisted hosts themselves (github.com with the user's token), WebFetch, WebSearch and MCP remain exfiltration paths. The spec lists them as known gaps.
 - Good, because `primary_read_only_commands` no longer has to be the only barrier against local writes.
 - Bad, because the shared `.git` stays writable from a linked worktree. A locally moved `main` never reaches origin (ruleset, ring 3), and only `doctor protected-refs` detects it locally, unless the R3 `denyWrite` retest succeeds.
 - Bad, because the sandbox is per project, not per role. The OVERSEER profile depends on how OVERSEER is launched. The canary detects a missing profile, but `doctor` cannot see a running session.
 - Bad, because the generated settings live in the project and can be loosened by user or local settings unless the precedence retest shows otherwise. Without managed settings in a one-person project, this is the kind of local-config bypass ADR-0004 already accepts for ring 0.
+- Bad, because hooks run outside the sandbox. The `definition-of-done` hook runs `pnpm check`, and so executes agent-written worktree code unsandboxed, unless the spec's Task 4c moves it under the sandbox profile (Decision 7).
 - Bad, because every session pays one canary turn, and sandboxed toolchains need explicit cache and network entries. That is a new source of "works outside, fails inside" errors.
 - Neutral: Cursor sessions get no OS floor yet; for them ring 0 alone applies, as today.
 
