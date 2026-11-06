@@ -87,6 +87,20 @@ describe("built bundle", () => {
       expect(trusted.stdout).toContain("Blocked by Warden scope-guard");
       expect(trusted.stdout).not.toContain("wardens sync");
       expect(trusted.status).toBe(0);
+      // The allow path: empty stdout, exit 0.
+      const read = JSON.stringify({
+        tool_name: "Read",
+        tool_input: { file_path: "wardens/src/cli.ts" },
+        cwd: root,
+      });
+      const allowed = run(
+        [join(root, "wardens", "dist", "wardens.mjs"), ...args],
+        root,
+        read,
+        env,
+      );
+      expect(allowed.stdout).toBe("");
+      expect(allowed.status).toBe(0);
       // The same bundle where the anchor does not list it fails closed.
       const untrusted = run([bundle, ...args], root, input, env);
       expect(untrusted.status).toBe(0);

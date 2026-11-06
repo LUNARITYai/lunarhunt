@@ -354,6 +354,21 @@ describe("break-hook", () => {
     );
     expect(res.message).toContain("cursor hook does not deny malformed stdin");
   });
+
+  it("fails when the real bundle denies an invalid Charter for another reason", () => {
+    const stub = join(scratchDir(), "other.mjs");
+    writeFileSync(
+      stub,
+      'process.stdout.write(JSON.stringify({ permission: "deny", hookSpecificOutput: { permissionDecision: "deny" } }));\n',
+    );
+    const { deps } = fixture({ bundlePath: stub });
+    const res = byId(runChecks(true, deps), "break-hook");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain(
+      "claude hook does not deny an invalid Charter",
+    );
+    expect(res.message).not.toContain("malformed stdin");
+  });
 });
 
 describe("bundle", () => {

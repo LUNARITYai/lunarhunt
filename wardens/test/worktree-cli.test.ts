@@ -21,7 +21,7 @@ import {
   runWorktree as runWorktreeRaw,
   type WorktreeArgs,
 } from "../src/worktree/index.ts";
-import { cliPath, normativeCharter } from "./support.ts";
+import { cliPath, forgePointer, normativeCharter } from "./support.ts";
 
 type Issue = {
   title: string;
@@ -391,6 +391,19 @@ describe("wardens worktree reads the Charter of the primary (#73)", () => {
       "uv sync --frozen",
       "pnpm exec lefthook install",
     ]);
+  });
+
+  it("does not follow a forged .git pointer when the bundle is untrusted", () => {
+    const f = fixture();
+    const wt = join(f.primary, ".claude", "worktrees", "99-evil");
+    const fake = forgePointer(wt);
+    writeFileSync(join(fake, "panopticon.charter.yaml"), "version: [\n");
+    for (const sub of ["list", "setup"]) {
+      const res = runWorktree({ sub }, f.deps({ cwd: wt }));
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("not a verified primary checkout");
+      expect(res.stderr).not.toContain("Charter validation failed");
+    }
   });
 
   it("takes the trusted primary from the CLI when it passes one", () => {

@@ -55,7 +55,7 @@ export type EngineDeps = {
    * resolved by the CLI from the running bundle and the launcher anchor.
    * `null`: a hook run with no resolvable primary, which fails closed.
    * Absent: not a hook run (tests, direct engine calls), which reads the
-   * Charter of the session's own toplevel.
+   * Charter of the session's own toplevel. Only `runHook` reads this.
    */
   primary?: string | null;
 };
@@ -71,11 +71,14 @@ function depsOf(partial?: Partial<EngineDeps>): EngineDeps {
   return { ...defaultDeps, ...partial };
 }
 
+/** The only messages that already carry their own next action. */
+const PRE_RENDERED = new Set([CHARTER_INVALID_MESSAGE, NO_PRIMARY_MESSAGE]);
+
 export function engineDeny(what: string): Verdict {
   return {
     rule: "engine",
     decision: "deny",
-    message: what.startsWith("Blocked by Warden ") ? what : engineMessage(what),
+    message: PRE_RENDERED.has(what) ? what : engineMessage(what),
     replacement: null,
     rendered: "deny",
   };
@@ -348,7 +351,8 @@ export function runCheck(
     return checkBody(verdict);
   }
 
-  const policy = loadPolicy(toplevel, deps.primary ?? toplevel);
+  // `wardens check` is not a hook run: it judges the checkout it runs in.
+  const policy = loadPolicy(toplevel, toplevel);
   const event = normalized.event;
   const verdict = commit({
     toplevel,

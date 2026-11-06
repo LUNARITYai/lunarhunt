@@ -3,6 +3,8 @@ import { basename, dirname, join, sep } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
 import { gitToplevel, primaryCheckout } from "../git.ts";
 import { wardenMessage } from "../messages.ts";
+import { homeOf } from "../sync/anchor.ts";
+import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
 import { detectAgent } from "../trailer.ts";
 import { git, listWorktrees, type WorktreeEntry } from "./git.ts";
@@ -581,8 +583,23 @@ export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
       ),
     );
   }
-  // Policy comes from the primary checkout, never from the invoker's branch (#73).
-  const loaded = loadCharterAt(deps.charterRoot ?? primary);
+  // Policy comes from the primary checkout, never from the invoker's branch
+  // (#73). Without a trusted bundle the primary is derived structurally, as
+  // `wardens doctor` does, and not from the pointers git data names.
+  let charterRoot = deps.charterRoot;
+  if (charterRoot === undefined) {
+    const derived = structuralPrimary(toplevel, homeOf(deps.env));
+    if (!derived.ok) {
+      return fail(
+        msg(
+          `${toplevel} is not a verified primary checkout or task worktree (${derived.reason})`,
+          "Run it from the primary checkout or a worktree under .claude/worktrees",
+        ),
+      );
+    }
+    charterRoot = derived.primary;
+  }
+  const loaded = loadCharterAt(charterRoot);
   if (!loaded.ok) {
     return fail(
       `${msg("Charter validation failed", "Fix panopticon.charter.yaml")}\n${loaded.errors.join("\n")}`,

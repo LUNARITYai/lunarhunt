@@ -276,7 +276,7 @@ export function checkCharterDrift(
     : result(
         "charter-drift",
         "warn",
-        `${CHARTER_FILENAME} of this worktree differs from the primary's, and the hooks apply the primary's. Expected only while a PR changes the Charter; otherwise reset the file`,
+        `${CHARTER_FILENAME} of this worktree differs from the primary's (the primary is behind origin/main, or this branch edits it), and the hooks apply the primary's. Pull the primary if it is behind`,
       );
 }
 
