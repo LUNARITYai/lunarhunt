@@ -173,6 +173,23 @@ function expansionBlock(): Objection {
 }
 
 /**
+ * The one verdict for a command the tokenizer rejects: a subshell, group,
+ * process substitution, reserved word in command position, brace expansion,
+ * command substitution, a `-c` command string, or a `#` the two readings
+ * disagree on. Returned by `command-guard` and, as defence in depth, by
+ * `expansionDeny` (so `protected-paths` and `secret-read-guard` never skip a
+ * pipeline they cannot read).
+ */
+function unparseableBlock(): Objection {
+  return block(
+    "command-guard",
+    "deny",
+    "the command could not be parsed safely",
+    "Retry without subshells, groups or shell comments",
+  );
+}
+
+/**
  * A word the shell rewrites (a variable, an unquoted glob or brace, `~user`)
  * names a path we cannot read from the text. It is provably inside the
  * worktree only when it has no variable, brace or `~user`, no glob segment can
@@ -287,6 +304,9 @@ function shellTargets(ctx: RuleContext, command: string): ShellTarget[] {
 export function expansionDeny(ctx: RuleContext): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
+  }
+  if (tokenizeAll(ctx.event.command).some((pipeline) => !pipeline.ok)) {
+    return unparseableBlock();
   }
   const home = ctx.home ?? homedir();
   for (const step of trackedSteps(ctx, ctx.event.command)) {
@@ -654,7 +674,7 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      word === "env" &&
+      (word.split("/").pop() ?? "") === "env" &&
       segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
   );
   if (envAt >= 0) {
@@ -662,7 +682,12 @@ function environmentDeny(segment: Segment): Objection | null {
     for (const [index, word] of words.entries()) {
       const name = word.split("=")[0] ?? "";
       if (
-        /^(-C|--chdir|-S|--split-string)/.test(word) ||
+        // `-S` / `-C` also inside a cluster (`-iS`), and any unambiguous
+        // abbreviation of `--split-string` / `--chdir` (`--sp`, `--c`).
+        // (`-u` takes the rest as its value: `env -uSHELL ls` is fine.)
+        /^-[^uSC-]*[SC]/.test(word) ||
+        longOption(word, "--split-string", 3) ||
+        longOption(word, "--chdir", 3) ||
         (words[index - 1] === "-u" && REDIRECTING_ENV.test(word))
       ) {
         return envBlock(word);
@@ -694,12 +719,7 @@ export function commandGuard(ctx: RuleContext): Objection | null {
   const pipelines = tokenizeAll(ctx.event.command);
   const parsed = pipelines.filter((pipeline) => pipeline.ok);
   if (parsed.length !== pipelines.length) {
-    return block(
-      "command-guard",
-      "deny",
-      "the command could not be parsed safely",
-      "Retry without shell comments or with a simpler command",
-    );
+    return unparseableBlock();
   }
   for (const pipeline of parsed) {
     const denied = firstDeny(ctx.charter.commands.deny, pipeline);
@@ -772,6 +792,12 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
     for (const candidate of secretCandidates(segment)) {
       const path = expandHome(candidate.path, home);
       const resolved = resolveRepoPath(path, cwd, ctx.root);
+      if (!resolved.ok && candidate.secretOnly) {
+        if (denyListMatches(secrets, basename(path))) {
+          return secretDeny(path);
+        }
+        continue;
+      }
       if (!resolved.ok) {
         // Same treatment as the Read and Write tools: an outside path must match
         // `paths.external` for this read or write, and only its basename is checked.
