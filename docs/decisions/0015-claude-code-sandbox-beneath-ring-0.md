@@ -26,7 +26,7 @@ Claude Code ships an OS-level sandbox (Seatbelt on macOS, bubblewrap on Linux) f
   - the intent of operations against an allowlisted host (`gh pr view` and `gh pr merge` both reach github.com);
   - the Read, Edit and Write tools, WebFetch, WebSearch and MCP, which all run outside the sandbox.
 
-Cursor's sandbox could not be tested: headless trust blocked the run. Forum reports say it breaks git in worktrees. The Dev Container remains the phase-2 Cell (ADR-0012).
+Cursor's sandbox (Seatbelt) was tested in a rerun (the #66 addendum). Its write boundary matches Claude Code's, except that `/tmp` is writable, and git works in worktrees, contrary to forum reports. It has no per-path read deny, though: the primary's `.env` was readable from a worktree. The Dev Container remains the phase-2 Cell (ADR-0012).
 
 ## Decision Drivers
 
@@ -119,7 +119,7 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 ### 4. Cursor sandbox now
 
 - Good, because it would give both tools the same floor.
-- Bad, because it is not tested (headless trust), git is reported broken in worktrees under it, and headless `-p` reportedly ignores `sandbox.json` on Linux.
+- Bad, because it has no per-path read deny, so secrets stay readable. It is also unverified whether a project can force the sandbox on, and headless `-p` reportedly ignores `sandbox.json` on Linux. Later it can serve as defence in depth for writes, through a generated `.cursor/sandbox.json`.
 
 ## More Information
 
