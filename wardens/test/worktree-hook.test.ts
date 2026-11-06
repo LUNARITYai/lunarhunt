@@ -1,20 +1,23 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
 import type { Deps, Result } from "../src/worktree/index.ts";
-import { cliPath, normativeCharter } from "./support.ts";
+import { normativeCharter, repoRoot } from "./support.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "worktree-hook");
 const bases: string[] = [];
@@ -45,6 +48,7 @@ const ISSUE_BODY = [
 ].join("\n");
 
 type Repo = {
+  base: string;
   origin: string;
   primary: string;
   steps: string[];
@@ -53,7 +57,23 @@ type Repo = {
   path: (name: string) => string;
 };
 
-function repo(): Repo {
+type RepoOptions = {
+  /** Edits the parsed Charter before it is committed. */
+  charter?: (charter: Record<string, unknown>) => void;
+  /** Commits a symlink at `.panopticon`, so a copy of task.json into a fresh checkout must fail. */
+  panopticonSymlink?: boolean;
+};
+
+const STUB_ISSUE = (n: string | undefined) =>
+  JSON.stringify({
+    title: "Hook",
+    body: ISSUE_BODY,
+    labels: [{ name: "type:feature" }],
+    state: "OPEN",
+    url: `https://github.com/o/r/issues/${n}`,
+  });
+
+function repo(options: RepoOptions = {}): Repo {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "wardens-hook-")));
   bases.push(base);
   const origin = join(base, "origin");
@@ -62,12 +82,18 @@ function repo(): Repo {
   sh(origin, "config", "user.email", "t@example.com");
   sh(origin, "config", "user.name", "t");
   sh(origin, "config", "commit.gpgsign", "false");
-  writeFileSync(join(origin, "panopticon.charter.yaml"), normativeCharter());
+  const charter = parse(normativeCharter()) as Record<string, unknown>;
+  options.charter?.(charter);
+  writeFileSync(join(origin, "panopticon.charter.yaml"), stringify(charter));
   writeFileSync(join(origin, ".env.example"), "TASK_ISSUE=\nWEB_PORT=1\n");
   writeFileSync(
     join(origin, ".gitignore"),
     ".env\n.panopticon/\n.claude/worktrees/\n",
   );
+  if (options.panopticonSymlink === true) {
+    symlinkSync("elsewhere", join(origin, ".panopticon"));
+    sh(origin, "add", "-f", ".panopticon");
+  }
   sh(origin, "add", "-A");
   sh(origin, "commit", "-q", "-m", "init");
   const primary = join(base, "primary");
@@ -80,27 +106,17 @@ function repo(): Repo {
   const deps = (cwd = primary): Deps => ({
     env: { CLAUDECODE: "1" },
     cwd,
-    gh: (args) => {
-      if (args[0] === "issue") {
-        return {
-          status: 0,
-          stdout: JSON.stringify({
-            title: "Hook",
-            body: ISSUE_BODY,
-            labels: [{ name: "type:feature" }],
-            state: "OPEN",
-            url: `https://github.com/o/r/issues/${args[2]}`,
-          }),
-        };
-      }
-      return { status: 0, stdout: "[]" };
-    },
+    gh: (args) =>
+      args[0] === "issue"
+        ? { status: 0, stdout: STUB_ISSUE(args[2]) }
+        : { status: 0, stdout: "[]" },
     step: (command) => {
       steps.push(command);
       return command === failStep.command ? 1 : 0;
     },
   });
   return {
+    base,
     origin,
     primary,
     steps,
@@ -124,13 +140,12 @@ function payload(
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-const failures: string[] = [];
-
 function run(
   kind: "create" | "remove",
   r: Repo,
   body: unknown,
   tool = "claude",
+  anchor: string | null = r.primary,
 ): Result {
   const cwd =
     typeof body === "object" &&
@@ -139,16 +154,13 @@ function run(
     typeof body.cwd === "string"
       ? body.cwd
       : r.primary;
-  const res = runWorktreeHook(
+  return runWorktreeHook(
     kind,
     tool,
     typeof body === "string" ? body : JSON.stringify(body),
     r.deps(cwd),
+    anchor,
   );
-  if (res.exitCode !== 0) {
-    failures.push(res.stderr);
-  }
-  return res;
 }
 
 const createBody = (cwd: string, name: string) => ({
@@ -157,6 +169,12 @@ const createBody = (cwd: string, name: string) => ({
   name,
   session_id: "s",
   unknown_future_field: { a: 1 },
+});
+
+const removeBody = (cwd: string, path: string) => ({
+  hook_event_name: "WorktreeRemove",
+  cwd,
+  worktree_path: path,
 });
 
 function branches(r: Repo): string[] {
@@ -172,7 +190,7 @@ function worktreeCount(r: Repo): number {
     .filter((l) => l.startsWith("worktree ")).length;
 }
 
-/** A task worktree for issue 66 made by the hook itself. */
+/** A task worktree for issue 66 made by the hook itself (it carries a task.json). */
 function taskWorktree(r: Repo): string {
   const res = run(
     "create",
@@ -183,10 +201,35 @@ function taskWorktree(r: Repo): string {
   return r.path("66-rec-test");
 }
 
+/** A detached worktree like the one OVERSEER works in: no task.json. */
+function detachedParent(r: Repo, dir = r.path("overseer")): string {
+  sh(r.primary, "worktree", "add", "-q", "--detach", dir, "origin/main");
+  return dir;
+}
+
+/** A subagent worktree made by the hook from a detached parent. */
+function subagent(r: Repo, name: string): string {
+  const res = run(
+    "create",
+    r,
+    createBody(detachedParent(r, r.path(`p-${name}`)), name),
+  );
+  expect(res.exitCode).toBe(0);
+  return r.path(name);
+}
+
 function commit(dir: string, file: string): void {
   writeFileSync(join(dir, file), file);
   sh(dir, "add", file);
   sh(dir, "commit", "-q", "-m", file);
+}
+
+function writeTask(dir: string, task: unknown): void {
+  mkdirSync(join(dir, ".panopticon"), { recursive: true });
+  writeFileSync(
+    join(dir, ".panopticon", "task.json"),
+    typeof task === "string" ? task : JSON.stringify(task),
+  );
 }
 
 describe("WorktreeCreate: task names", () => {
@@ -222,7 +265,7 @@ describe("WorktreeCreate: task names", () => {
 
   it("works from a nested cwd and still creates under the primary location", () => {
     const r = repo();
-    const parent = taskWorktree(r);
+    const parent = detachedParent(r);
     const res = run("create", r, createBody(parent, "67-second-task"));
     expect(res.exitCode).toBe(0);
     expect(res.stdout).toBe(`${r.path("67-second-task")}\n`);
@@ -264,6 +307,42 @@ describe("WorktreeCreate: task names", () => {
   });
 });
 
+describe("WorktreeCreate: a scoped session cannot widen its scope (S-B3)", () => {
+  it("refuses a task name for another issue when the parent has a task.json", () => {
+    const r = repo();
+    const parent = taskWorktree(r);
+    const before = branches(r);
+    const res = run("create", r, createBody(parent, "67-other-issue"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("Blocked by Warden worktree-guard");
+    expect(res.stderr).toContain("scoped to issue #66");
+    expect(existsSync(r.path("67-other-issue"))).toBe(false);
+    expect(branches(r)).toEqual(before);
+  });
+
+  it("refuses any task name when the parent task.json is invalid", () => {
+    const r = repo();
+    const parent = taskWorktree(r);
+    writeTask(parent, "{nope");
+    const res = run("create", r, createBody(parent, "66-again"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("invalid");
+    expect(existsSync(r.path("66-again"))).toBe(false);
+  });
+
+  it("allows any open issue from a primary, detached or no-task.json parent (residual risk, inside the Charter envelope)", () => {
+    const r = repo();
+    expect(
+      run("create", r, createBody(r.primary, "70-from-primary")).exitCode,
+    ).toBe(0);
+    const parent = detachedParent(r);
+    expect(
+      run("create", r, createBody(parent, "71-from-detached")).exitCode,
+    ).toBe(0);
+  });
+});
+
 describe("WorktreeCreate: subagents", () => {
   it("branches from the parent HEAD and copies task.json (nested cwd stays flat)", () => {
     const r = repo();
@@ -290,10 +369,9 @@ describe("WorktreeCreate: subagents", () => {
     expect(existsSync(join(wt, ".env"))).toBe(false);
   });
 
-  it("branches from the fetched base_ref for a detached parent, without task.json", () => {
+  it("branches from the fetched base_ref for a detached parent, without task.json and without tracking", () => {
     const r = repo();
-    const parent = r.path("overseer");
-    sh(r.primary, "worktree", "add", "--detach", parent, "origin/main");
+    const parent = detachedParent(r);
     commit(r.origin, "upstream.txt");
     const res = run("create", r, createBody(parent, "agent-det1"));
     const wt = r.path("agent-det1");
@@ -304,6 +382,43 @@ describe("WorktreeCreate: subagents", () => {
       sh(parent, "rev-parse", "HEAD"),
     );
     expect(existsSync(join(wt, ".panopticon", "task.json"))).toBe(false);
+    expect(
+      spawnSync("git", [
+        "-C",
+        r.primary,
+        "config",
+        "--get",
+        "branch.worktree-agent-det1.remote",
+      ]).status,
+    ).toBe(1);
+  });
+
+  it("copies the task.json of a detached parent that has one (S-B2)", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    writeTask(parent, { issue: 5, allowed_paths: ["docs/**"] });
+    const res = run("create", r, createBody(parent, "agent-det2"));
+    expect(res.exitCode).toBe(0);
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(r.path("agent-det2"), ".panopticon", "task.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual({ issue: 5, allowed_paths: ["docs/**"] });
+  });
+
+  it("fails closed on an invalid task.json of a detached parent (S-B2)", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    writeTask(parent, "{nope");
+    const before = branches(r);
+    const res = run("create", r, createBody(parent, "agent-det3"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("task.json is invalid");
+    expect(existsSync(r.path("agent-det3"))).toBe(false);
+    expect(branches(r)).toEqual(before);
   });
 
   it("fails with a worktree-guard message for a parent in the primary checkout", () => {
@@ -331,7 +446,7 @@ describe("WorktreeCreate: subagents", () => {
   it("fails closed on an invalid parent task.json and leaves nothing", () => {
     const r = repo();
     const parent = taskWorktree(r);
-    writeFileSync(join(parent, ".panopticon", "task.json"), "{nope");
+    writeTask(parent, "{nope");
     const before = branches(r);
     const res = run("create", r, createBody(parent, "agent-bad1"));
     expect(res.exitCode).toBe(2);
@@ -349,6 +464,101 @@ describe("WorktreeCreate: subagents", () => {
     expect(res.stderr).toContain("already exists");
     expect(existsSync(r.path("agent-dup"))).toBe(false);
     expect(branches(r)).toContain("worktree-agent-dup");
+  });
+
+  it("cleans up when the task.json copy fails (symlinked .panopticon in the checkout)", () => {
+    const r = repo({ panopticonSymlink: true });
+    const parent = detachedParent(r);
+    rmSync(join(parent, ".panopticon"), { force: true });
+    writeTask(parent, { issue: 5, allowed_paths: ["docs/**"] });
+    const before = branches(r);
+    const res = run("create", r, createBody(parent, "agent-sym1"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("could not be copied");
+    expect(existsSync(r.path("agent-sym1"))).toBe(false);
+    expect(branches(r)).toEqual(before);
+    expect(worktreeCount(r)).toBe(2);
+  });
+});
+
+describe("WorktreeCreate: trust anchor (S-B1)", () => {
+  it("refuses a cwd in another repository", () => {
+    const r = repo();
+    const other = repo();
+    const create = run("create", r, createBody(other.primary, "agent-x1"));
+    expect(create.exitCode).toBe(2);
+    expect(create.stderr).toContain("another repository");
+    expect(existsSync(r.path("agent-x1"))).toBe(false);
+    expect(existsSync(other.path("agent-x1"))).toBe(false);
+    const task = run("create", r, createBody(other.primary, "66-x"));
+    expect(task.exitCode).toBe(2);
+    expect(branches(r)).toEqual(["main"]);
+    expect(branches(other)).toEqual(["main"]);
+  });
+
+  it("refuses a nested repository inside a worktree", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const nested = join(parent, "nested");
+    mkdirSync(nested);
+    execFileSync("git", ["init", "-q", nested]);
+    const res = run("create", r, createBody(nested, "agent-n1"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("another repository");
+    expect(existsSync(r.path("agent-n1"))).toBe(false);
+  });
+
+  it("refuses when the bundle location is unknown", () => {
+    const r = repo();
+    const res = run("create", r, createBody(r.primary, "66-x"), "claude", null);
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("Wardens bundle");
+  });
+
+  it("reads steps, location and base_ref from the primary Charter, not from the parent worktree", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const doc = parse(
+      readFileSync(join(parent, "panopticon.charter.yaml"), "utf8"),
+    ) as {
+      worktree: {
+        setup: { steps: string[] };
+        location: { default: string };
+        base_ref: string;
+      };
+    };
+    doc.worktree.setup.steps = ["touch pwned"];
+    doc.worktree.location.default = ".claude/elsewhere/{name}";
+    doc.worktree.base_ref = "origin/does-not-exist";
+    writeFileSync(join(parent, "panopticon.charter.yaml"), stringify(doc));
+    const task = run("create", r, createBody(parent, "67-from-evil"));
+    expect(task.exitCode).toBe(0);
+    expect(task.stdout).toBe(`${r.path("67-from-evil")}\n`);
+    expect(r.steps).toEqual([
+      "pnpm install --frozen-lockfile",
+      "uv sync --frozen",
+      "pnpm exec lefthook install",
+    ]);
+    expect(existsSync(join(r.primary, ".claude", "elsewhere"))).toBe(false);
+    const sub = run("create", r, createBody(parent, "agent-evil1"));
+    expect(sub.exitCode).toBe(0);
+    expect(sh(r.path("agent-evil1"), "rev-parse", "HEAD")).toBe(
+      sh(r.primary, "rev-parse", "origin/main"),
+    );
+  });
+
+  it("refuses a Charter location that resolves outside the primary checkout", () => {
+    const r = repo();
+    const parent = detachedParent(r, join(r.base, "outside-parent"));
+    const outside = join(r.base, "outside");
+    mkdirSync(outside);
+    mkdirSync(join(r.primary, ".claude"), { recursive: true });
+    symlinkSync(outside, join(r.primary, ".claude", "worktrees"));
+    const res = run("create", r, createBody(parent, "agent-loc1"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("resolves outside the primary checkout");
+    expect(existsSync(join(outside, "agent-loc1"))).toBe(false);
   });
 });
 
@@ -368,7 +578,7 @@ describe("WorktreeCreate: validation", () => {
 
   it.each(BAD)("refuses the name %j and creates nothing", (name) => {
     const r = repo();
-    const parent = taskWorktree(r);
+    const parent = detachedParent(r);
     const before = branches(r);
     const res = run("create", r, createBody(parent, name));
     expect(res.exitCode).toBe(2);
@@ -378,14 +588,29 @@ describe("WorktreeCreate: validation", () => {
     expect(worktreeCount(r)).toBe(2);
   });
 
-  it("refuses an existing path that is not a worktree", () => {
+  it.each(["0-x", "007-abc", "66-", "1234567890-toolong"])(
+    "reserves the name %j for task worktrees",
+    (name) => {
+      const r = repo();
+      const parent = detachedParent(r);
+      const res = run("create", r, createBody(parent, name));
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("reserved for task worktrees");
+      expect(worktreeCount(r)).toBe(2);
+    },
+  );
+
+  it("refuses an existing path that is not a worktree and leaves it alone", () => {
     const r = repo();
-    const parent = taskWorktree(r);
+    const parent = detachedParent(r);
     mkdirSync(r.path("agent-exists"), { recursive: true });
+    writeFileSync(join(r.path("agent-exists"), "keep.txt"), "mine");
     const res = run("create", r, createBody(parent, "agent-exists"));
     expect(res.exitCode).toBe(2);
     expect(res.stderr).toContain("already exists");
-    expect(existsSync(r.path("agent-exists"))).toBe(true);
+    expect(readFileSync(join(r.path("agent-exists"), "keep.txt"), "utf8")).toBe(
+      "mine",
+    );
   });
 
   it.each([
@@ -432,11 +657,21 @@ describe("WorktreeCreate: validation", () => {
     expect(res.stderr).toContain("68");
   });
 
-  it("prints C-30 messages on every failure", () => {
-    expect(failures.length).toBeGreaterThan(5);
-    for (const text of failures) {
-      const first = text.trim().split("\n")[0] ?? "";
-      expect(first).toMatch(MESSAGE_PATTERN);
+  it("prints a C-30 message on every failure", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const failures = [
+      run("create", r, "{{"),
+      run("create", r, createBody(parent, "../x")),
+      run("create", r, createBody(r.primary, "agent-c30")),
+      run("create", r, createBody(parent, "007-abc")),
+      run("create", r, createBody(tmpdir(), "agent-c30")),
+      run("create", r, createBody(r.primary, "66-x"), "cursor"),
+    ];
+    for (const res of failures) {
+      expect(res.exitCode).toBe(2);
+      expect(res.stdout).toBe("");
+      expect(res.stderr.trim().split("\n")[0]).toMatch(MESSAGE_PATTERN);
     }
   });
 });
@@ -448,12 +683,9 @@ describe("WorktreeRemove (provisional payload)", () => {
       __WORKTREE__: wt,
     });
 
-  it("removes a clean worktree and its branch, exit 0, empty stdout", () => {
+  it("removes a clean subagent worktree and its branch, exit 0, empty stdout", () => {
     const r = repo();
-    const parent = taskWorktree(r);
-    const res = run("create", r, createBody(parent, "agent-r1"));
-    expect(res.exitCode).toBe(0);
-    const wt = r.path("agent-r1");
+    const wt = subagent(r, "agent-r1");
     const out = run("remove", r, body(r, wt));
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toBe("");
@@ -475,30 +707,64 @@ describe("WorktreeRemove (provisional payload)", () => {
     ).toContain("unpushed.txt");
   });
 
-  it("keeps a worktree with uncommitted changes and exits 0", () => {
+  it("keeps a task worktree: only a human removes those", () => {
     const r = repo();
     const wt = taskWorktree(r);
+    const out = run("remove", r, body(r, wt));
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("task worktree");
+    expect(out.stderr).toContain("wardens worktree remove 66-rec-test");
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it("keeps a subagent worktree with uncommitted changes and names git worktree remove", () => {
+    const r = repo();
+    const wt = subagent(r, "agent-k0");
     writeFileSync(join(wt, "dirty.txt"), "x");
     const out = run("remove", r, body(r, wt));
     expect(out.exitCode).toBe(0);
     expect(out.stderr).toContain("uncommitted");
+    expect(out.stderr).toContain(`git worktree remove ${wt}`);
     expect(existsSync(join(wt, "dirty.txt"))).toBe(true);
   });
 
-  it("keeps a worktree with commits no remote or other branch holds", () => {
+  it("keeps a subagent with its own commit and branch", () => {
     const r = repo();
-    const wt = taskWorktree(r);
+    const wt = subagent(r, "agent-k1");
     commit(wt, "mine.txt");
     const out = run("remove", r, body(r, wt));
     expect(out.exitCode).toBe(0);
     expect(out.stderr).toContain("unpushed");
     expect(existsSync(wt)).toBe(true);
+    expect(branches(r)).toContain("worktree-agent-k1");
     expect(sh(wt, "log", "--oneline", "-1")).toContain("mine.txt");
+  });
+
+  it("keeps a detached subagent worktree with a commit no branch holds", () => {
+    const r = repo();
+    const wt = subagent(r, "agent-k2");
+    sh(wt, "checkout", "-q", "--detach");
+    commit(wt, "lost.txt");
+    const out = run("remove", r, body(r, wt));
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("unpushed");
+    expect(existsSync(wt)).toBe(true);
+    expect(sh(wt, "log", "--oneline", "-1")).toContain("lost.txt");
+  });
+
+  it("keeps a locked worktree", () => {
+    const r = repo();
+    const wt = subagent(r, "agent-k3");
+    sh(r.primary, "worktree", "lock", wt);
+    const out = run("remove", r, body(r, wt));
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("kept the worktree");
+    expect(existsSync(wt)).toBe(true);
   });
 
   it("logs a kept worktree to the primary Ledger log", () => {
     const r = repo();
-    const wt = taskWorktree(r);
+    const wt = subagent(r, "agent-k4");
     writeFileSync(join(wt, "dirty.txt"), "x");
     run("remove", r, body(r, wt));
     const log = readFileSync(
@@ -542,18 +808,25 @@ describe("WorktreeRemove (provisional payload)", () => {
 
   it("works when the session cwd is inside the worktree", () => {
     const r = repo();
-    const wt = taskWorktree(r);
-    const out = run("remove", r, {
-      ...body(r, wt),
-      cwd: wt,
-    });
+    const wt = subagent(r, "agent-k5");
+    const out = run("remove", r, removeBody(wt, wt));
     expect(out.exitCode).toBe(0);
     expect(existsSync(wt)).toBe(false);
   });
 
+  it("exits 2 for a cwd in another repository and removes nothing", () => {
+    const r = repo();
+    const other = repo();
+    const wt = subagent(r, "agent-k6");
+    const out = run("remove", r, removeBody(other.primary, wt));
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("another repository");
+    expect(existsSync(wt)).toBe(true);
+  });
+
   it("exits 2 on a malformed payload and removes nothing", () => {
     const r = repo();
-    const wt = taskWorktree(r);
+    const wt = subagent(r, "agent-k7");
     for (const bad of [
       "{",
       JSON.stringify({ hook_event_name: "WorktreeRemove", cwd: r.primary }),
@@ -569,11 +842,33 @@ describe("WorktreeRemove (provisional payload)", () => {
   });
 });
 
+/** A copy of the Wardens sources inside the temp primary: the anchor then is that repository, like the bundle in `<primary>/wardens/dist`. */
+function installSources(r: Repo): void {
+  const dest = join(r.primary, "wardens");
+  mkdirSync(dest, { recursive: true });
+  cpSync(join(repoRoot, "wardens", "src"), join(dest, "src"), {
+    recursive: true,
+  });
+  cpSync(join(repoRoot, "wardens", "schema"), join(dest, "schema"), {
+    recursive: true,
+  });
+  cpSync(join(repoRoot, "wardens", "package.json"), join(dest, "package.json"));
+  symlinkSync(
+    join(repoRoot, "wardens", "node_modules"),
+    join(dest, "node_modules"),
+  );
+}
+
 describe("CLI entrypoint", () => {
   function cli(r: Repo, args: string[], input: string) {
     return spawnSync(
       process.execPath,
-      ["--experimental-strip-types", cliPath, "worktree", ...args],
+      [
+        "--experimental-strip-types",
+        join(r.primary, "wardens", "src", "cli.ts"),
+        "worktree",
+        ...args,
+      ],
       {
         cwd: r.primary,
         input,
@@ -583,36 +878,76 @@ describe("CLI entrypoint", () => {
     );
   }
 
-  it("runs despite the agent markers and prints only the path on stdout", () => {
+  it("takes its anchor from the bundle location, runs despite the agent markers and prints only the path", () => {
     const r = repo();
-    const parent = r.path("overseer");
-    sh(r.primary, "worktree", "add", "--detach", parent, "origin/main");
+    installSources(r);
+    const parent = detachedParent(r);
     const res = cli(
       r,
       ["create", "--tool", "claude"],
       JSON.stringify(createBody(parent, "agent-cli1")),
     );
+    expect(res.stderr).toBe("");
     expect(res.status).toBe(0);
     expect(res.stdout).toBe(`${r.path("agent-cli1")}\n`);
     const removed = cli(
       r,
       ["remove", "--tool", "claude"],
-      JSON.stringify({
-        hook_event_name: "WorktreeRemove",
-        cwd: r.primary,
-        worktree_path: r.path("agent-cli1"),
-      }),
+      JSON.stringify(removeBody(r.primary, r.path("agent-cli1"))),
     );
     expect(removed.status).toBe(0);
     expect(existsSync(r.path("agent-cli1"))).toBe(false);
   });
 
+  it("refuses a cwd outside the repository of the bundle", () => {
+    const r = repo();
+    installSources(r);
+    const other = repo();
+    const res = cli(
+      r,
+      ["create", "--tool", "claude"],
+      JSON.stringify(createBody(other.primary, "agent-cli2")),
+    );
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("another repository");
+  });
+
   it("keeps the human-only paths closed for agents and rejects create without --tool", () => {
     const r = repo();
+    installSources(r);
     expect(cli(r, ["new", "42"], "").status).toBe(2);
     const bare = cli(r, ["create"], "{}");
     expect(bare.status).toBe(2);
     expect(bare.stderr).toContain("Blocked by Warden");
     expect(cli(r, ["list", "--tool", "claude"], "{}").status).toBe(2);
+  });
+
+  it("keeps noisy setup steps off stdout", () => {
+    const r = repo({
+      charter: (charter) => {
+        const worktree = charter.worktree as {
+          setup: { steps: string[] };
+        };
+        worktree.setup.steps = ["echo noisy-stdout; echo noisy-stderr 1>&2"];
+      },
+    });
+    const res = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        join(import.meta.dirname, "noisy-runner.ts"),
+        r.primary,
+      ],
+      {
+        cwd: r.primary,
+        input: JSON.stringify(createBody(r.primary, "66-noisy")),
+        encoding: "utf8",
+      },
+    );
+    expect(res.stderr).toContain("noisy-stdout");
+    expect(res.stderr).toContain("noisy-stderr");
+    expect(res.stdout).toBe(`${r.path("66-noisy")}\n`);
+    expect(res.status).toBe(0);
   });
 });

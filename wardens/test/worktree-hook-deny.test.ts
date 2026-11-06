@@ -1,6 +1,8 @@
 import { rmSync } from "node:fs";
 import { afterAll, describe, expect, it } from "vitest";
+import { tokenizeAll } from "../src/command.ts";
 import { runHook } from "../src/engine.ts";
+import { invokesWorktreeHook } from "../src/hook-deny.ts";
 import { tempRepo } from "./support.ts";
 
 const root = tempRepo();
@@ -41,10 +43,17 @@ const DENIED = [
   `bash -c 'node ${BUNDLE} worktree create --tool claude'`,
   `sh -c "wardens worktree remove --tool claude"`,
   "git -c alias.x='!wardens worktree create --tool claude' x",
-  // Aliases and functions, defined and used apart.
+  // Alias definitions that name the entrypoint.
   "alias w='node wardens/dist/wardens.mjs worktree create'",
-  "w --tool claude",
-  'w() { node wardens/dist/wardens.mjs worktree create "$@"; }',
+  "git config alias.w '!wardens worktree create'",
+  "gh alias set w 'api repos/x; wardens worktree create'",
+  // A dynamic executable that names the entrypoint (brace expansion, variable).
+  "{node,wardens/dist/wardens.mjs} worktree create --tool claude",
+  '$bundle worktree create "$@"',
+  // Dynamic constructs in the arguments of the entrypoint.
+  "wardens worktree $'cr\\x65ate' --tool claude",
+  "wardens worktree cr*te --tool claude",
+  "wardens worktree {create,remove} --tool claude",
   // Quoting and escaping inside the words.
   'wardens worktree create --to"ol" claude',
   "wardens worktree cr''eate --tool claude",
@@ -75,7 +84,25 @@ const ALLOWED = [
   'git commit -m "feat(wardens): wardens worktree create hooks"',
   'gh issue comment 51 --body "wardens worktree remove stays human only"',
   "git log --oneline -5",
+  // Words inside text commands never match.
+  'git commit -m "fix(wardens): doc the hook --tool claude flag (#51)"',
+  'gh pr create --title x --body "Adds wardens worktree create --tool claude hooks"',
+  'rg -n "hook --tool claude" wardens/src',
+  'rg -- "--tool claude" docs',
+  'rg -n "--tool" wardens/src/worktree',
+  'echo "docs: --tool cursor worktree"',
+  "pnpm --filter wardens exec vitest run test/worktree.test.ts -t remove",
+  'pnpm --filter wardens exec vitest run worktree -t "create"',
+  "claude --worktree 50-wardens-worktree-new-setup-list-remove-prune",
+  // Plain entrypoint forms.
+  "wardens worktree list",
+  "node wardens/dist/wardens.mjs doctor --json",
+  "node --experimental-strip-types wardens/src/cli.ts check charter-validate",
+  "pnpm exec wardens sync --check",
 ];
+
+// Out of reach by design (best effort): interpreters, xargs, scripts, aliases
+// used apart from their definition. Safety comes from the entrypoint itself.
 
 describe("agents cannot invoke the worktree hook entrypoints from a shell", () => {
   it.each(DENIED)("denies: %s", (command) => {
@@ -87,5 +114,26 @@ describe("agents cannot invoke the worktree hook entrypoints from a shell", () =
 
   it.each(ALLOWED)("allows: %s", (command) => {
     expect(bash(command)).toBe("");
+  });
+
+  // Command substitution is denied as unparseable before this rule runs.
+  it.each([
+    "wardens worktree create $(echo --tool) claude",
+    "wardens worktree create `echo --tool` claude",
+    "wardens $(cat verb) $(cat flag)",
+    "node wardens/dist/wardens.mjs worktree $(cat verb)",
+  ])("denies a substitution: %s", (command) => {
+    expect(bash(command)).toContain('"deny"');
+  });
+
+  // sed and awk scripts are judged by the entrypoint rule alone: another
+  // rule (secret-read-guard) reads their script word as a path, which is not
+  // this rule's business.
+  it.each([
+    "sed -n '/remove/,$p' wardens/src/worktree/index.ts",
+    "awk '/create/' wardens/src/worktree/index.ts",
+    "sed -n '/--tool claude/p' wardens/src/worktree/hook.ts",
+  ])("the entrypoint rule ignores: %s", (command) => {
+    expect(invokesWorktreeHook(tokenizeAll(command))).toBe(false);
   });
 });

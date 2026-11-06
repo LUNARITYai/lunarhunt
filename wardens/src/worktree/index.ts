@@ -461,7 +461,7 @@ function unverified(name: string): Refusal {
 }
 
 /** `worktree-<name>`: the branch of a worktree the `WorktreeCreate` hook made for a subagent. */
-const HOOK_BRANCH = /^worktree-[a-z0-9][a-z0-9-]*$/;
+export const HOOK_BRANCH = /^worktree-[a-z0-9][a-z0-9-]*$/;
 
 /**
  * Removes one worktree. `hook` is the `WorktreeRemove` mode: any linked

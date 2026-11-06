@@ -222,7 +222,7 @@ export function commandGuard(ctx: RuleContext): Objection | null {
       "Retry without shell comments or with a simpler command",
     );
   }
-  if (invokesWorktreeHook(ctx.event.command, parsed)) {
+  if (invokesWorktreeHook(parsed)) {
     return block(
       "command-guard",
       "deny",

@@ -15,6 +15,7 @@ import {
   type CheckResult,
   type DoctorDeps,
   DUPLICATES_WARNING,
+  isWorktreeHook,
   runChecks,
   runDoctor,
   STALE_BUNDLE_WARNING,
@@ -233,6 +234,54 @@ describe("drift", () => {
     const { root, deps } = fixture();
     rmSync(join(root, CLAUDE));
     expect(byId(runChecks(true, deps), "drift").status).toBe("fail");
+  });
+});
+
+describe("worktree hooks", () => {
+  it("recognizes only the two Claude worktree events", () => {
+    expect(isWorktreeHook({ tool: "claude", event: "WorktreeCreate" })).toBe(
+      true,
+    );
+    expect(isWorktreeHook({ tool: "claude", event: "WorktreeRemove" })).toBe(
+      true,
+    );
+    expect(isWorktreeHook({ tool: "claude", event: "Stop" })).toBe(false);
+    expect(isWorktreeHook({ tool: "cursor", event: "WorktreeCreate" })).toBe(
+      false,
+    );
+  });
+
+  it("is ok without onFailure on the worktree hooks", () => {
+    const { deps } = fixture();
+    expect(byId(runChecks(true, deps), "fail-closed").status).toBe("ok");
+  });
+
+  it.each(["WorktreeCreate", "WorktreeRemove"])(
+    "fails when %s is missing",
+    (event) => {
+      const { root, deps } = fixture();
+      editJson(join(root, CLAUDE), (s) => {
+        delete s.hooks[event];
+      });
+      const res = byId(runChecks(true, deps), "fail-closed");
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain(event);
+    },
+  );
+
+  it("fails when WorktreeCreate does not run the --tool claude entrypoint or lacks a timeout", () => {
+    const { root, deps } = fixture();
+    editJson(join(root, CLAUDE), (s) => {
+      s.hooks.WorktreeCreate[0].hooks[0].command = "true";
+    });
+    expect(byId(runChecks(true, deps), "fail-closed").status).toBe("fail");
+    const second = fixture();
+    editJson(join(second.root, CLAUDE), (s) => {
+      delete s.hooks.WorktreeRemove[0].hooks[0].timeout;
+    });
+    const res = byId(runChecks(true, second.deps), "fail-closed");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("WorktreeRemove");
   });
 });
 

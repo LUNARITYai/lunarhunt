@@ -86,11 +86,37 @@ type Subscription = {
 };
 
 /** `WorktreeCreate` and `WorktreeRemove` run the worktree entrypoints, not the rule engine: no mapping row. */
-function isWorktreeHook(sub: Subscription): boolean {
+export function isWorktreeHook(sub: { tool: string; event: string }): boolean {
   return (
     sub.tool === "claude" &&
     (sub.event === "WorktreeCreate" || sub.event === "WorktreeRemove")
   );
+}
+
+/** Without these hooks Claude Code makes subagent worktrees itself and skips the Wardens rules. */
+export function missingWorktreeHooks(
+  subs: readonly { tool: string; event: string; entry: Json }[],
+): string[] {
+  const problems: string[] = [];
+  for (const [event, kind] of [
+    ["WorktreeCreate", "create"],
+    ["WorktreeRemove", "remove"],
+  ] as const) {
+    const found = subs.filter((s) => isWorktreeHook(s) && s.event === event);
+    const wanted = `worktree ${kind} --tool claude`;
+    if (
+      !found.some(
+        (s) =>
+          typeof s.entry.command === "string" &&
+          s.entry.command.includes(wanted) &&
+          typeof s.entry.timeout === "number" &&
+          s.entry.timeout > 0,
+      )
+    ) {
+      problems.push(`claude ${event} does not run "${wanted}" with a timeout`);
+    }
+  }
+  return problems;
 }
 
 function asList(value: unknown): unknown[] {
@@ -218,6 +244,7 @@ function checkFailClosed(toplevel: string): CheckResult {
   if (loaded.subs.length === 0) {
     problems.push("no hooks are configured");
   }
+  problems.push(...missingWorktreeHooks(loaded.subs));
   return problems.length > 0
     ? result("fail-closed", "fail", problems.join("; "))
     : result(
