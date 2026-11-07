@@ -59,18 +59,24 @@ Enforcement status per C-01: **enforced** (a Warden or check exists today), **pl
 - Shared mechanisms in `serialize_on`: `wardens/src/command.ts`, `wardens/src/guards.ts`, `wardens/src/charter.ts`, `wardens/schema/charter.schema.json`, `packages/contracts/openapi.json`, `packages/api-client/src/**`.
 - The bundle, hook configs and The Charter are not listed: the bundle is not in git, and the others are `deny` or `ask` paths no issue can list. Their hazard is rollout (D7).
 - Rationale: most Wardens and contract tasks edit these files; parallel edits there are the main source of conflicts and re-review.
-- Enforcement: **planned**, the same check points as D4: intersect the new task's allowed paths with those of other active tasks and with `serialize_on`, and refuse on overlap. Until built: **not yet enforced**; OVERSEER applies it by hand.
+- Overlap and `serialize_on` are judged on **declared** allowed paths only. A worktree without a task file is scoped only by the Charter's wide `allowed_paths`, so it can touch a `serialize_on` path without declaring it.
+- `serialize_on` is incomplete (e.g. `wardens/src/task.ts`, `wardens/src/worktree/**`, `wardens/src/sync/**` are not listed). OVERSEER keeps it and proposes additions through Charter PRs.
+- Enforcement:
+  - creation time: **planned**, the same check points as D4: intersect the new task's allowed paths with those of other active tasks and with `serialize_on`, and refuse on overlap. Advisory for undeclared paths.
+  - PR diff (ring 2, C-02): **planned**, a `serialize-check` in `pr-check` that compares the PR's changed files with `serialize_on` and with the changed files of other open PRs, and fails or labels `needs:human` on a shared hit.
+  - Until built: **not yet enforced**; OVERSEER applies it by hand.
 
 **D4. Working limit of 2–4 implementers.** At most 4 implementers run at once (Charter `concurrency.max_parallel_implementers: 4`).
 - The limit is operational, not architectural: no design (ports, Cells, The Ledger) depends on it. 2 is the lower bound for parallel work to be useful, not a requirement.
 - The limit is a ceiling, never a target; OVERSEER starts a task only when one is ready and does not overlap (D3).
-- Counted: linked worktrees whose issue resolves through `issueOf` (`wardens/src/worktree/index.ts`): the issue in `.panopticon/task.json`, else the `<type>/<issue>-<slug>` branch. The directory name is ignored, so subagent worktrees count once their branch is renamed or they get a task file.
-- Not counted: reviewer and Sentinel worktrees; their branches carry no issue.
-- Gap: a subagent worktree is uncounted between spawn and branch rename.
+- Counted by exclusion: every linked worktree counts as an implementer unless its branch matches a review prefix (`review-*`, `sentinel-*`). The directory name is ignored.
+- Attribution: the issue resolves through `issueOf` (`wardens/src/worktree/index.ts`): `.panopticon/task.json`, else the `<type>/<issue>-<slug>` branch. A counted worktree with no resolvable issue is **unattributed**; it still counts, and `doctor` warns about it.
+- The count is **advisory** while agents run under Krzysztof's UID: an agent can rename its branch (`git branch -m` is not denied) or edit its own `task.json`, and so move itself in or out of the review prefixes or the attribution.
 - Rationale: review, CI and merges are the bottleneck; more implementers queue more unreviewed PRs and more conflicts.
 - Enforcement: **planned** in two steps:
-  1. `wardens doctor` check `concurrency` counts resolved worktrees as above and warns above the Charter limit. `doctor` sees every linked worktree, whatever created it.
-  2. Blocking at creation: the `WorktreeCreate` hook (#51) and `wardens worktree new` refuse a new task worktree at the limit, on an issue already counted, or on D3 overlap. Until #51 lands the subagent path cannot be blocked, and the limit stays a `doctor` warning.
+  1. `wardens doctor` check `concurrency` counts worktrees as above, warns above the Charter limit and lists unattributed worktrees. `doctor` sees every linked worktree, whatever created it.
+  2. Blocking at creation: the `WorktreeCreate` hook (#51) and `wardens worktree new` refuse a new task worktree at the limit, on an issue already counted, or on D3 overlap; the hook sets the review prefix for reviewer and Sentinel worktrees. Until #51 lands the subagent path cannot be blocked, and the limit stays a `doctor` warning.
+  - Both steps stay advisory against an agent that renames its branch; a non-advisory count needs a separate agent identity (#82) or The Ledger's session records.
 - Until built: **not yet enforced**.
 
 **D5. More implementers only as a later trial.** Raising the limit above the Charter limit (towards 5–6) needs a new ADR. The trial starts only when The Ledger shows, over a defined window, healthy values for:
@@ -82,20 +88,20 @@ Enforcement status per C-01: **enforced** (a Warden or check exists today), **pl
 
 Thresholds are set in that ADR.
 - Rationale: the limit is raised on data, like autonomy phases (ADR-0008).
-- Enforcement: the limit is a Charter key, so raising it is a `risk:high` Charter PR approved by Krzysztof (**enforced**: Charter is `deny`, C-23). The metrics are **not yet enforced**; they need The Ledger.
+- Enforcement: the limit is a Charter key. Agent edits to The Charter are **enforced** as denied (`protected-paths`). Human approval of the `risk:high` Charter PR rests on Krzysztof being the one who merges: the interim `main` ruleset requires 0 approvals (decision log 2026-11-07, #37, #84) until the agent GitHub App returns it to 1 (#82). The metrics are **not yet enforced**; they need The Ledger.
 
 **D6. The review gate is never traded for speed.** Current rule: an independent Reviewer on every PR; Sentinel on every PR (ADR-0008 phase 1, `AGENTS.md`). Both are fresh read-only sessions, run in parallel with other work, and are never skipped, shortened or merged with the implementer's session to raise throughput. Reviewers and Sentinels do not count against D4.
-- Practice so far (process of 2026-11-05, #60): Sentinel only on `risk:high` and security PRs. This ADR does not narrow the rule; the scope is an open decision for Krzysztof.
+- Practice so far (process of 2026-11-05, #60): Sentinel only on `risk:high` and security PRs. This ADR does not narrow the rule; the scope is an open decision for Krzysztof, keyed to the `risk-classifier` result.
 - Rationale: parallel work raises the risk of unseen interactions; the gate is the control for that (C-07, ADR-0008).
 - Enforcement: **planned**, ring-2 check `review-gate` (#60). Until built: **not yet enforced**; OVERSEER applies it by hand.
 
-**D7. Shared-mechanism changes roll out between sessions.** OVERSEER coordinates changes to the bundle, hooks, The Charter and generated configs: one at a time (D3), and announces the rollout once no implementer session is running. The rollout is a **human** step: Krzysztof runs `git pull` in the primary checkout, rebuilds the bundle, and runs `wardens doctor` until green; then new sessions start. Agents cannot pull in the primary checkout (C-33, `worktree-guard`).
+**D7. Shared-mechanism changes roll out between sessions.** OVERSEER coordinates changes to the bundle, hooks, The Charter and generated configs: one at a time (D3), and announces the rollout once it believes no implementer session is running. The rollout is a **human** step. Krzysztof first confirms himself that no agent session is running (`wardens worktree list`, `git worktree list`, `lsof +D .claude/worktrees`); OVERSEER's announcement and the D4 count do not replace that check. He then runs `git pull` in the primary checkout, rebuilds the bundle, and runs `wardens doctor` until green; then new sessions start. Agents cannot pull in the primary checkout (C-33, `worktree-guard`).
 - Rationale: every worktree's hooks run the primary checkout's bundle (ADR-0012), so a mid-session pull changes the rules under running agents.
 - Enforcement:
   - The Charter cannot be edited by agents: **enforced** (`protected-paths`, `deny`);
   - configs are `ask`: **enforced** (`protected-paths`);
   - stale bundle or drifted configs: **enforced as detection** (`wardens doctor` checks `bundle` and `drift`; CI `charter-drift`);
-  - "only between sessions": **not yet enforced**; the D4 count (zero counted worktrees) is the candidate signal.
+  - "only between sessions": **not yet enforced**; Krzysztof's own check is the control, and the D4 count (zero counted worktrees, none unattributed) is a supporting signal only.
 
 **D8. Contracts before parallel feature work.** Before parallel feature work on `apps/**` starts, the LunarHunt data model and API contracts are agreed: a spec with `status: ready` (C-10) and the matching `packages/contracts/openapi.json` merged to `main`.
 - Rationale: parallel features on an unagreed model produce conflicting migrations and contract diffs.
@@ -112,15 +118,16 @@ Thresholds are set in that ADR.
 - Good, because raising the limit is a data-gated decision, like autonomy phases.
 - Bad, because until the planned checks exist, D1–D4, D6 and D7's timing rely on OVERSEER following prose (C-01 gap, stated per decision).
 - Bad, because serializing on `wardens/src/command.ts` and `guards.ts` slows Wardens work, where most current issues land.
-- Bad, because blocking on the subagent path waits for #51, and a subagent worktree is uncounted until its branch carries an issue.
+- Bad, because blocking on the subagent path waits for #51, and the count stays advisory while agents share Krzysztof's UID.
 - Neutral, because the Charter key needs a schema change first, so it lands with the D4 check, not before.
 
 ### Confirmation
 
 - The Charter schema (`wardens/src/charter.ts` and `wardens/schema/charter.schema.json`) accepts `concurrency:`; `wardens sync` output, `wardens doctor` `drift` and CI `charter-drift` stay green.
 - Wardens tests for the planned checks:
-  - `concurrency` doctor check counts worktrees resolved by task file or branch, ignores directory names and issue-less branches, and warns above the limit;
+  - `concurrency` doctor check counts every linked worktree except review-prefixed branches, ignores directory names, reports issue-less worktrees as unattributed and counts them, and warns above the limit;
   - the `WorktreeCreate` hook and `wardens worktree new` refuse at the limit, on overlapping allowed paths, on `serialize_on` paths, and on an issue already counted;
+  - `serialize-check` fails or labels a PR whose changed files hit `serialize_on` or another open PR's changed files;
   - every refusal uses the C-30 message format.
 - `review-gate` per #60.
 - The Ledger, once built, reports concurrent implementers, concurrent OVERSEER sessions and the D5 metrics.
@@ -160,7 +167,7 @@ Order:
 ```yaml
 concurrency: # ADR-0016
   max_parallel_implementers: 4   # operational ceiling; raising it needs a new ADR (D5)
-  count: { resolve_issue: [task_file, branch] }
+  count: { exclude_branches: ["review-*", "sentinel-*"], resolve_issue: [task_file, branch] }
   serialize_on:
     - "wardens/src/command.ts"
     - "wardens/src/guards.ts"
@@ -170,8 +177,8 @@ concurrency: # ADR-0016
     - "packages/api-client/src/**"
 ```
 
-- `count`: a linked worktree counts as one implementer when its issue resolves from `.panopticon/task.json`, else from its `<type>/<issue>-<slug>` branch; worktrees with no issue (reviewer, Sentinel) are not counted.
-- `serialize_on`: at most one active task may have allowed paths matching any listed path; tasks are serialized on these paths even when their allowed paths do not otherwise overlap.
+- `count`: every linked worktree counts as one implementer unless its branch matches `exclude_branches`; its issue resolves from `.panopticon/task.json`, else from its `<type>/<issue>-<slug>` branch, and a worktree with no issue counts as unattributed.
+- `serialize_on`: at most one active task may have declared allowed paths matching any listed path, and at most one open PR may change one; tasks are serialized on these paths even when their allowed paths do not otherwise overlap.
 
 ### `docs/constitution.md`: new principle C-34
 
@@ -179,7 +186,7 @@ Highest existing ID is C-33. Place C-34 in section II (Way of working), after C-
 
 ```markdown
 **C-34 Bounded parallel work.** One OVERSEER per project assigns implementation; other sessions MUST NOT commission it. Each issue MUST have at most one implementer at a time, with declared allowed paths and dependencies. Tasks whose allowed paths overlap, or that touch a path in the Charter's `concurrency.serialize_on`, MUST run one after another. Agents MUST NOT run more implementers at once than `concurrency.max_parallel_implementers`; reviewers and Sentinels do not count, and the review gate MUST NOT be reduced to raise throughput. Changes to the Wardens bundle, hooks, The Charter or generated configs are rolled out by a human, only when no implementer session is running.
-*Enforced by:* `wardens doctor` `concurrency` check (planned, warning); `WorktreeCreate` hook and `wardens worktree new` refusal at the limit and on overlap (planned, #51); `review-gate` (planned, #60); `wardens doctor` `bundle` and `drift`, CI `charter-drift` (detect stale rollouts); single OVERSEER and declared dependencies not yet enforced. [ADR-0016](decisions/0016-parallel-work-and-a-single-overseer.md)
+*Enforced by:* `wardens doctor` `concurrency` check (planned, warning; advisory while agents share the human's UID); `WorktreeCreate` hook and `wardens worktree new` refusal at the limit and on overlap (planned, #51; advisory for undeclared paths); `serialize-check` on the PR diff (planned, ring 2); `review-gate` (planned, #60); Krzysztof's own check of running sessions before a rollout; `wardens doctor` `bundle` and `drift`, CI `charter-drift` (detect stale rollouts); single OVERSEER and declared dependencies not yet enforced. [ADR-0016](decisions/0016-parallel-work-and-a-single-overseer.md)
 ```
 
 ### `AGENTS.md`: "Parallel work" subsection
@@ -196,13 +203,13 @@ Add after "Workflow: issue to PR":
 ## Open decisions
 
 - **Limit value:** start at 4 (the top of 2–4) or at 3 until the `doctor` count exists.
-- **Count source:** task file or branch via `issueOf` (now), or Ledger sessions once The Ledger exists.
-- **Sentinel scope:** every PR (ADR-0008, `AGENTS.md`) or only `risk:high` and security PRs (practice so far). OVERSEER recommends every PR that touches code or policy; docs-only PRs may skip it. A narrower scope amends ADR-0008.
+- **Count source:** worktree list by exclusion with `issueOf` attribution (now), or Ledger sessions once The Ledger exists.
+- **Sentinel scope:** every PR (ADR-0008, `AGENTS.md`) or only `risk:high` and security PRs (practice so far). OVERSEER recommends Sentinel on every PR except `risk:low` PRs (per `risk-classifier`) with no change to code, policy, decisions or security specs. A narrower scope amends ADR-0008; resolve before acceptance.
 - **Lockfiles:** whether `pnpm-lock.yaml` and `uv.lock` join `serialize_on` or are left to rebase.
 - **Contract baseline (D8):** which spec defines the LunarHunt data model, and whether it needs its own ADR.
 
 ## More Information
 
-- Issue #87 (direction and gap table); #60 (review gate); #62 (effort by risk, Sentinel on security specs); #51 (`WorktreeCreate` hook).
+- Issue #87 (direction and gap table); #60 (review gate); #62 (effort by risk, Sentinel on security specs); #51 (`WorktreeCreate` hook); #82 (agent GitHub App); #84 (interim ruleset, 0 approvals).
 - Related: ADR-0003 (The Charter), ADR-0008 (autonomy phases, human merge, Sentinel), ADR-0009 (role routing), ADR-0010 (The Ledger), ADR-0012 (worktrees, primary checkout bundle).
 - Revisit when The Ledger is live, when #51 lands, or when D5's trial is proposed.
