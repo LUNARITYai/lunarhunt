@@ -510,6 +510,8 @@ type EditTargets = {
   paths: string[];
   /** Globs as repo-relative segments: the files a pattern or an extraction may create. */
   globs: string[][];
+  /** Repo-relative paths only read (copy sources, patterns): not judged by `scope-guard`. */
+  sources: string[];
   /** The command removes or moves more files than can be listed: denied. */
   tooLarge: string | null;
 };
@@ -523,7 +525,6 @@ const GLOB_PART = /[*?[]/;
 function treeFiles(
   root: string,
   start: string,
-  names: readonly string[] | undefined,
   budget: { left: number },
 ): string[] | null {
   const found: string[] = [];
@@ -544,12 +545,7 @@ function treeFiles(
       if (entry.isDirectory() && !SKIPPED_TREES.has(entry.name)) {
         pending.push(path);
       }
-      if (
-        !names ||
-        names.some((name) => picomatch.isMatch(entry.name, name, { dot: true }))
-      ) {
-        found.push(path);
-      }
+      found.push(path);
     }
   }
   return found;
@@ -603,7 +599,12 @@ function shellEditTargets(
     protected: guarded,
     generated,
   } = ctx.charter.paths;
-  const out: EditTargets = { paths: [], globs: [], tooLarge: null };
+  const out: EditTargets = {
+    paths: [],
+    globs: [],
+    sources: [],
+    tooLarge: null,
+  };
   const budget = { left: TREE_BUDGET };
   const keep = (path: string): void => {
     // A secret is already denied as a candidate by `secret-read-guard`, which
@@ -646,14 +647,14 @@ function shellEditTargets(
       ) {
         // Nothing else saw this word as a path: a secret is judged here.
         out.paths.push(resolved.path);
-        for (const file of treeFiles(
-          ctx.root,
-          resolved.path,
-          undefined,
-          budget,
-        ) ?? []) {
-          out.paths.push(file);
-        }
+        out.paths.push(...(treeFiles(ctx.root, resolved.path, budget) ?? []));
+      }
+    }
+    // A copy source or a pattern: read, so only protected and generated apply.
+    for (const read of writes.reads) {
+      const resolved = resolveRepoPath(expandHome(read, home), cwd, ctx.root);
+      if (resolved.ok && !GLOB_PART.test(read)) {
+        out.sources.push(resolved.path);
       }
     }
     for (const tree of writes.trees) {
@@ -663,7 +664,7 @@ function shellEditTargets(
         ctx.root,
       );
       const files = resolved.ok
-        ? treeFiles(ctx.root, resolved.path, tree.names, budget)
+        ? treeFiles(ctx.root, resolved.path, budget)
         : [];
       out.tooLarge ??= files === null ? tree.path : null;
       for (const file of files ?? []) {
@@ -794,7 +795,10 @@ function shellEditVerdict(
     found ??= objection;
     return false;
   };
-  for (const path of targets.paths) {
+  // `values` is false for `scope-guard`, which does not judge what is only read.
+  for (const path of values
+    ? [...targets.paths, ...targets.sources]
+    : targets.paths) {
     const edit = {
       ...ctx,
       event: { ...ctx.event, action: "write" as const, path, command: null },

@@ -176,7 +176,6 @@ describe("shell writers are judged by what they write (#83)", () => {
       "rm -rf docs/tmp",
       "rm -rf apps/web/.next",
       "mkdir -p apps/web/tmp",
-      "mkdir -m 755 apps/web/tmp",
       "touch docs/x.md",
       "echo x > docs/x.md",
       "echo x > docs/x*.md",

@@ -28,10 +28,14 @@ export type WriteSet = {
   paths: string[];
   /** Glued short-option tails that may be a path (`-rtsecrets`): judged only when they exist or name a protected file. */
   weak: string[];
-  /** Directories whose existing contents are removed or moved; `names` limits them to matching basenames. */
-  trees: Array<{ path: string; names?: string[] | undefined }>;
+  /** Directories whose existing contents are removed or moved. */
+  trees: Array<{ path: string }>;
+  /** Files only read (a copy source, a pattern): judged by `protected-paths` and `generated-files-guard`, not by `scope-guard`. */
+  reads: string[];
   /** A writer whose destination the command line does not name, or one with a hidden effect: denied. */
   unknown: boolean;
+  /** Directory entries listed so far for this command: one budget for all of its globs. */
+  listed: number;
 };
 
 const DEST_LAST = new Set(["cp", "mv", "ln", "install", "rsync", "ditto"]);
@@ -53,16 +57,25 @@ const OPERAND_WRITERS = new Set([
   "zip",
   "split",
 ]);
-const IN_PLACE = new Set(["sed", "gsed", "perl"]);
+/** `sed` long options that take no value. */
+const SED_PLAIN = [
+  "quiet",
+  "silent",
+  "regexp-extended",
+  "separate",
+  "null-data",
+  "posix",
+  "debug",
+  "sandbox",
+  "follow-symlinks",
+  "unbuffered",
+  "binary",
+  "zero-terminated",
+  "help",
+  "version",
+];
 const AWKS = new Set(["awk", "gawk", "mawk", "nawk"]);
 const EDITORS = new Set(["vi", "vim", "nvim", "view"]);
-/** Options whose value is a pattern, not a file. */
-const PATTERNS = new Set(["--exclude", "--include", "--filter", "-f"]);
-/** rsync and tar options that read a list from, or write a batch to, a file we cannot see, or run a program. */
-const HIDDEN_RSYNC =
-  /^(?:--(?:files-from|include-from|exclude-from|write-batch|only-write-batch|rsh|read-batch)(?:=|$)|-[A-Za-z]*e$|-e.)/;
-const HIDDEN_TAR =
-  /^(?:--(?:checkpoint-action|use-compress-program|to-command|remove-files|listed-incremental|index-file|info-script|new-volume-script|rmt-command|rsh-command)(?:=|$)|-[A-Za-z]*[IgFH]$|-[IgF].)/;
 const NUMBER = /^[+-]?\d+(?:\.\d+)?[kKmMgGsSdDhH]?$/;
 const MODE =
   /^(?:[0-7]{3,4}|[ugoa]*[-+=][rwxXstugo]*(?:,[ugoa]*[-+=][rwxXstugo]*)*)$/;
@@ -70,39 +83,157 @@ const MODE =
 const OPERAND_LIMIT = 64;
 /** A word this long is a glob that costs too much to intersect. */
 const WORD_LIMIT = 1024;
-/** A directory this large is not listed for a glob. */
+/** All glob words of one command together: more costs too much to intersect. */
+const GLOB_LIMIT = 4096;
+/** Directory entries listed for the globs of one command. */
 const LISTING_LIMIT = 20000;
-
-type Operands = { strong: string[]; weak: string[] };
+/** Commands whose `-o` and `-O` are no output file. */
+const NO_OUTPUT_SHORT = new Set([
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "ack",
+  "ls",
+  "ps",
+  "ssh",
+  "scp",
+  "sftp",
+  "tar",
+  "find",
+  "rsync",
+  "install",
+  "xargs",
+  "sed",
+  "gsed",
+  "perl",
+  "awk",
+  "gawk",
+  "mawk",
+  "nawk",
+  "python",
+  "python3",
+  "node",
+  "bash",
+  "sh",
+  "zsh",
+  "dash",
+  "ksh",
+]);
+/** Short options of the copy tools that take no value: any other letter may take the next word. */
+const FLAGS_NO_VALUE: Record<string, string> = {
+  cp: "RrafinpvulsLPHdxbTUZ",
+  mv: "fivnuTbUZ",
+  ln: "sfinvrLPTbdF",
+  install: "bCcdDpsvTU",
+  rsync: "avzrtplgoDHLKkRPhincuWxqSXAUEyOJ",
+  ditto: "",
+};
+/** Long options of the copy tools that take no value (a prefix of one counts). Any other option without `=` may take the next word. */
+const LONG_NO_VALUE = [
+  "archive",
+  "recursive",
+  "force",
+  "interactive",
+  "verbose",
+  "update",
+  "preserve",
+  "parents",
+  "no-clobber",
+  "no-dereference",
+  "no-target-directory",
+  "no-whole-file",
+  "dereference",
+  "link",
+  "symbolic-link",
+  "symbolic",
+  "remove-destination",
+  "backup",
+  "strip-trailing-slashes",
+  "copy-contents",
+  "one-file-system",
+  "times",
+  "perms",
+  "owner",
+  "group",
+  "links",
+  "hard-links",
+  "compress",
+  "human-readable",
+  "progress",
+  "partial",
+  "dry-run",
+  "delete",
+  "delete-before",
+  "delete-during",
+  "delete-delay",
+  "delete-after",
+  "delete-excluded",
+  "stats",
+  "itemize-changes",
+  "checksum",
+  "whole-file",
+  "inplace",
+  "relative",
+  "prune-empty-dirs",
+  "remove-source-files",
+  "cvs-exclude",
+  "existing",
+  "ignore-existing",
+  "size-only",
+  "quiet",
+  "help",
+  "version",
+];
+/** Long options whose `=` value is a directory or file the tool writes. */
+const LONG_WRITES = /^--(?:backup-dir|partial-dir|temp-dir|log-file|out)/;
 
 /**
- * The words of `argv` that can be a path: operands, values of `--opt=X`, tails
- * glued to a short option (`-tX`) and, for an all-letter cluster (`-rtX`), the
- * suffixes after its first letters. Numbers, `-` and the values of pattern
- * options are not paths. `valueLetters` are short options whose next word is
- * not a path (`sed -l 5`, `perl -e script`).
+ * GNU getopt takes any prefix of a long option that names only one: `--par` is
+ * `--parents`. A word matches when it is a prefix of one of the `names`; an
+ * ambiguous prefix (an error in the tool) matches too.
+ */
+function isLong(word: string, ...names: string[]): boolean {
+  const name = word.split("=", 1)[0] ?? "";
+  return (
+    name.length > 2 &&
+    name.startsWith("--") &&
+    names.some((full) => `--${full}`.startsWith(name))
+  );
+}
+
+type Operands = { strong: string[]; lenient: string[]; weak: string[] };
+
+/**
+ * The words of `argv` that can be a path. No option removes a word from
+ * judgement: operands, the values of `--opt=X` and `--opt X`, tails glued to a
+ * short option (`-tX`) and, for an all-letter cluster (`-rtX`), the suffixes
+ * after its first letters are all paths. Only `-` is none. `lenient` are
+ * values of pattern options (`--exclude X`) and of the short options in
+ * `valueLetters` (`zip -x X`, `perl -e X`): judged for `protected-paths` and
+ * `generated-files-guard`, not for scope.
  */
 function operandsOf(argv: readonly string[], valueLetters = ""): Operands {
-  const out: Operands = { strong: [], weak: [] };
+  const out: Operands = { strong: [], lenient: [], weak: [] };
   let literal = false;
   for (let index = 1; index < argv.length; index += 1) {
     const word = argv[index] ?? "";
     if (!literal && word === "--") {
       literal = true;
     } else if (literal || !word.startsWith("-") || word === "-") {
-      if (word !== "" && word !== "-" && !NUMBER.test(word)) {
+      if (word !== "" && word !== "-") {
         out.strong.push(word);
       }
     } else if (word.startsWith("--")) {
       const eq = word.indexOf("=");
       const name = eq < 0 ? word : word.slice(0, eq);
-      if (PATTERNS.has(name)) {
+      if (/^--(?:exclude|include|filter)$/.test(name)) {
+        out.lenient.push(eq < 0 ? (argv[index + 1] ?? "") : word.slice(eq + 1));
         index += eq < 0 ? 1 : 0;
       } else if (eq > 0 && word.length > eq + 1) {
         out.strong.push(word.slice(eq + 1));
       }
-    } else if (PATTERNS.has(word)) {
-      index += 1;
     } else {
       const glued = /^-([A-Za-z]+)(.*)$/.exec(word);
       const tail = (glued?.[2] ?? "").replace(/^=/, "");
@@ -111,10 +242,14 @@ function operandsOf(argv: readonly string[], valueLetters = ""): Operands {
         valueLetters.includes(glued[1]?.at(-1) ?? "-") &&
         tail === ""
       ) {
+        out.lenient.push(argv[index + 1] ?? "");
         index += 1;
-      } else if (tail !== "" && !NUMBER.test(tail)) {
-        out.strong.push(tail);
-      } else if (glued && tail === "") {
+      } else if (tail !== "") {
+        (valueLetters.includes(glued?.[1]?.at(-1) ?? "-")
+          ? out.lenient
+          : out.strong
+        ).push(tail);
+      } else if (glued) {
         const letters = glued[1] ?? "";
         for (let at = 1; at + 3 <= letters.length; at += 1) {
           out.weak.push(letters.slice(at));
@@ -123,6 +258,114 @@ function operandsOf(argv: readonly string[], valueLetters = ""): Operands {
     }
   }
   return out;
+}
+
+type CopyWords = {
+  /** Where files land: the `-t` directory, or the last word, and any word that may be one. */
+  dests: string[];
+  sources: string[];
+  patterns: string[];
+  targets: string[];
+};
+
+/**
+ * The words of a copy tool (`cp`, `mv`, `ln`, `install`, `rsync`) by role. The
+ * destination is the `-t`/`--target-directory` value if there is one, else the
+ * last word; a word that follows an option of unknown arity may be the last
+ * operand, so it is a destination too, and so is the word before it.
+ */
+function copyWords(name: string, rest: readonly string[]): CopyWords {
+  const flags = FLAGS_NO_VALUE[name] ?? "";
+  const targetFlag = name !== "rsync" && name !== "ditto";
+  const words: Array<{ word: string; loose: boolean }> = [];
+  const targets: string[] = [];
+  const patterns: string[] = [];
+  let literal = false;
+  let loose = false;
+  const add = (word: string | undefined, isLoose: boolean): void => {
+    if (word !== undefined && word !== "" && word !== "-") {
+      words.push({ word, loose: isLoose });
+    }
+  };
+  for (let index = 0; index < rest.length; index += 1) {
+    const word = rest[index] ?? "";
+    if (!literal && word === "--") {
+      literal = true;
+      loose = false;
+    } else if (literal || !word.startsWith("-") || word === "-") {
+      add(word, loose);
+      loose = false;
+    } else if (word.startsWith("--")) {
+      const eq = word.indexOf("=");
+      const value = eq < 0 ? null : word.slice(eq + 1);
+      const long = eq < 0 ? word : word.slice(0, eq);
+      loose = false;
+      if (targetFlag && isLong(word, "target-directory")) {
+        targets.push(value ?? rest[index + 1] ?? "");
+        index += value === null ? 1 : 0;
+      } else if (/^--(?:exclude|include|filter)$/.test(long)) {
+        patterns.push(value ?? rest[index + 1] ?? "");
+        index += value === null ? 1 : 0;
+      } else if (value !== null) {
+        // An `=` value is a path only for the options that write one.
+        if (LONG_WRITES.test(long)) {
+          add(value, true);
+        } else {
+          patterns.push(value);
+        }
+      } else {
+        loose = !isLong(word, ...LONG_NO_VALUE);
+      }
+    } else {
+      loose = false;
+      const letters = word.slice(1);
+      for (let at = 0; at < letters.length; at += 1) {
+        const letter = letters[at] ?? "";
+        const tail = letters.slice(at + 1).replace(/^=/, "");
+        if (targetFlag && letter === "t") {
+          targets.push(tail !== "" ? tail : (rest[index + 1] ?? ""));
+          index += tail === "" ? 1 : 0;
+          break;
+        }
+        if (flags.includes(letter) || !/[A-Za-z]/.test(letter)) {
+          continue;
+        }
+        if (name === "rsync" && letter === "f") {
+          patterns.push(tail !== "" ? tail : (rest[index + 1] ?? ""));
+          index += tail === "" ? 1 : 0;
+        } else if (tail !== "") {
+          add(tail, true);
+        } else {
+          loose = true;
+        }
+        break;
+      }
+    }
+  }
+  const dests = new Set<string>();
+  for (const entry of words) {
+    if (entry.loose || (name === "ln" && words.length >= 3)) {
+      dests.add(entry.word);
+    }
+  }
+  for (const target of targets) {
+    dests.add(target);
+  }
+  if (targets.length === 0) {
+    // The last word, and the word before it while the last may be an option value.
+    for (let last = words.length - 1; last >= 0; last -= 1) {
+      dests.add(words[last]?.word ?? "");
+      if (!words[last]?.loose) {
+        break;
+      }
+    }
+  }
+  return {
+    dests: [...dests],
+    sources: words.map((e) => e.word).filter((w) => !dests.has(w)),
+    patterns,
+    targets,
+  };
 }
 
 /** `dir` and `name` as one path (`dir/` and `/` both work). */
@@ -161,6 +404,7 @@ function copied(
   contents: boolean,
   relative: boolean,
   cwd: string,
+  out: WriteSet,
 ): string[] {
   const trimmed = source.replace(/\/+$/, "").replace(/^[^/]*:(?=.)/, "");
   if (relative) {
@@ -182,7 +426,10 @@ function copied(
       throw new Error("unknown");
     }
     const names = readdirSync(resolve(cwd, all ? trimmed : dirOf(trimmed)));
-    if (names.length > LISTING_LIMIT) {
+    out.listed += names.length;
+    if (out.listed > LISTING_LIMIT) {
+      // The cost of all globs of one command is capped: denied, not guessed.
+      out.unknown = true;
       throw new Error("large");
     }
     const dot = { dot: last.startsWith(".") };
@@ -206,33 +453,67 @@ function closingQuote(text: string, open: number): number {
 }
 
 /** The files `sed` scripts write, or null when a construct can run a program or hide a file (the `e` command and flag, `-f`). */
-function sedFiles(rest: readonly string[]): string[] | null {
+function sedFiles(
+  rest: readonly string[],
+): { files: string[]; operands: string[]; inPlace: boolean } | null {
   const scripts: string[] = [];
+  const operands: string[] = [];
   let explicit = false;
-  for (const [index, word] of rest.entries()) {
-    if (/^-[A-Za-z]*f$|^-f.|^--file/.test(word)) {
-      return null;
-    }
-    if (word === "--expression" || /^-[A-Za-z]*e$/.test(word)) {
-      scripts.push(rest[index + 1] ?? "");
-      explicit = true;
-    } else if (word.startsWith("--expression=") || /^-e./.test(word)) {
-      scripts.push(word.slice(word.startsWith("--") ? 13 : 2));
-      explicit = true;
-    } else if (
-      /^--(?!in-place|quiet|silent|regexp-extended|separate|null-data|posix|debug|sandbox|follow-symlinks|unbuffered|binary|zero-terminated|line-length=)/.test(
-        word,
-      )
-    ) {
-      return null;
+  let inPlace = false;
+  let literal = false;
+  for (let index = 0; index < rest.length; index += 1) {
+    const word = rest[index] ?? "";
+    if (literal || word === "-" || !word.startsWith("-")) {
+      operands.push(word);
+    } else if (word === "--") {
+      literal = true;
+    } else if (word.startsWith("--")) {
+      const value = word.includes("=")
+        ? word.slice(word.indexOf("=") + 1)
+        : null;
+      if (isLong(word, "expression")) {
+        scripts.push(value ?? rest[index + 1] ?? "");
+        explicit = true;
+        index += value === null ? 1 : 0;
+      } else if (isLong(word, "in-place")) {
+        inPlace = true;
+      } else if (isLong(word, "line-length")) {
+        index += value === null ? 1 : 0;
+      } else if (!isLong(word, ...SED_PLAIN)) {
+        // `--file` and any option we do not know.
+        return null;
+      }
+    } else {
+      // A cluster: `e` and `l` take the rest of the word or the next word, `i` a glued suffix.
+      for (let at = 1; at < word.length; at += 1) {
+        const letter = word[at] ?? "";
+        const glued = word.slice(at + 1);
+        if (!/[A-Za-z]/.test(letter)) {
+          break;
+        }
+        if (letter === "f") {
+          return null;
+        }
+        if (letter === "e") {
+          scripts.push(glued !== "" ? glued : (rest[index + 1] ?? ""));
+          explicit = true;
+          index += glued === "" ? 1 : 0;
+          break;
+        }
+        if (letter === "l") {
+          index += glued === "" ? 1 : 0;
+          break;
+        }
+        if (letter === "i") {
+          inPlace = true;
+          break;
+        }
+      }
     }
   }
   if (!explicit) {
-    const skip = rest.findIndex((w) => /^-[A-Za-z]*l$|^--line-length$/.test(w));
-    const first = rest.findIndex(
-      (w, i) => !w.startsWith("-") && (skip < 0 || i !== skip + 1),
-    );
-    scripts.push(rest[first] ?? "");
+    // The script is the first operand, and no path.
+    scripts.push(operands.shift() ?? "");
   }
   const files: string[] = [];
   for (const script of scripts) {
@@ -242,7 +523,7 @@ function sedFiles(rest: readonly string[]): string[] | null {
     }
     files.push(...found);
   }
-  return files;
+  return { files, operands, inPlace };
 }
 
 /** The files one `sed` script writes (a small lexer: `/world/p` is not a `w` command); null when it cannot say. */
@@ -347,6 +628,58 @@ function awkFiles(program: string, out: WriteSet): void {
   }
 }
 
+/** A `tar` option that runs a program or writes a file the command line does not name. */
+function hiddenTar(word: string): boolean {
+  if (word.startsWith("--")) {
+    return (
+      word.split("=", 1)[0] !== "--checkpoint" &&
+      isLong(
+        word,
+        "checkpoint-action",
+        "use-compress-program",
+        "to-command",
+        "remove-files",
+        "listed-incremental",
+        "index-file",
+        "info-script",
+        "new-volume-script",
+        "rmt-command",
+        "rsh-command",
+      )
+    );
+  }
+  // Every letter of a cluster, up to the first one that takes the rest as its value.
+  for (const letter of word.slice(1)) {
+    if ("IgF".includes(letter)) {
+      return true;
+    }
+    if ("fCbNTXLVKR".includes(letter)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** An `rsync` option that reads a list from, or writes a batch to, a file we cannot see, or runs a program. */
+function hiddenRsync(word: string): boolean {
+  if (word.startsWith("--")) {
+    return (
+      !/^--(?:exclude|include)(?:=|$)/.test(word) &&
+      isLong(
+        word,
+        "files-from",
+        "include-from",
+        "exclude-from",
+        "write-batch",
+        "only-write-batch",
+        "rsh",
+        "read-batch",
+      )
+    );
+  }
+  return /^-[A-Za-z]*e/.test(word);
+}
+
 function tarWrites(rest: readonly string[], out: WriteSet): void {
   const words =
     rest[0]?.startsWith("-") === false
@@ -358,7 +691,7 @@ function tarWrites(rest: readonly string[], out: WriteSet): void {
   let file: string | null = null;
   const pending: Array<"f" | "C"> = [];
   for (const word of words) {
-    out.unknown ||= HIDDEN_TAR.test(word);
+    out.unknown ||= hiddenTar(word);
     if (word === "--extract" || word === "--get") {
       extract = true;
     } else if (/^--(?:create|append|update|delete)$/.test(word)) {
@@ -420,13 +753,19 @@ function gitWrites(
   const writes = ["checkout", "restore", "mv", "rm", "apply", "am"].includes(
     sub,
   );
-  out.unknown ||= writes && flag(/^--pathspec-from-file/);
+  out.unknown ||= writes && args.some((w) => isLong(w, "pathspec-from-file"));
   const dashes = args.indexOf("--");
   const after = dashes < 0 ? [] : args.slice(dashes + 1);
   // `--source X` and `--source=X` name a revision, not a path.
   const options = args
     .slice(0, dashes < 0 ? undefined : dashes)
-    .filter((w, i, all) => !/^--source/.test(w) && all[i - 1] !== "--source");
+    .filter((w, i, all) => {
+      const before = all[i - 1] ?? "";
+      return (
+        !isLong(w, "source") &&
+        !(isLong(before, "source") && !before.includes("="))
+      );
+    });
   const named = operandsOf(
     ["git", ...options],
     sub === "restore" ? "s" : "bB",
@@ -441,7 +780,11 @@ function gitWrites(
   if (sub === "checkout") {
     // After `--`, with `--ours`/`--theirs`, or after a revision: paths. A lone
     // name is a path when it exists, a branch otherwise.
-    const paths = flag(/^(?:--ours|--theirs|--merge|-m|--conflict|-p|--patch)/);
+    const paths =
+      flag(/^-[A-Za-z]*[mp]/) ||
+      args.some((w) =>
+        isLong(w, "ours", "theirs", "merge", "conflict", "patch"),
+      );
     const lone = existsSync(resolve(cwd, rooted(named[0] ?? "-")));
     pathspecs(
       dashes >= 0
@@ -455,8 +798,10 @@ function gitWrites(
               : [],
     );
   } else if (sub === "restore") {
-    const staged = flag(/^(?:--staged|-[A-Za-z]*S[A-Za-z]*)$/);
-    const tree = flag(/^(?:--worktree|-[A-Za-z]*W[A-Za-z]*)$/);
+    const staged =
+      flag(/^-[A-Za-z]*S[A-Za-z]*$/) || args.some((w) => isLong(w, "staged"));
+    const tree =
+      flag(/^-[A-Za-z]*W[A-Za-z]*$/) || args.some((w) => isLong(w, "worktree"));
     pathspecs(staged && !tree ? [] : [...named, ...after]);
   } else if (sub === "mv" || (sub === "rm" && !flag(/^--cached$/))) {
     writesOf(
@@ -472,6 +817,210 @@ function gitWrites(
   return writes;
 }
 
+/** The URL's last path segment, which `curl -O` and `wget` name the file after; null when there is none. */
+function urlFile(url: string): string | null {
+  const path = url.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]*$/.test(path)) {
+    return null;
+  }
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return name === "" ? null : name;
+}
+
+/**
+ * Output options of any command: `dd of=`, `-o`/`-O` and `--out*`/`--log-file`
+ * values (separate or glued), and the file `curl -O` and `wget` name after the
+ * URL.
+ */
+function outputsOf(name: string, rest: readonly string[], out: WriteSet): void {
+  const letters = name === "curl" ? "o" : "oO";
+  const shortOutput = !NO_OUTPUT_SHORT.has(name);
+  let remote = name === "wget";
+  let prefix = "";
+  for (const [index, word] of rest.entries()) {
+    const next = rest[index + 1] ?? "";
+    const value = word.includes("=") ? word.slice(word.indexOf("=") + 1) : next;
+    if (name === "dd" && word.startsWith("of=")) {
+      out.paths.push(word.slice(3));
+    } else if (
+      /^--out/.test(word) ||
+      isLong(word, "output", "log-file") ||
+      /^--(?:destination|dest|to)=/.test(word)
+    ) {
+      out.paths.push(value);
+      remote &&= !isLong(word, "output-document");
+    } else if (word.startsWith("--")) {
+      remote ||=
+        name === "curl" && isLong(word, "remote-name", "remote-name-all");
+      if (name === "wget" && isLong(word, "directory-prefix")) {
+        prefix = value;
+      }
+    } else if (/^-[A-Za-z]/.test(word)) {
+      if (shortOutput && new RegExp(`^-[A-Za-z]*[${letters}]$`).test(word)) {
+        out.paths.push(next);
+      } else if (shortOutput && new RegExp(`^-[${letters}].`).test(word)) {
+        out.paths.push(word.slice(2));
+      }
+      remote ||= name === "curl" && /^-[A-Za-z]*O/.test(word);
+      remote &&= !(name === "wget" && /^-[A-Za-z]*O/.test(word));
+      if (name === "wget" && /^-[A-Za-z]*P$/.test(word)) {
+        prefix = next;
+      } else if (name === "wget" && /^-P./.test(word)) {
+        prefix = word.slice(2);
+      }
+    }
+  }
+  if (remote) {
+    for (const word of rest.filter((w) => w.includes("://"))) {
+      const file = urlFile(word);
+      if (file !== null) {
+        out.paths.push(prefix === "" ? file : under(prefix, file));
+      }
+    }
+  }
+}
+
+/** What a copy tool (`cp`, `mv`, `ln`, `install`, `rsync`) writes. */
+function copyWrites(
+  name: string,
+  rest: readonly string[],
+  out: WriteSet,
+  cwd: string,
+): void {
+  const { dests, sources, patterns, targets } = copyWords(name, rest);
+  out.reads.push(...patterns);
+  // `-rtsecrets`: the value glued to a cluster is no word of its own.
+  out.weak.push(...operandsOf(["", ...rest]).weak);
+  const symbolic =
+    name === "ln" &&
+    (rest.some((w) => /^-[A-Za-z]*s/.test(w)) ||
+      rest.some((w) => isLong(w, "symbolic")));
+  const relative =
+    name === "cp"
+      ? rest.some((w) => isLong(w, "parents"))
+      : name === "rsync" &&
+        rest.some((w) => isLong(w, "relative") || /^-[A-Za-z]*R/.test(w));
+  const copying = sources.length > 0;
+  // A directory that receives files is not written itself: the files it
+  // receives are, listed by `copied`.
+  const isDir = (word: string): boolean =>
+    targets.includes(word) || word.endsWith("/") || isDirectory(cwd, word);
+  out.paths.push(...dests.filter((dest) => !(copying && isDir(dest))));
+  if (dests.length + sources.length > OPERAND_LIMIT) {
+    out.unknown = true;
+  }
+  for (const dir of dests.slice(0, OPERAND_LIMIT)) {
+    if (copying && isDir(dir)) {
+      for (const source of sources.slice(0, OPERAND_LIMIT)) {
+        out.paths.push(
+          ...copied(dir, source, name === "rsync", relative, cwd, out),
+        );
+        if (symbolic && !source.startsWith("/")) {
+          out.reads.push(under(dir, source));
+        }
+      }
+    }
+  }
+  if (symbolic) {
+    // A link reads its target from the link's directory.
+    for (const link of dests) {
+      out.reads.push(
+        ...sources
+          .filter((source) => !source.startsWith("/"))
+          .map((source) => under(dirOf(link), source)),
+      );
+    }
+  }
+  out.unknown ||= name === "rsync" && rest.some(hiddenRsync);
+  const deleting =
+    name === "rsync" &&
+    rest.some((w) =>
+      isLong(
+        w,
+        "delete",
+        "delete-before",
+        "delete-during",
+        "delete-delay",
+        "delete-after",
+        "delete-excluded",
+        "remove-source-files",
+      ),
+    );
+  if (name === "mv" || deleting) {
+    // The sources of a move are removed; so is what `--delete` finds in the destination.
+    const removed = deleting ? [...sources, ...dests] : sources;
+    out.paths.push(...removed);
+    out.trees.push(...removed.map((path) => ({ path })));
+  } else {
+    // A copy source is read: only the policy of its content applies.
+    out.reads.push(...sources.filter((source) => !/[*?[{$`]/.test(source)));
+  }
+}
+
+/** `awk`: hidden-write options, in-place editing and the files the program writes. */
+function awkWrites(argv: readonly string[], out: WriteSet): void {
+  const rest = argv.slice(1);
+  let inPlace = false;
+  let hidden = false;
+  for (const [index, word] of rest.entries()) {
+    const next = rest[index + 1] ?? "";
+    if (word.startsWith("--")) {
+      if (isLong(word, "include")) {
+        const value = word.includes("=")
+          ? word.slice(word.indexOf("=") + 1)
+          : next;
+        inPlace ||= value === "inplace";
+        hidden ||= value !== "inplace";
+      } else if (
+        isLong(
+          word,
+          "file",
+          "source",
+          "exec",
+          "load",
+          "profile",
+          "dump-variables",
+          "pretty-print",
+          "debug",
+        )
+      ) {
+        hidden = true;
+      }
+    } else if (/^-[A-Za-z]/.test(word)) {
+      // Every letter of a cluster, up to the first one that takes the rest as its value.
+      for (let at = 1; at < word.length; at += 1) {
+        const letter = word[at] ?? "";
+        const glued = word.slice(at + 1);
+        if (letter === "v" || letter === "F") {
+          break;
+        }
+        if (letter === "i") {
+          const value = glued !== "" ? glued : next;
+          inPlace ||= value === "inplace";
+          hidden ||= value !== "inplace";
+          break;
+        }
+        if ("feEloLpdD".includes(letter)) {
+          hidden = true;
+          break;
+        }
+      }
+    }
+  }
+  // A program from a file, a library, an include or a dump can write anywhere.
+  out.unknown ||= hidden;
+  for (const word of rest.filter((w) => !w.startsWith("-"))) {
+    awkFiles(word, out);
+  }
+  if (inPlace) {
+    out.paths.push(
+      ...operandsOf(argv, "vF").strong.filter(
+        (w) => w !== "inplace" && !/[\s{$'"=]/.test(w),
+      ),
+    );
+  }
+}
+
 /** Adds what the command `argv` writes to `out`; true when it is a writer. */
 function writesOf(
   argv: readonly string[],
@@ -483,155 +1032,75 @@ function writesOf(
   const recursive = rest.some(
     (word) => word === "--recursive" || /^-[A-Za-z]*[rR][A-Za-z]*$/.test(word),
   );
-  for (const [index, word] of rest.entries()) {
-    if (name === "dd" && word.startsWith("of=")) {
-      out.paths.push(word.slice(3));
-    } else if (
-      (name === "curl" && word === "-o") ||
-      (name === "wget" && word === "-O") ||
-      (name === "sort" && /^-[A-Za-z]*o$|^--output$/.test(word))
-    ) {
-      out.paths.push(rest[index + 1] ?? "-");
-    } else if (
-      name === "sort" &&
-      (/^-o./.test(word) || word.startsWith("--output="))
-    ) {
-      out.paths.push(word.slice(word.startsWith("--") ? 9 : 2));
-    } else if (
-      /^--(?:output|out|outfile|output-file|output-document|log-file|destination|dest|to)=/.test(
-        word,
-      )
-    ) {
-      out.paths.push(word.slice(word.indexOf("=") + 1));
-    }
+  outputsOf(name, rest, out);
+  if (DEST_LAST.has(name)) {
+    copyWrites(name, rest, out, cwd);
+    return true;
   }
   if (OPERAND_WRITERS.has(name)) {
-    const { strong, weak } = operandsOf(argv, name === "zip" ? "xi" : "");
-    // `chown owner file`: the owner is no path.
+    const { strong, lenient, weak } = operandsOf(
+      argv,
+      name === "zip" ? "xi" : "",
+    );
+    const reference = rest.some((w) => isLong(w, "reference"));
+    // `chown owner file`, `chmod mode file`: the owner and the mode are no path.
     const files =
       name === "chown" || name === "chgrp"
-        ? strong.slice(rest.some((w) => w.startsWith("--reference")) ? 0 : 1)
-        : strong.filter((w) => !(name === "chmod" && MODE.test(w)));
-    const copying = DEST_LAST.has(name) && files.length > 1;
-    const targeted = rest.some((w) =>
-      /^-[A-Za-z]*t|^--target-directory/.test(w),
-    );
-    // A directory that receives files is not written itself: the files it
-    // receives are, and a glob next to one is a source, listed by `copied`.
-    const isDir = (f: string): boolean =>
-      targeted || f.endsWith("/") || isDirectory(cwd, f);
-    const hasDir = copying && files.some(isDir);
-    // The target of a symbolic link is read from the link's directory, below.
-    const symbolic =
-      name === "ln" &&
-      rest.some((w) => w === "--symbolic" || /^-[A-Za-z]*s/.test(w));
-    out.paths.push(
-      ...files.filter(
-        (f, at) =>
-          !(copying && isDir(f)) &&
-          !(hasDir && /[*?[]/.test(f)) &&
-          !(symbolic && at < files.length - 1 && !f.startsWith("/")),
-      ),
-    );
+        ? strong.slice(reference ? 0 : 1)
+        : name === "chmod" && !reference && MODE.test(strong[0] ?? "")
+          ? strong.slice(1)
+          : strong;
+    out.paths.push(...files);
+    out.reads.push(...lenient);
     out.weak.push(...weak);
     if (files.length > OPERAND_LIMIT) {
       out.unknown = true;
     }
-    if (DEST_LAST.has(name)) {
-      const relative =
-        name === "cp"
-          ? rest.includes("--parents")
-          : name === "rsync" &&
-            rest.some((w) => w === "--relative" || /^-[A-Za-z]*R/.test(w));
-      for (const dir of files.slice(0, OPERAND_LIMIT)) {
-        if (targeted || dir.endsWith("/") || isDirectory(cwd, dir)) {
-          for (const source of files.filter((w) => w !== dir)) {
-            out.paths.push(
-              ...copied(dir, source, name === "rsync", relative, cwd),
-            );
-            if (name === "ln" && symbolic && !source.startsWith("/")) {
-              out.paths.push(under(dir, source));
-            }
-          }
-        }
-      }
-      if (name === "ln" && symbolic) {
-        for (const file of targeted ? files : files.slice(-1)) {
-          out.paths.push(
-            ...files
-              .filter((w) => !w.startsWith("/") && w !== file)
-              .map((w) => under(dirOf(file), w)),
-          );
-        }
-      }
-      out.unknown ||=
-        name === "rsync" && rest.some((w) => HIDDEN_RSYNC.test(w));
-      const deleting =
-        name === "rsync" &&
-        rest.some((w) => /^--(?:delete|remove-source)/.test(w));
-      if (name === "mv" || deleting) {
-        // The sources of a move (all words after `-t`) are removed.
-        const removed = targeted || deleting ? files : files.slice(0, -1);
-        out.paths.push(...removed);
-        out.trees.push(...removed.map((path) => ({ path })));
-      }
-    } else if (
+    if (
       name === "rm" ||
       name === "rmdir" ||
       name === "shred" ||
       name === "unlink"
     ) {
-      if (recursive) {
+      if (recursive || rest.some((w) => isLong(w, "recursive"))) {
         out.trees.push(...files.map((path) => ({ path })));
       }
     } else if (name === "zip") {
       // `-m` deletes the sources, `-T`/`-TT` runs a program.
       out.unknown ||= rest.some((w) =>
-        /^-[A-Za-z]*[mT][A-Za-z]*$|^--(?:move|test|unzip)/.test(w),
+        w.startsWith("--")
+          ? isLong(w, "move", "test", "unzip")
+          : /^-[A-Za-z0-9]*[mT]/.test(w),
       );
-    } else if (name === "split" && files.length < 2) {
+    } else if (
+      name === "split" &&
+      files.filter((f) => !NUMBER.test(f)).length < 2
+    ) {
       out.paths.push("x*");
     }
     return true;
   }
-  if (IN_PLACE.has(name)) {
-    const inPlace = rest.some(
-      (w) => w.startsWith("--in-place") || /^-[a-zA-Z0-9]*i/.test(w),
-    );
-    const scripted = rest.some((w) =>
-      /^-[A-Za-z]*[eEf]$|^--(?:expression|file)/.test(w),
-    );
+  if (name === "perl") {
+    const scripted = rest.some((w) => /^-[A-Za-z]*[eEf]$/.test(w));
+    const inPlace = rest.some((w) => /^-[a-zA-Z0-9]*i/.test(w));
     if (inPlace) {
-      const { strong } = operandsOf(argv, name === "perl" ? "eEI" : "el");
+      const { strong, lenient } = operandsOf(argv, "eEI");
       out.paths.push(...(scripted ? strong : strong.slice(1)));
-    }
-    if (name !== "perl") {
-      const files = sedFiles(rest);
-      out.unknown ||= files === null;
-      out.paths.push(...(files ?? []));
+      out.reads.push(...lenient);
     }
     return inPlace;
   }
+  if (name === "sed" || name === "gsed") {
+    const parsed = sedFiles(rest);
+    out.unknown ||= parsed === null;
+    out.paths.push(...(parsed?.files ?? []));
+    if (parsed?.inPlace) {
+      out.paths.push(...parsed.operands);
+    }
+    return parsed?.inPlace ?? false;
+  }
   if (AWKS.has(name)) {
-    const inPlace = rest.some(
-      (w, i) =>
-        (/^(?:-i|--include)$/.test(w) && rest[i + 1] === "inplace") ||
-        /^(?:-iinplace|--include=inplace)$/.test(w),
-    );
-    // A program from a file, a library, or an include can write anywhere.
-    out.unknown ||=
-      rest.some((w) =>
-        /^(?:-f|-e|-E|-l|--file|--source|--exec|--load)/.test(w),
-      ) ||
-      (!inPlace && rest.some((w) => /^(?:-i|--include)/.test(w)));
-    for (const word of rest.filter((w) => !w.startsWith("-"))) {
-      awkFiles(word, out);
-    }
-    if (inPlace) {
-      out.paths.push(
-        ...operandsOf(argv, "vF").strong.filter((w) => !/[\s{$'"=]/.test(w)),
-      );
-    }
+    awkWrites(argv, out);
     return true;
   }
   switch (name) {
@@ -658,31 +1127,28 @@ function writesOf(
         (w) => w.startsWith("-") || w === "(" || w === "!",
       );
       const roots = start < 0 ? rest : rest.slice(0, start);
-      const names = rest.flatMap((w, i) =>
-        /^-i?name$/.test(w) && rest[i + 1] !== undefined
-          ? [rest[i + 1] ?? ""]
-          : [],
-      );
-      const filtered =
-        rest.some((w) =>
-          /^-(?:path|ipath|regex|iregex|wholename|newer)/.test(w),
-        ) || rest.includes("-o");
-      if (rest.includes("-delete")) {
+      // A filter (`-name`, `!`, `-o`, `-path`) never narrows what a remover
+      // may reach: each start directory is judged as removed.
+      const removing =
+        rest.includes("-delete") ||
+        rest.some(
+          (w, i) =>
+            /^-(?:exec|execdir|ok|okdir)$/.test(w) &&
+            ["rm", "rmdir", "unlink", "shred"].includes(
+              commandName(rest[i + 1] ?? ""),
+            ),
+        );
+      if (removing) {
         const list = roots.length > 0 ? roots : ["."];
         out.paths.push(...list);
-        out.trees.push(
-          ...list.map((path) => ({
-            path,
-            names: names.length > 0 && !filtered ? names : undefined,
-          })),
-        );
+        out.trees.push(...list.map((path) => ({ path })));
       }
       for (const [index, word] of rest.entries()) {
         if (/^-(?:fprint0?|fls|fprintf)$/.test(word)) {
           out.paths.push(rest[index + 1] ?? "");
         }
       }
-      return rest.includes("-delete");
+      return removing;
     }
     case "git":
       return gitWrites(rest, out, cwd);
@@ -702,7 +1168,9 @@ export function shellWriteSet(segment: Segment, cwd: string): WriteSet {
     paths: redirectTargets(segment),
     weak: [],
     trees: [],
+    reads: [],
     unknown: false,
+    listed: 0,
   };
   const plain = withoutRedirects(segment.argv);
   const reached = [...walkCommands(plain).at].sort((a, b) => a - b);
@@ -711,7 +1179,14 @@ export function shellWriteSet(segment: Segment, cwd: string): WriteSet {
     const stop = plain.findIndex(
       (w, i) => i > index && (w === ";" || w === "+"),
     );
-    const here: WriteSet = { paths: [], weak: [], trees: [], unknown: false };
+    const here: WriteSet = {
+      paths: [],
+      weak: [],
+      trees: [],
+      reads: [],
+      unknown: false,
+      listed: out.listed,
+    };
     const writer = writesOf(
       plain.slice(index, exec && stop >= 0 ? stop : undefined),
       here,
@@ -727,11 +1202,18 @@ export function shellWriteSet(segment: Segment, cwd: string): WriteSet {
     out.paths.push(...here.paths);
     out.weak.push(...here.weak);
     out.trees.push(...here.trees);
+    out.reads.push(...here.reads);
     out.unknown ||= here.unknown;
+    out.listed = here.listed;
   }
-  out.paths = out.paths.filter(
-    (path) => path.length > 0 && path !== "-" && !isDevicePath(path),
-  );
-  out.unknown ||= out.paths.some((path) => path.length > WORD_LIMIT);
+  const keep = (path: string): boolean =>
+    path.length > 0 && path !== "-" && !isDevicePath(path);
+  out.paths = out.paths.filter(keep);
+  out.reads = out.reads.filter(keep);
+  // The glob words of one command are capped together, not word by word.
+  const globs = out.paths.filter((path) => /[*?[]/.test(path));
+  out.unknown ||=
+    out.paths.some((path) => path.length > WORD_LIMIT) ||
+    globs.reduce((total, path) => total + path.length, 0) > GLOB_LIMIT;
   return out;
 }
