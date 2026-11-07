@@ -892,10 +892,12 @@ function scan(
     }
     if (
       /[$}{*?[]/.test(ch) ||
-      // A tilde expands only at the start of a word, and only `~` alone or `~/`
-      // is safe: `~user`, `~+` and `~-` name other directories.
+      // A tilde expands at the start of a word, and right after the first `=`
+      // of one (`dd of=~root/x`, `--out=~root/x`). Only `~` alone or `~/` is
+      // safe: `~user`, `~+` and `~-` name other directories.
       (ch === "~" &&
-        !wordStarted &&
+        (!wordStarted ||
+          (bare.endsWith("=") && bare.indexOf("=") === bare.length - 1)) &&
         !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))
     ) {
       wordExpand = true;
@@ -1335,9 +1337,63 @@ export function writeTargets(segment: Segment): string[] {
         candidate.write &&
         !isDevicePath(candidate.path) &&
         (candidate.origin === "redirect" ||
-          (writer && candidate.origin === "arg")),
+          (writer &&
+            (candidate.origin === "arg" || candidate.origin === "opt"))),
     )
     .map((candidate) => candidate.path);
+}
+
+/**
+ * Values of `key=value` and `--opt=value` words of a command that is not
+ * read-only (#75). Which option names a path is the command's own grammar
+ * (`dd of=`, `sort --output=`, `foo --log-file=`), so every value counts and the
+ * guards decide by what it resolves to: outside the worktree, a protected or
+ * generated path, a secret. Leading environment assignments are not words, and
+ * neither are the assignments a wrapper takes before its command
+ * (`env A=/tmp/x pnpm check`).
+ */
+export function valueTargets(segment: Segment): ValueTarget[] {
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.write &&
+        (candidate.origin === "kv" || candidate.origin === "opt") &&
+        !isDevicePath(candidate.path),
+    )
+    .map((candidate) => ({
+      path: candidate.path,
+      // Only what the tokenizer saw unquoted (or in double quotes): a `$` or
+      // `~root` inside single quotes is literal text.
+      expanding: segment.expand.includes(candidate.index ?? -1),
+      pattern: candidate.pattern === true,
+      gitGlobal: candidate.gitGlobal === true,
+    }));
+}
+
+export type ValueTarget = {
+  path: string;
+  /** The shell may rewrite the value (a variable, a glob, `~user`): it must be proven inside the worktree. */
+  expanding: boolean;
+  /** A reader's pattern option (`tar --exclude=`, `rg --glob=`): not a file written, skipped by the write checks. */
+  pattern: boolean;
+  /** `git --git-dir=` and `--work-tree=`: named globals, skipped by the `.git` check only. */
+  gitGlobal: boolean;
+};
+
+/**
+ * `dd` takes its files from `of=` operands, and a variable can be the whole
+ * operand (`dd $X`, `dd "$K"=/abs`). Any expanding operand of a `dd` that a
+ * wrapper may run is a possible `of=` target that cannot be read from the text.
+ */
+export function expandsDdOperand(segment: Segment): boolean {
+  const argv = segment.argv;
+  const runsDd = [...walkCommands(argv).at].some(
+    (index) => commandName(argv[index] ?? "") === "dd",
+  );
+  return (
+    runsDd &&
+    segment.expand.some((index) => index > 0 && !segment.meta.includes(index))
+  );
 }
 
 /** `--opt=value` options whose value is a file the command writes. */
@@ -1487,14 +1543,74 @@ export function isDevicePath(path: string): boolean {
   return DEVICE_PATH.test(path);
 }
 
-type Origin = "head" | "redirect" | "arg" | "glued";
+type Origin = "head" | "redirect" | "arg" | "glued" | "opt" | "kv";
+type Candidate = PathCandidate & {
+  origin: Origin;
+  /** Word index of an `opt` or `kv` candidate. */
+  index?: number;
+  pattern?: boolean;
+  gitGlobal?: boolean;
+};
 
-function collectCandidates(
-  segment: Segment,
-): Array<PathCandidate & { origin: Origin }> {
-  const found: Array<PathCandidate & { origin: Origin }> = [];
+/** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
+const KEY_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+/**
+ * Byte sources and sinks `dd` is made for (`if=/dev/zero`, `of=/dev/tty`). Only
+ * a `key=value` value is excused: `cat /dev/zero` stays an escape, as on `main`.
+ */
+const KEY_VALUE_DEVICE = /^\/dev\/(?:zero|random|urandom|full|tty)$/;
+
+/** Builtins that only assign or print: their `a=b` words are data, not paths. Their redirects still count. */
+const ASSIGNING_BUILTINS = new Set([
+  "export",
+  "declare",
+  "typeset",
+  "local",
+  "readonly",
+  "set",
+  "echo",
+  "printf",
+]);
+
+/** Commands whose pattern options (below) only select what to read or skip. */
+const PATTERN_READERS = new Set(["rg", "grep", "tar", "rsync", "git"]);
+
+/** Options that take a pattern or a path to read, never a file to write: not write targets for the protected-path checks. */
+const PATTERN_OPTIONS = new Set([
+  "--exclude",
+  "--include",
+  "--exclude-from",
+  "--include-from",
+  "--files-from",
+  "--filter",
+  "--glob",
+  "--iglob",
+  "--grep",
+  "--pattern",
+  "--ignore",
+]);
+
+/**
+ * Index of the first word a wrapper runs as its command (`env A=1 pnpm check`
+ * gives 2), or `argv.length` when it runs none. Of the readings `walkCommands`
+ * allows, the earliest wins, so a word is called an assignment only when it
+ * precedes the command under every reading.
+ */
+function wrappedCommandIndex(argv: readonly string[]): number {
+  if (!isWrapper(argv[0] ?? "")) {
+    return 0;
+  }
+  const later = [...walkCommands(argv).at].filter((index) => index > 0);
+  return later.length > 0 ? Math.min(...later) : argv.length;
+}
+
+function collectCandidates(segment: Segment): Candidate[] {
+  const found: Candidate[] = [];
   const argv = segment.argv;
   const command = argv[0] ?? "";
+  const assignmentsEnd = wrappedCommandIndex(argv);
+  const keyless = ASSIGNING_BUILTINS.has(command);
   const readOnly = READ_ONLY.has(command);
   const writeAll = WRITE_ALL.has(command);
   const copyLike = command === "cp" || command === "mv" || command === "ln";
@@ -1519,8 +1635,19 @@ function collectCandidates(
         continue;
       }
       const value = word.slice(eq + 1);
-      if (value.length > 0) {
-        found.push({ path: value, write: !readOnly, origin: "arg" });
+      if (value.length > 0 && !keyless) {
+        found.push({
+          path: value,
+          write: !readOnly,
+          origin: "opt",
+          index,
+          pattern:
+            PATTERN_READERS.has(commandName(command)) &&
+            PATTERN_OPTIONS.has(word.slice(0, eq)),
+          gitGlobal:
+            commandName(command) === "git" &&
+            (word.startsWith("--git-dir=") || word.startsWith("--work-tree=")),
+        });
       }
     }
     const redirect = REDIRECT.exec(word);
@@ -1557,6 +1684,28 @@ function collectCandidates(
       found.push({ path: glued[1] ?? "", write: false, origin: "glued" });
     }
     if (!word.startsWith("-")) {
+      const eq = index > 0 && !keyless ? word.indexOf("=") : -1;
+      const value = eq > 0 ? word.slice(eq + 1) : "";
+      // A key the shell fills in (`$K=/abs`, `"$K"=/abs`) is a key we cannot read.
+      const keyed =
+        eq > 0 &&
+        (KEY_NAME.test(word.slice(0, eq)) ||
+          (segment.expand.includes(index) && word.slice(0, eq).includes("$")));
+      if (
+        keyed &&
+        value.length > 0 &&
+        !(index < assignmentsEnd && ENV_ASSIGNMENT.test(word)) &&
+        !KEY_VALUE_DEVICE.test(value)
+      ) {
+        // `dd of=/abs/x` and its kind: the value is a path argument (#75).
+        // The whole word stays a candidate below, for a file named `a=b`.
+        found.push({
+          path: value,
+          write: !readOnly,
+          origin: "kv",
+          index,
+        });
+      }
       const write =
         index === 0 ||
         writeAll ||

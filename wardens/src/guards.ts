@@ -3,12 +3,14 @@ import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import {
   directoryChange,
+  expandsDdOperand,
   firstDeny,
   rewriteCommand,
   type Segment,
   secretCandidates,
   shellWriteTargets,
   tokenizeAll,
+  valueTargets,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
@@ -111,6 +113,9 @@ export function protectedDeny(ctx: RuleContext): Objection | null {
 }
 
 export function generatedFilesGuard(ctx: RuleContext): Objection | null {
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, generatedFilesGuard);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
@@ -331,7 +336,75 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       return expansionBlock();
     }
   }
+  // `out=$HOME/x`, `--sink=x$X`, `of=~root/x` (#75): a key=value value the
+  // shell may rewrite must be provably inside, whatever the key. So must any
+  // operand of `dd` that the shell fills in: it may be `of=`.
+  for (const { segment, cwd } of trackedSteps(ctx, ctx.event.command)) {
+    if (expandsDdOperand(segment)) {
+      return expansionBlock();
+    }
+    for (const value of valueTargets(segment)) {
+      if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
+        return expansionBlock();
+      }
+    }
+  }
   return null;
+}
+
+/**
+ * Every path a shell command writes, as repo-relative paths: its own write
+ * targets plus `key=value` and `--opt=value` values. Paths that resolve outside
+ * the worktree are left to the escape check in `secretReadGuard`.
+ */
+function shellEditPaths(ctx: RuleContext, command: string): string[] {
+  const home = ctx.home ?? homedir();
+  const out: string[] = [];
+  for (const { segment, cwd } of trackedSteps(ctx, command)) {
+    for (const target of [
+      ...shellWriteTargets(segment),
+      ...valueTargets(segment)
+        .filter((value) => !value.pattern)
+        .map((value) => value.path),
+    ]) {
+      const resolved = resolveRepoPath(expandHome(target, home), cwd, ctx.root);
+      // A secret is already denied as a candidate by `secret-read-guard`, which
+      // keeps its own verdict (a `--config=.env` may be a read).
+      if (
+        resolved.ok &&
+        !denyListMatches(ctx.charter.paths.secrets_deny_read, resolved.path)
+      ) {
+        out.push(resolved.path);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Applies an edit-tool rule to each path a shell command writes (#75), as if
+ * an Edit tool call had named it. The strongest objection wins; a deny ends
+ * the walk.
+ */
+function shellEditVerdict(
+  ctx: RuleContext,
+  rule: (edit: RuleContext) => Objection | null,
+): Objection | null {
+  if (ctx.event.action !== "shell" || ctx.event.command === null) {
+    return null;
+  }
+  let found: Objection | null = null;
+  for (const path of shellEditPaths(ctx, ctx.event.command)) {
+    const objection = rule({
+      ...ctx,
+      event: { ...ctx.event, action: "write", path, command: null },
+    });
+    if (objection?.decision === "deny") {
+      return objection;
+    }
+    found ??= objection;
+  }
+  return found;
 }
 
 /**
@@ -383,6 +456,25 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
       return gitMetadataBlock();
     }
   }
+  // `foo out=.git/x`, `foo --sink=.git` (#75): the value of any key=value word.
+  for (const { segment, cwd } of trackedSteps(ctx, command)) {
+    for (const value of valueTargets(segment)) {
+      const path = expandHome(value.path, home);
+      const absolute = resolveAbsolutePath(path, cwd);
+      if (value.pattern || value.gitGlobal) {
+        continue;
+      }
+      if (
+        isGitMetadataPath(path) ||
+        (absolute !== null && isGitMetadataPath(absolute))
+      ) {
+        return gitMetadataBlock();
+      }
+      if (absolute !== null && ANCHOR_DIR.test(absolute)) {
+        return anchorBlock();
+      }
+    }
+  }
   return null;
 }
 
@@ -392,9 +484,17 @@ export function protectedPaths(ctx: RuleContext): Objection | null {
     return gitMetadata;
   }
   // `ask` guards edits only: agents must read the Covenant files (#46).
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, protectedEdit);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
+  return protectedEdit(ctx);
+}
+
+/** The deny and ask verdicts for an edit of `ctx.event.path`, without the git-metadata check. */
+function protectedEdit(ctx: RuleContext): Objection | null {
   const denied = protectedDeny(ctx);
   if (denied || ctx.event.path === null) {
     return denied;

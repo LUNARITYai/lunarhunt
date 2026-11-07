@@ -864,6 +864,392 @@ describe("secret-read-guard: gh file arguments (#63)", () => {
   });
 });
 
+// #75: a word `key=path` or `--opt=path` is a path argument like any other.
+describe("key=path and --opt=path arguments (#75)", () => {
+  const ESCAPES = [
+    "dd if=x of=/abs/outside",
+    "dd of=../outside",
+    "dd of=~/x",
+    "printf x | dd of=/abs/y",
+    "dd if=/abs/outside of=x",
+    "sort --output=/abs/x f",
+    "foo --log-file=/abs/x",
+    "foo --out=../x",
+    "tool --anything=/abs/outside/file",
+    "tool anything=/abs/outside/file",
+    "tool out=../x",
+    "tool out=~/x",
+    "env dd of=/abs/y",
+    "cat --x=/abs",
+    "rg --file=/abs/x",
+  ];
+
+  it.each(ESCAPES)("denies %s as a path escape", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe("engine");
+    expect(verdict.message).toBe(
+      "Blocked by Warden engine: path escapes the worktree. Label the issue needs:human.",
+    );
+  });
+
+  const SECRETS = [
+    "dd of=.env",
+    "dd if=.env of=x",
+    "dd if=secrets/key of=x",
+    "tool key=.env",
+    "tool --config=.env",
+    "tool --anything=secrets/a",
+  ];
+
+  it.each(SECRETS)("denies %s as a secret", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe("secret-read-guard");
+  });
+
+  it("gives a protected or generated path the edit-tool verdict", () => {
+    const root = tempRepo();
+    const cases: Array<[string, string]> = [
+      ["panopticon.charter.yaml", "protected-paths"],
+      ["secrets/key", "protected-paths"],
+      ["packages/contracts/openapi.json", "generated-files-guard"],
+      ["packages/api-client/src/client.ts", "generated-files-guard"],
+    ];
+    for (const [target, rule] of cases) {
+      const edit = decide(root, { action: "edit", path: target });
+      expect(edit.rule).toBe(rule);
+      for (const command of [
+        `dd of=${target}`,
+        `dd if=x of=${target} bs=1`,
+        `tool --out=${target}`,
+        `tool out=${target}`,
+        `env dd of=${target}`,
+        `cp x ${target}`,
+        `tee ${target}`,
+        `echo x > ${target}`,
+      ]) {
+        const verdict = shell(root, command);
+        expect(verdict.decision, command).toBe(edit.decision);
+        expect(verdict.rule, command).toBe(
+          // `.env`-like secrets are also read candidates, so either rule may win.
+          target.startsWith("secrets/") ? verdict.rule : rule,
+        );
+        expect(verdict.message, command).toMatch(MESSAGE_PATTERN);
+      }
+    }
+  });
+
+  it("asks for an ask path exactly as the edit tool does", () => {
+    const root = tempRepo();
+    const target = "docs/specs/AGENTS.md";
+    const edit = decide(root, { action: "edit", path: target });
+    expect(edit.decision).toBe("ask");
+    for (const command of [
+      `dd of=${target}`,
+      `tool --out=${target}`,
+      `tool out=${target}`,
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("ask");
+      expect(verdict.rule, command).toBe("protected-paths");
+    }
+    const headless = decide(root, {
+      action: "shell",
+      path: null,
+      command: `dd of=${target}`,
+      interactive: false,
+    });
+    expect(headless.decision).toBe("deny");
+  });
+
+  // The class: a target that `cp x <target>` refuses is refused for every form.
+  it.each([
+    "/abs/outside/file",
+    "/etc/passwd",
+    "../outside",
+    "../../outside/x",
+    "~/x",
+    "~",
+    "sub/../../outside",
+    "/tmp/wardens-nowhere/x",
+    // Forms the shell rewrites: none can be proven inside the worktree.
+    "x$X",
+    "$HOME/x",
+    "~root/x",
+    "~-/x",
+    "~+/x",
+    "a`id`b",
+  ])("treats %s alike for cp, dd of=, --out= and key=", (target) => {
+    const root = tempRepo();
+    const reference = shell(root, `cp x ${target}`);
+    expect(reference.decision).toBe("deny");
+    for (const command of [
+      `dd of=${target}`,
+      `dd if=x of=${target}`,
+      `tool --out=${target}`,
+      `tool --anything=${target}`,
+      `tool out=${target}`,
+      `tool anything=${target}`,
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(verdict.rule, command).toBe(reference.rule);
+      expect(verdict.message, command).toBe(reference.message);
+    }
+  });
+
+  const ALLOWED = [
+    "dd if=/dev/zero of=./tmp.bin bs=1 count=1",
+    "dd if=x of=out.bin",
+    "dd of=/dev/null",
+    "git log --format=%H",
+    "git log --pretty=format:%s",
+    "pnpm --filter=wardens test",
+    "node --experimental-strip-types wardens/src/cli.ts check charter-validate",
+    "env A=/tmp/x pnpm check",
+    "env -i A=/tmp/x B=../y pnpm check",
+    "sudo A=/tmp/x pnpm check",
+    "A=/tmp/x pnpm check",
+    "A=/tmp/x B=../y pnpm check",
+    "rg --glob=src/** x",
+    "gh pr list --json=number",
+    'git commit -m "path=/abs"',
+    'git commit -am "path=/abs"',
+    'gh pr create --title "a=/abs" --body "b=../c"',
+    "cut -d/ -f1 f",
+    "awk -F/ 1 f",
+    "tar --exclude=.git -cf x.tar .",
+    "git --git-dir=.git status",
+    "git -c color.ui=never log",
+    "curl https://example.com/?a=/b",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("still denies the command after an env assignment prefix", () => {
+    const root = tempRepo();
+    expect(shell(root, "env A=/tmp/x dd of=/abs/y").decision).toBe("deny");
+    expect(shell(root, "A=/tmp/x dd of=/abs/y").decision).toBe("deny");
+    expect(shell(root, "env A=/tmp/x cp x /abs/y").decision).toBe("deny");
+  });
+
+  it("denies an expansion that hides the path of a key=value word", () => {
+    const root = tempRepo();
+    for (const command of [
+      "dd of=$HOME/x",
+      "tool out=$HOME/x",
+      "tool --out=$HOME/x",
+    ]) {
+      expect(shell(root, command).decision, command).toBe("deny");
+    }
+    // A glob inside the worktree stays provably inside.
+    expect(shell(root, "tool --filter=./apps/*").decision).toBe("allow");
+  });
+
+  // Round 1: the key, the operand or any part of the value may be a variable.
+  const EXPANDING = [
+    "K=of; dd $K=/opt/p/x",
+    'K=of; dd "$K"=/opt/p/x',
+    "X=of=/opt/p/x; dd $X",
+    'K=of; dd "$K"',
+    "X=/../../opt/p/y; tsc --outFile=x$X f.ts",
+    "X=/../../opt/p/y; node --redirect-warnings=x$X a.js",
+    "foo out=a$X",
+    "make DESTDIR=x$X install",
+    "dd of=~root/x",
+    "dd of=~-/x",
+    "dd of=~+/x",
+    "tool out=~root/x",
+    "tool --sink=x$X",
+    "tool --sink=~root/x",
+    "env dd $X",
+    // Accepted false positives: a variable in a value of a non-read-only command.
+    "git log --since=$X",
+    'gh api -f body="$MSG"',
+    "curl -d a=$B",
+    "make VAR=$PWD",
+  ];
+
+  it.each(EXPANDING)("denies %s as an unprovable path", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // Builtins that only assign or print take no path: their redirects still count.
+  const BUILTINS_ALLOWED = [
+    "export FOO=$BAR",
+    "export PATH=$PATH:/x",
+    "export PATH=$HOME/.local/bin:$PATH",
+    "export UV_PROJECT_ENVIRONMENT=/abs/venv",
+    "declare A=/x",
+    "typeset A=/x",
+    "local A=/x",
+    "readonly A=/x",
+    "set -o errexit",
+    "echo a=/etc/b",
+    "echo --x=/etc/b",
+    "printf a=/etc/b",
+    "dd of=/dev/tty",
+  ];
+
+  it.each(BUILTINS_ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it.each([
+    "echo x > /abs/y",
+    "echo a=/etc/b > /abs/y",
+    "export A=1 && dd of=/abs",
+    "export A=1; echo x >> ../y",
+  ])("still denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // Round 2: only the shell's own expansion counts, so quoting decides.
+  const QUOTED_ALLOWED = [
+    "git log --grep='^fix$'",
+    "git log --grep='fix$' --oneline",
+    "git log --author='a$'",
+    "git log --grep='$x'",
+    "git log --format='%H $x'",
+    "git log --pretty=format:'%h $x'",
+    "tar --exclude='*.log$' -cf a.tar .",
+    "tool out='~root/x'",
+    "tool --out='~root/x'",
+    "dd of='~-/x'",
+    "tool out='a$X'",
+    "tool --sink='x${X}'",
+    "tool --out='$HOME/x'",
+  ];
+
+  it.each(QUOTED_ALLOWED)(
+    "allows %s: the quoting makes it literal",
+    (command) => {
+      const root = tempRepo();
+      expect(shell(root, command).decision).toBe("allow");
+    },
+  );
+
+  it.each([
+    "dd of=~root/x",
+    "dd of=~-/x",
+    "tool out=~root/x",
+    "tool --out=~root/x",
+    "K=of; dd $K=/abs",
+    "X=/../../abs; tsc --outFile=x$X f.ts",
+    'tool --out=x"$X"',
+    "tool --out=x${X}",
+    'git log --grep="$x"',
+    "dd of=$((1))",
+  ])("denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // The class: every expansion form is denied unquoted and allowed single-quoted.
+  it.each([
+    ["tool out=a$X", "tool out='a$X'"],
+    ["tool --out=a$X", "tool --out='a$X'"],
+    ["tool --sink=$X", "tool --sink='$X'"],
+    ["tool --sink=x${X}", "tool --sink='x${X}'"],
+    ['tool --sink=x"$X"', "tool --sink='x$X'"],
+    ["tool out=~root/x", "tool out='~root/x'"],
+    ["tool --out=~root/x", "tool --out='~root/x'"],
+    ["tool out=~-/x", "tool out='~-/x'"],
+    ["tool out=~+/x", "tool out='~+/x'"],
+    ["dd of=~root/x", "dd of='~root/x'"],
+    ["dd of=$HOME/x", "dd of='$HOME/x'"],
+    ["git log --grep=$x", "git log --grep='$x'"],
+  ])("denies %s and allows %s", (unquoted, quoted) => {
+    const root = tempRepo();
+    expect(shell(root, unquoted).decision, unquoted).toBe("deny");
+    expect(shell(root, quoted).decision, quoted).toBe("allow");
+  });
+
+  // Round 2: the git exemption covers --git-dir and --work-tree against .git only.
+  it.each([
+    "git fast-export --all --export-marks=panopticon.charter.yaml",
+    "git fast-import --export-marks=panopticon.charter.yaml",
+    "git fast-export --all --export-marks=packages/contracts/openapi.json",
+  ])("denies %s as a protected or generated write", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "git --git-dir=.git status",
+    "git log --grep=panopticon",
+    "git log --grep=.git",
+  ])("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Round 2: pattern options are patterns only for the readers that take them.
+  it.each([
+    "tool --pattern=panopticon.charter.yaml",
+    "tool --ignore=panopticon.charter.yaml",
+    "sort --filter=panopticon.charter.yaml",
+    "tool --exclude=.git/x",
+  ])("denies %s: not a reader's pattern option", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "tar --exclude=.git -cf x.tar .",
+    "tar --exclude=panopticon.charter.yaml -cf x.tar .",
+    "rg --glob=panopticon.charter.yaml x",
+    "rsync -a --exclude=.git a/ b/",
+    "grep --include=panopticon.charter.yaml x f",
+  ])("allows %s: a reader's pattern option", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Round 2: a builtin is the bare word, not a script that happens to share its name.
+  it.each([
+    "./echo of=/abs",
+    "bin/set out=/abs",
+    "x/printf out=/abs",
+    "tools/export --out=/abs",
+  ])("denies %s: not the builtin", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  // F3: git metadata and the launcher anchor, for values of unclassified commands.
+  it.each([
+    "foo out=.git/x",
+    "foo --sink=.git",
+    "foo --sink=.git/hooks/pre-commit",
+    "cd x; foo out=../.git/x",
+    "foo out=.config/panopticon/primaries",
+    "foo --sink=~/.config/panopticon/primaries",
+  ])("denies %s as git metadata or the anchor", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  it.each([
+    "tar --exclude=.git -cf x.tar .",
+    "git --git-dir=.git status",
+    "rg --glob=!.git x",
+    "rsync -a --exclude=.git/x a/ b/",
+  ])("allows %s: a pattern or a read, not a write", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+});
+
 describe("null paths", () => {
   it("denies a missing edit path, a missing read path and a missing command", () => {
     const root = tempRepo();

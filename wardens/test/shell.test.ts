@@ -216,6 +216,41 @@ describe("message-like option values", () => {
   });
 });
 
+describe("key=value candidates (#75)", () => {
+  function candidates(command: string) {
+    const pipeline = tokenize(command);
+    expect(pipeline.ok).toBe(true);
+    return pipeline.ok
+      ? secretCandidates(pipeline.segments[0] as never).map((c) => c.path)
+      : [];
+  }
+
+  it("lists the value of a key=value word and of an --opt=value word", () => {
+    expect(candidates("dd if=a of=/abs/b")).toContain("/abs/b");
+    expect(candidates("dd if=a of=/abs/b")).toContain("a");
+    expect(candidates("tool --out=../x")).toContain("../x");
+  });
+
+  it("does not list the assignments in front of the command", () => {
+    expect(candidates("A=/tmp/x pnpm check")).not.toContain("/tmp/x");
+    expect(candidates("env A=/tmp/x B=../y pnpm check")).not.toContain(
+      "/tmp/x",
+    );
+    expect(candidates("env A=/tmp/x pnpm check B=/abs")).toContain("/abs");
+  });
+
+  it("keeps a glued short option value secret-read only", () => {
+    const pipeline = tokenize("cut -d/ -f1 f");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      const glued = secretCandidates(pipeline.segments[0] as never).find(
+        (c) => c.path === "/",
+      );
+      expect(glued).toEqual({ path: "/", write: false, secretOnly: true });
+    }
+  });
+});
+
 describe("paths.external in shell", () => {
   it("allows a read below paths.external.read and a write below write", () => {
     const f = fixture();
