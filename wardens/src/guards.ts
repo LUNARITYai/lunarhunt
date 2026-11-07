@@ -12,6 +12,7 @@ import {
   secretCandidates,
   tokenizeAll,
   valueTargets,
+  walkCommands,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
@@ -51,7 +52,7 @@ export function pathInScope(
   if (task.kind === "missing") {
     return true;
   }
-  if (task.kind === "invalid") {
+  if (task.kind !== "ok") {
     return false;
   }
   return anyGlob(task.allowed_paths, path, fold);
@@ -59,6 +60,24 @@ export function pathInScope(
 
 function isMutation(action: string): boolean {
   return action === "edit" || action === "write" || action === "delete";
+}
+
+const UNVERIFIED_WHAT = {
+  mismatch:
+    ".panopticon/task.json changed after wardens worktree setup recorded it",
+  unrecorded:
+    ".panopticon/task.json has no hash recorded by wardens worktree setup",
+  deleted:
+    ".panopticon/task.json is missing although wardens worktree setup recorded it",
+};
+
+function unverifiedTask(reason: keyof typeof UNVERIFIED_WHAT): Objection {
+  return block(
+    "scope-guard",
+    "deny",
+    UNVERIFIED_WHAT[reason],
+    "Ask Krzysztof to run wardens worktree setup",
+  );
 }
 
 export function scopeGuard(ctx: RuleContext): Objection | null {
@@ -83,6 +102,9 @@ export function scopeGuard(ctx: RuleContext): Objection | null {
       ".panopticon/task.json is invalid for this task",
       "Ask for needs:human",
     );
+  }
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
   }
   if (!pathInScope(ctx.event.path, ctx.charter, ctx.task)) {
     return block(
@@ -701,6 +723,9 @@ function scopeGlob(
   segments: readonly string[],
 ): Objection | null {
   const probe = globProbe(segments);
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
+  }
   if (
     ctx.task.kind === "invalid" ||
     !pathInScope(probe, ctx.charter, ctx.task)
@@ -1024,6 +1049,14 @@ const GIT_CONFIG_READ_EXTRAS = new Set([
   "-z",
   "--null",
 ]);
+/** `git remote` subcommands that leave every URL as it is. */
+const GIT_REMOTE_KEEPS_URL = new Set([
+  "show",
+  "get-url",
+  "update",
+  "prune",
+  "set-head",
+]);
 const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "--namespace", "--super-prefix"]);
 
 function gitMetadataCommandBlock(what: string): Objection {
@@ -1042,6 +1075,22 @@ function gitMetadataCommandBlock(what: string): Objection {
  * `--git-dir` and `--work-tree` in front of a subcommand that writes.
  */
 function gitRewriteDeny(segment: Segment): Objection | null {
+  // The segment's own command word and every command a see-through wrapper
+  // (`env`, `command`, `nohup`, `sudo`, `xargs`, `find -exec`, ...) may run.
+  const starts = [...walkCommands(segment.argv).at].sort((a, b) => a - b);
+  for (const start of starts) {
+    const denied = gitRewriteDenyOne({
+      ...segment,
+      argv: segment.argv.slice(start),
+    });
+    if (denied) {
+      return denied;
+    }
+  }
+  return null;
+}
+
+function gitRewriteDenyOne(segment: Segment): Objection | null {
   const argv = segment.argv;
   if (foldCase((argv[0] ?? "").split("/").pop() ?? "") !== "git") {
     return null;
@@ -1100,6 +1149,19 @@ function gitRewriteDeny(segment: Segment): Objection | null {
     if (!readsOnly) {
       return gitMetadataCommandBlock(
         "git config writes are denied; only --get, --get-all, --get-regexp and --list are allowed",
+      );
+    }
+  }
+  // The remote URL names the repository whose issue sets a task's scope, and
+  // `refs/remotes/origin/main` is what `doctor` compares; both are shared.
+  if (sub === "update-ref") {
+    return gitMetadataCommandBlock("git update-ref is denied");
+  }
+  if (sub === "remote") {
+    const verb = args.find((a) => !a.startsWith("-"));
+    if (verb !== undefined && !GIT_REMOTE_KEEPS_URL.has(verb)) {
+      return gitMetadataCommandBlock(
+        "git remote changes are denied; only git remote, -v, show, get-url, update, prune and set-head are allowed",
       );
     }
   }

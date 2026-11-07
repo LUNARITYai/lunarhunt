@@ -4,8 +4,10 @@ import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
 import { gitToplevel, primaryCheckout } from "../git.ts";
 import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
+import { githubRepo, readRepo } from "../sync/anchor.ts";
 import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
+import { forgetTaskHash, taskId } from "../task-integrity.ts";
 import { detectAgent } from "../trailer.ts";
 import { git, listWorktrees, type WorktreeEntry } from "./git.ts";
 import {
@@ -58,13 +60,64 @@ function baseBranchOf(cfg: WorktreeConfig): string | null {
     : null;
 }
 
+/**
+ * `owner/repo` that `wardens sync` recorded for the primary, or a failure
+ * message. The scope of a task comes from this repository's issue, so the
+ * source must be one an agent cannot write: `.git/config` is shared with every
+ * worktree and is only cross-checked, never trusted.
+ */
+function issueRepo(deps: Deps, primary: string): string | { error: string } {
+  const sync = "Ask Krzysztof to run wardens sync";
+  const home = trustedHome(deps.env);
+  if (home === null) {
+    return {
+      error: msg(
+        "cannot resolve HOME, so the issue repository recorded by wardens sync cannot be read",
+        "Set HOME to an absolute path of an existing directory",
+      ),
+    };
+  }
+  const repo = readRepo(home, primary);
+  if (repo === null) {
+    return {
+      error: msg(
+        "wardens sync recorded no issue repository for this primary checkout",
+        sync,
+      ),
+    };
+  }
+  const url = git(primary, ["config", "--get", "remote.origin.url"]);
+  if ((url.ok ? githubRepo(url.out) : null) !== repo) {
+    return {
+      error: msg(
+        `remote.origin.url of the primary checkout does not match ${repo}, the repository recorded by wardens sync`,
+        sync,
+      ),
+    };
+  }
+  return repo;
+}
+
 function fetchIssue(
   deps: Deps,
   cwd: string,
   issue: number,
+  primary: string,
 ): IssueInfo | string {
+  const repo = issueRepo(deps, primary);
+  if (typeof repo !== "string") {
+    return repo.error;
+  }
   const res = deps.gh(
-    ["issue", "view", String(issue), "--json", "title,labels,body,state,url"],
+    [
+      "issue",
+      "view",
+      String(issue),
+      "--json",
+      "title,labels,body,state,url",
+      "-R",
+      repo,
+    ],
     cwd,
   );
   if (res.status !== 0) {
@@ -218,7 +271,7 @@ function newWorktree(
       ),
     );
   }
-  const info = fetchIssue(deps, cwd, issue);
+  const info = fetchIssue(deps, cwd, issue, primary);
   if (typeof info === "string") {
     return fail(info);
   }
@@ -282,6 +335,7 @@ function newWorktree(
   }
   const setup = setupWorktree(
     target,
+    primary,
     cfg,
     { issue, branch, slug, allowedPaths: paths.paths },
     deps,
@@ -329,7 +383,13 @@ function setupHere(
       ),
     );
   }
-  const existing = loadTask(toplevel);
+  // Only a task.json that still matches its recorded hash is kept. A changed
+  // or unrecorded one is not blessed: the scope is read from the issue again.
+  const home = trustedHome(deps.env);
+  const existing = loadTask(
+    toplevel,
+    home === null ? undefined : { primary, home },
+  );
   if (existing.kind === "ok" && args.refresh !== true) {
     if (existing.issue !== parsed.issue) {
       return fail(
@@ -341,6 +401,7 @@ function setupHere(
     }
     const res = setupWorktree(
       toplevel,
+      primary,
       cfg,
       {
         issue: existing.issue,
@@ -354,7 +415,7 @@ function setupHere(
       ? ok("", grantedNote(existing.allowed_paths))
       : res;
   }
-  const info = fetchIssue(deps, toplevel, parsed.issue);
+  const info = fetchIssue(deps, toplevel, parsed.issue, primary);
   if (typeof info === "string") {
     return fail(info);
   }
@@ -369,6 +430,7 @@ function setupHere(
   }
   const res = setupWorktree(
     toplevel,
+    primary,
     cfg,
     {
       issue: parsed.issue,
@@ -493,6 +555,7 @@ function removeOne(
       }
     }
   }
+  const id = taskId(primary, entry.path);
   const removed = git(primary, [
     "worktree",
     "remove",
@@ -505,7 +568,9 @@ function removeOne(
       next: "Fix the cause or pass --force",
     };
   }
-  let note = `removed ${name}`;
+  const home = trustedHome(deps.env);
+  const forgotten = home === null || forgetTaskHash(home, id);
+  let note = `removed ${name}${forgotten ? "" : " (its task.json record under ~/.config/panopticon/tasks stays: delete it by hand)"}`;
   const branch = entry.branch;
   if (
     branch !== null &&
