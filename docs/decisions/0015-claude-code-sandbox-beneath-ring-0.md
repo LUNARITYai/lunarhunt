@@ -9,7 +9,7 @@ consulted: OVERSEER (AI), Reviewer (AI), Sentinel (AI)
 
 ## Context and Problem Statement
 
-Ring 0 (ADR-0004) decides about agent shell commands by **parsing** them. `worktree-guard`'s read-only allowlist (#49, PR #59) needed nine review rounds, and every round found another gap between our tokenizer and bash or zsh: anchoring, `&`, glued redirects, expansion, option abbreviations, continuations, comments, parentheses, zsh `&!`. #63 found more on the deny side: subshells, groups and process substitution. An allowlist built on a parser is in an open-ended arms race with shell syntax.
+Ring 0 (ADR-0004) decides about agent shell commands by **parsing** them. `worktree-guard`'s read-only allowlist (#49, PR #59) needed nine review rounds, and every round found another gap between our tokenizer and bash or zsh: anchoring, `&`, glued redirects, expansion, option abbreviations, continuations, comments, parentheses, zsh `&!`. #63 found more on the deny side: subshells, groups and process substitution (denied since #71). An allowlist built on a parser is in an open-ended arms race with shell syntax.
 
 Claude Code ships an OS-level sandbox (Seatbelt on macOS, bubblewrap on Linux) for Bash commands and their child processes. It enforces filesystem and network limits in the kernel, however the command is spelled. Spike #66 tested it in a throwaway repo with real sessions on 2026-11-06 (Claude Code 2.1.319, macOS 27.0.1). The results below cite its probes (P01–P24):
 
@@ -53,12 +53,13 @@ The decision:
 
 - `wardens sync` writes a `sandbox` block into the generated `.claude/settings.json`:
   - **fail-closed keys:** `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`, `autoAllowBashIfSandboxed: false` (approval prompts stay as they are today), and no `excludedCommands` or Unix sockets;
-  - **writes:** the cwd worktree, plus sandbox-only toolchain caches;
-  - **write-protected:** the worktree's Charter, its `.panopticon/` and its git pointer;
-  - **reads:** `denyRead` for the Charter's secret paths and for credential locations in the home directory;
+  - **writes:** the cwd worktree, plus sandbox-only toolchain caches under `~/.cache/panopticon-sandbox/` (the only `extra_write` location The Charter accepts);
+  - **write-protected:** the worktree's Charter, its `.panopticon/`, `.claude/` and git pointer, the launcher anchor directory and the canary state directory;
+  - **reads:** `denyRead` for the Charter's secret paths at any depth under the primary checkout (sibling task worktrees included) and for credential locations in the home directory;
   - **network:** an allowlist owned by The Charter, with no Anthropic API hosts.
-- **The hook launcher runs only a bundle that matches a trust anchor recorded by a human step.** No agent-writable input may decide which bundle runs, because hooks run outside the sandbox with the user's privileges.
-- **A canary pass is bound to the effective sandbox settings.**
+- **The hook launcher keeps the shipped trust anchor.** It runs only the bundle of a primary listed in `~/.config/panopticon/primaries`, a file written by a human step, and never consults git (GHSA-6phq-wv5j-xq2f). Hook runs take their policy from that anchored primary (#74). No agent-writable input decides which bundle runs, because hooks run outside the sandbox with the user's privileges. This ADR adds no second anchor and no bundle hash: the sandbox closes what the sync spec left to it, shell writes to the anchor and to the primary's bundle.
+- **A canary pass is bound to the effective sandbox settings.** The issued canary command is let through by an explicit hook `allow`, because it is not in `permissions.allow` and `autoAllowBashIfSandboxed` is false.
+- **Sandboxed toolchains get non-secret task config** from `.panopticon/task.env`, exported into the session environment, because the worktree's `.env` stays unreadable to the shell. How `gh` and git authenticate inside the sandbox is an open decision in the spec (Decision 8).
 - **An OVERSEER profile,** a separate generated settings file passed at launch, also denies writes to the repository working tree.
 - **A ring-0 rule, `sandbox-guard`:**
   - it denies `dangerouslyDisableSandbox`;
@@ -84,7 +85,9 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 - Bad, because the sandbox is per project, not per role. The OVERSEER profile depends on how OVERSEER is launched. The canary detects a missing profile, but `doctor` cannot see a running session.
 - Bad, because the generated settings live in the project and can be loosened by user or local settings unless the precedence retest shows otherwise. Without managed settings in a one-person project, this is the kind of local-config bypass ADR-0004 already accepts for ring 0.
 - Bad, because hooks run outside the sandbox. The `definition-of-done` hook runs `pnpm check`, and so executes agent-written worktree code unsandboxed, unless the spec's Task 4c moves it under the sandbox profile (Decision 7).
-- Bad, because every session pays one canary turn, and sandboxed toolchains need explicit cache and network entries. That is a new source of "works outside, fails inside" errors.
+- Bad, because every session pays a denied Bash call and a canary call, and so may each subagent. Under a hard gate this works in `-p`, headless and subagent runs only if a hook `allow` skips the prompt there (spec R4). Otherwise those runs lose Bash. The spec's Decision 2 weighs a soft gate and a hook-run canary as alternatives.
+- Bad, because the minimum credential deny removes the default `gh` and git HTTPS credentials from Bash. The spec's Decision 8 chooses a narrower token, an exemption, or no pushes and PRs from inside the sandbox.
+- Bad, because sandboxed toolchains need explicit cache, network and task-config entries. That is a new source of "works outside, fails inside" errors.
 - Neutral: Cursor sessions get no OS floor yet; for them ring 0 alone applies, as today.
 
 ### Confirmation
@@ -93,8 +96,8 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
   - `failIfUnavailable`, `allowUnsandboxedCommands: false` and `autoAllowBashIfSandboxed: false`;
   - no `excludedCommands`;
   - the `denyWrite` and `denyRead` sets;
-  - the hardened hook launcher.
-- `sandbox-guard` has DENIED/ALLOWED tables, including forged canary forms (alias, PATH shadowing, echoed output, stale nonce, resumed session).
+  - the shipped hook launcher, unchanged.
+- `sandbox-guard` has DENIED/ALLOWED tables, including forged canary forms (alias, PATH shadowing, echoed output, stale nonce, resumed session) and parallel canaries with their own fixtures.
 - `doctor` fails on a missing or weakened sandbox block in the generated, local or user settings, and on a moved local protected branch.
 - The spike #66 probe kit, extended by the spec's retests, is kept as the manual regression suite. It is re-run after Claude Code upgrades that touch the sandbox.
 
@@ -124,7 +127,7 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 ## More Information
 
 - Spike #66: the interim and final reports (issue comments), with the probe results table.
-- PR #70: the round-1 Reviewer and Sentinel reports that shaped this draft.
+- PR #70: the Reviewer and Sentinel rounds and the ultrareview (U1–U10) that shaped this draft.
 - Claude Code sandboxing documentation: code.claude.com/docs/en/sandboxing and the `sandbox.*` settings reference.
 - Related:
   - ADR-0003 (The Charter);
