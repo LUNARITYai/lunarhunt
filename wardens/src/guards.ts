@@ -358,7 +358,7 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
  * the worktree are left to the escape check in `secretReadGuard`.
  */
 function shellEditPaths(ctx: RuleContext, command: string): string[] {
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   const out: string[] = [];
   for (const { segment, cwd } of trackedSteps(ctx, command)) {
     for (const target of [
