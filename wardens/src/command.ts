@@ -978,6 +978,14 @@ function scan(
     }
     if (
       /[$}{*?[]/.test(ch) ||
+      // zsh `extendedglob`: `^x` and `a#` are glob operators, and `a~b` in the
+      // middle of a word is "a except b" (#78).
+      ch === "^" ||
+      (ch === "#" && wordStarted) ||
+      (ch === "~" &&
+        wordStarted &&
+        !OPERATOR_ONLY.test(bare) &&
+        !/[=:]$/.test(bare)) ||
       // A tilde expands at the start of a word, and right after the first `=`
       // of one (`dd of=~root/x`, `--out=~root/x`). Only `~` alone or `~/` is
       // safe: `~user`, `~+` and `~-` name other directories.
@@ -1471,7 +1479,9 @@ export function valueTargets(segment: Segment): ValueTarget[] {
  * positional words of `echo`, `printf`, `export` and the like, which read no
  * file (their `<` redirects still count).
  */
-export function expandingCandidates(segment: Segment): string[] {
+export function expandingCandidates(
+  segment: Segment,
+): Array<{ path: string; redirect: boolean }> {
   const command = segment.argv[0] ?? "";
   const prints = ASSIGNING_BUILTINS.has(command);
   return collectCandidates(segment)
@@ -1481,11 +1491,15 @@ export function expandingCandidates(segment: Segment): string[] {
         segment.expand.includes(candidate.index) &&
         candidate.origin !== "head" &&
         candidate.origin !== "redirect" &&
+        candidate.data !== true &&
         command !== "cd" &&
         !(prints && candidate.origin === "arg" && !candidate.redirect) &&
         !isDevicePath(candidate.path),
     )
-    .map((candidate) => candidate.path);
+    .map((candidate) => ({
+      path: candidate.path,
+      redirect: candidate.redirect === true,
+    }));
 }
 
 export type ValueTarget = {
@@ -1668,8 +1682,9 @@ type Candidate = PathCandidate & {
   index?: number;
   pattern?: boolean;
   gitGlobal?: boolean;
-  /** A file a `<` redirect reads. */
+  /** The target of a `<` redirect (`<<<` carries data, a file otherwise). */
   redirect?: boolean;
+  data?: boolean;
 };
 
 /** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
@@ -1734,6 +1749,7 @@ function collectCandidates(segment: Segment): Candidate[] {
   const readOnly = READ_ONLY.has(command);
   const writeAll = WRITE_ALL.has(command);
   const copyLike = command === "cp" || command === "mv" || command === "ln";
+  const hereStrings = new Set<number>();
   let lastPositional = -1;
   for (let index = 1; index < argv.length; index += 1) {
     if (!(argv[index] ?? "").startsWith("-")) {
@@ -1781,6 +1797,9 @@ function collectCandidates(segment: Segment): Candidate[] {
       // `<<<` and `<&` do not name a file: a spaced target stays an ordinary word.
       const takesNext = spaced && operator !== "<<<" && operator !== "<&";
       const targetIndex = takesNext ? index + 1 : index;
+      if (spaced && operator === "<<<") {
+        hereStrings.add(index + 1);
+      }
       if (takesNext) {
         index += 1;
       }
@@ -1800,6 +1819,7 @@ function collectCandidates(segment: Segment): Candidate[] {
               origin: "arg",
               index: targetIndex,
               redirect: true,
+              data: operator === "<<<",
             }
           : { path: target, write: true, origin: "redirect" },
       );
@@ -1849,6 +1869,7 @@ function collectCandidates(segment: Segment): Candidate[] {
         path: word,
         write,
         origin: index === 0 ? "head" : "arg",
+        data: hereStrings.has(index),
         index,
       });
     }

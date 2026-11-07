@@ -1833,4 +1833,170 @@ describe("expanding read candidates (#78)", () => {
     expect(shell(root, "echo $HOME; cat $HOME/x").decision).toBe("deny");
     expect(shell(root, "echo $X < $HOME/x").decision).toBe("deny");
   });
+
+  // A here-string supplies data: it names no file.
+  it.each(['cat <<< "$X"', 'grep foo <<< "$X"', "read X <<< $Y", "cat <<<$X"])(
+    "allows %s",
+    (command) => {
+      const root = tempRepo();
+      expect(shell(root, command).decision).toBe("allow");
+    },
+  );
+});
+
+// #78 round 1: a glob is proven by a real intersection test with the
+// secret patterns, not by sample strings.
+describe("glob intersection with the secret patterns (#78)", () => {
+  const DENIED = [
+    // `.env.*`: a wildcard, class or `?` at every position of the name.
+    "cat .env[.]local",
+    "cat .env?local",
+    "cat .env*local",
+    "cat .e*local",
+    "cat .env*ocal",
+    "cat .env[!x]local",
+    "cat .env[a-z.]local",
+    "cat .env*production",
+    "cat .e*v.production",
+    "cat .?nv.local",
+    "cat .*.local",
+    "cat .*local",
+    "cat .[e]*local",
+    "cat .e[n]v.local",
+    "cat apps/*/.env*local",
+    "cat .e*.l*",
+    "cat .e?v.l*",
+    "cat .e*l*",
+    "cat .en*.local",
+    // Not every match is `*.example`: `.env.xample` is a secret.
+    "cat .e*xample",
+    // `.env`.
+    "cat .[!a]nv",
+    "cat .e[!x]v",
+    "cat .e[^x]v",
+    "cat .[!.]*",
+    "cat .*",
+    "cat .e*",
+    "cat .?nv",
+    // zsh `extendedglob` forms are wildcards.
+    "cat .^x",
+    "cat .e#nv",
+    "cat .env~x",
+    // `secrets/**`: a directory reader meets the directory itself.
+    "rg foo secret*",
+    "rg foo sec*s",
+    "rg foo s*ts",
+    "rg foo ?ecrets",
+    "rg foo sec*",
+    "rg foo s*",
+    "rg foo secre?s",
+    "rg foo secret?",
+    "grep -r x sec*",
+    "find sec* -type f",
+    "ls sec*",
+    "tar -cf out.tar sec*",
+    "cp -r sec*s dest",
+    // Any command: a file inside the directory.
+    "cat secr*/key",
+    "cat s*/k*",
+    "cat secrets/[!x]ey",
+    "cat sec*s/*",
+    "cat */key",
+    "cat **/key",
+  ];
+
+  it.each(DENIED)("denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  const ALLOWED = [
+    // A leading wildcard does not match a leading dot.
+    "find . -name *.env",
+    "cat src/*.env",
+    "rg foo -g *.env",
+    "cat *.env",
+    "cat .env.example",
+    "cat .e*.example",
+    "cat .env*.example",
+    "cat .env.*.example",
+    "ls wardens/src/*.ts",
+    "cat docs/specs/*.md",
+    "cat docs/**/*.md",
+    "cat docs/*/AGENTS.md",
+    "cat *.md",
+    "cat *",
+    "cat sec*",
+    "cat HEAD^",
+    "git log HEAD^",
+    "git log HEAD~2",
+    // Cannot match `secrets`, `.env` or `.env.*`.
+    "rg foo secrets?",
+    "rg foo ?secrets",
+    "rg foo secret??",
+    "cat .envx",
+    "cat .ENV",
+    "cat .?nvx",
+    "cat .[a-d]nv",
+    "cat .e[!n]v",
+    "cat .[!e]nv",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // The class: a glob that matches a secret pattern is denied at every
+  // position of the name, and its disjoint twin is allowed.
+  const SPELLINGS: Array<{ name: string; hits: string[]; misses: string[] }> = [
+    {
+      name: ".env",
+      hits: [".e*", ".*nv", ".en?", ".e?v", ".[e]nv", ".[!x]nv", ".[^x]nv"],
+      misses: [".e??v", ".[!e]nv", ".[^e]nv", "e*", "*nv"],
+    },
+    {
+      name: ".env.local",
+      hits: [
+        ".env.l*",
+        ".env*local",
+        ".env?local",
+        ".env[.]local",
+        ".env[!x]local",
+        ".e*local",
+        ".e*v.l*",
+        ".*.local",
+        ".?nv.local",
+        ".env.[l]ocal",
+        ".env.*",
+      ],
+      misses: [".env[!.]local", "*.local", ".envlocal*", ".e[!n]v.local"],
+    },
+    {
+      name: "secrets/key",
+      hits: [
+        "secr*/key",
+        "s*/key",
+        "secre?s/key",
+        "sec*s/k*",
+        "?ecrets/key",
+        "secrets/[!x]ey",
+        "secrets/k?y",
+        "*/key",
+      ],
+      misses: ["secrets?/key", "sec/*", "secrx*/key", "?ecret/key"],
+    },
+  ];
+
+  it.each(SPELLINGS)("class: $name", ({ hits, misses }) => {
+    const root = tempRepo();
+    for (const glob of hits) {
+      expect(shell(root, `cat ${glob}`).decision, glob).toBe("deny");
+      expect(shell(root, `cat < ${glob}`).decision, glob).toBe("deny");
+      expect(shell(root, `tool --in=${glob}`).decision, glob).toBe("deny");
+    }
+    for (const glob of misses) {
+      expect(shell(root, `cat ${glob}`).decision, glob).toBe("allow");
+    }
+  });
 });

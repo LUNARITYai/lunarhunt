@@ -15,6 +15,7 @@ import {
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
+import { segmentsMeet } from "./glob-meet.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
@@ -219,95 +220,56 @@ function provablyInside(
   return resolveRepoPath(expanded, cwd, ctx.root).ok;
 }
 
-const GLOB_CHAR = /[*?[]/;
+/** `^`, `#` and a `~` inside a word are zsh `extendedglob` operators. */
+const GLOB_CHAR = /[*?[^#~]/;
 /** Shell options and variables that make `*` match dotfiles too (`dotglob`, `GLOB_DOTS`, `GLOBIGNORE`). */
 const DOTFILE_GLOBBING =
   /\b(shopt|setopt|unsetopt|GLOBIGNORE|dotglob|glob_?dots)\b/i;
+/** Commands that read the files their arguments name and nothing below a directory. */
+const FILE_READERS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "wc",
+  "file",
+  "stat",
+  "jq",
+  "bat",
+  "sha256sum",
+  "md5sum",
+  "diff",
+  "source",
+  ".",
+]);
 
-/** Strings a glob segment can match: `*` as nothing or as `x`, `?` and a class as one character, `**` as no directory or two. */
-function globWitnesses(segments: readonly string[]): string[] {
-  let variants: string[][] = [[]];
-  for (const segment of segments) {
-    const options =
-      segment === "**"
-        ? [[], ["x"], ["x", "x"]]
-        : [
-            [segment.replaceAll(/\[[^\]]*\]|\?/g, "x").replaceAll("*", "")],
-            [segment.replaceAll(/\[[^\]]*\]|\?/g, "x").replaceAll("*", "x")],
-          ];
-    variants = variants.flatMap((head) =>
-      options.map((option) => [...head, ...option]),
-    );
-  }
-  return variants.map((parts) => parts.filter((p) => p !== "").join("/"));
-}
+/** The shape of the walk below: how a read glob lines up with the secret patterns. */
+type GlobWalk = { dot: boolean; filesOnly: boolean };
 
 /**
- * True when the glob `segments` (relative to the worktree root) can match a
- * path the secret list denies. Both directions are tried, because a glob and
- * a pattern have no cheap intersection test: strings the glob can match are
- * run through the deny list, and strings the deny list names are run through
- * the glob. Without `dotfiles`, `*`, `?` and `[` at the start of a segment do
- * not match a leading dot, as in the shell.
+ * Segment-wise: can the glob `g` and the secret pattern `p` match the same
+ * path? A `**` on either side absorbs segments. A trailing `**` names what is
+ * inside a directory; a glob that ends at that directory meets it only for a
+ * reader that descends (`rg`, `ls`, `tar`), not for `cat`.
  */
-function globMayMatchSecret(
-  ctx: RuleContext,
-  segments: readonly string[],
-  dotfiles: boolean,
-): boolean {
-  const secrets = ctx.charter.paths.secrets_deny_read;
-  if (globWitnesses(segments).some((w) => denyListMatches(secrets, w))) {
-    return true;
-  }
-  return secrets.some((pattern) =>
-    pattern.startsWith("!")
-      ? false
-      : pattern.includes("/")
-        ? meets(segments, 0, pattern.split("/"), 0, dotfiles)
-        : // A pattern without `/` names a basename, in any directory.
-          segmentsMeet(segments.at(-1) ?? "", pattern, dotfiles),
-  );
-}
-
-/** Can one glob segment and one pattern segment match the same name? Exact when either is literal, else by witnesses. */
-function segmentsMeet(glob: string, pattern: string, dot: boolean): boolean {
-  if (!GLOB_CHAR.test(pattern)) {
-    return picomatch.isMatch(pattern, glob, { dot });
-  }
-  if (!GLOB_CHAR.test(glob)) {
-    return picomatch.isMatch(glob, pattern, { dot: true });
-  }
-  return (
-    globWitnesses([glob]).some((w) =>
-      picomatch.isMatch(w, pattern, { dot: true }),
-    ) ||
-    globWitnesses([pattern]).some((w) => picomatch.isMatch(w, glob, { dot }))
-  );
-}
-
-/** Segment-wise: can the glob `g` and the pattern `p` match the same path? A `**` on either side absorbs segments. */
 function meets(
   g: readonly string[],
   gi: number,
   p: readonly string[],
   pi: number,
-  dot: boolean,
+  walk: GlobWalk,
 ): boolean {
   if (pi === p.length) {
     return gi === g.length;
   }
   const ps = p[pi] ?? "";
   if (ps === "**") {
-    // A trailing `**` names what is inside a directory, not the directory.
     if (pi === p.length - 1) {
-      return gi < g.length;
+      return gi < g.length || !walk.filesOnly;
     }
-    for (
-      let at = pi === p.length - 1 ? g.length : gi;
-      at <= g.length;
-      at += 1
-    ) {
-      if (meets(g, at, p, pi + 1, dot)) {
+    for (let at = gi; at <= g.length; at += 1) {
+      if (meets(g, at, p, pi + 1, walk)) {
         return true;
       }
     }
@@ -319,30 +281,58 @@ function meets(
   }
   if (gs === "**") {
     for (let take = pi; take <= p.length; take += 1) {
-      if (meets(g, gi + 1, p, take, dot)) {
+      if (meets(g, gi + 1, p, take, walk)) {
         return true;
       }
     }
     return false;
   }
-  return segmentsMeet(gs, ps, dot) && meets(g, gi + 1, p, pi + 1, dot);
+  return (
+    segmentsMeet(gs, ps, [], walk.dot) && meets(g, gi + 1, p, pi + 1, walk)
+  );
+}
+
+/**
+ * True when the glob `segments` (relative to the worktree root) can match a
+ * path the secret list denies. A pattern without `/` names a basename in any
+ * directory; the `!` patterns after it exclude names from it.
+ */
+function globMayMatchSecret(
+  ctx: RuleContext,
+  segments: readonly string[],
+  walk: GlobWalk,
+): boolean {
+  const secrets = ctx.charter.paths.secrets_deny_read;
+  return secrets.some((pattern, index) => {
+    if (pattern.startsWith("!")) {
+      return false;
+    }
+    if (pattern.includes("/")) {
+      return meets(segments, 0, pattern.split("/"), 0, walk);
+    }
+    const excluded = secrets
+      .slice(index + 1)
+      .filter((later) => later.startsWith("!"))
+      .map((later) => later.slice(1));
+    return segmentsMeet(segments.at(-1) ?? "", pattern, excluded, walk.dot);
+  });
 }
 
 /**
  * A read candidate the shell rewrites (#78) is provably inside the worktree
- * only when it has no variable, command substitution, brace or `~user` and
- * resolves inside. An unquoted glob is proven when its literal prefix (up to
- * the segment holding the first glob character) is a directory inside the
- * worktree, no segment after it is `..`, and no string the glob can match is
- * a secret and no secret name can match the glob. `$PWD`, `$HOME` and `$TMPDIR`
- * are variables like any other: never provable.
+ * only when it has no variable, command substitution or `~user` and resolves
+ * inside. An unquoted glob is proven when its literal prefix (up to the
+ * segment holding the first glob character) is a directory inside the
+ * worktree, no segment after it is `..`, and `globMayMatchSecret` finds no
+ * secret it can match. `$PWD`, `$HOME` and `$TMPDIR` are variables like any
+ * other: never provable.
  */
 function readProvablyInside(
   ctx: RuleContext,
   path: string,
   cwd: string,
   home: string,
-  dotfiles: boolean,
+  walk: GlobWalk,
 ): boolean {
   if (
     // A brace without `$` is literal (`git log @{u}`): the tokenizer rejects brace expansion.
@@ -369,7 +359,7 @@ function readProvablyInside(
     return false;
   }
   const relative = base.path === "." ? [] : base.path.split("/");
-  return !globMayMatchSecret(ctx, [...relative, ...rest], dotfiles);
+  return !globMayMatchSecret(ctx, [...relative, ...rest], walk);
 }
 
 type ShellTarget = {
@@ -504,8 +494,12 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       }
     }
     // The read side (#78): positional words, option values and `<` targets.
-    for (const path of expandingCandidates(segment)) {
-      if (!readProvablyInside(ctx, path, cwd, home, dotfiles)) {
+    for (const { path, redirect } of expandingCandidates(segment)) {
+      const walk = {
+        dot: dotfiles,
+        filesOnly: redirect || FILE_READERS.has(segment.argv[0] ?? ""),
+      };
+      if (!readProvablyInside(ctx, path, cwd, home, walk)) {
         return expansionBlock();
       }
     }
