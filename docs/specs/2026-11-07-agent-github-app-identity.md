@@ -10,140 +10,215 @@ adrs: ["0001", "0008", "0010", "0012"]
 
 Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 
-Problem, as of 2026-11-07:
-- All agent pushes, PRs, comments and labels go out under `koszczapinski`.
-- GitHub: "Pull request authors cannot approve their own pull requests" ([S5]). So the `main` ruleset can require an approval only if Krzysztof merges through the admin bypass.
-- The bypass (`RepositoryRole` admin, mode `pull_request`) is not usable from GitHub Mobile. Merging therefore needs a computer.
-- Interim `main` ruleset (#37): `required_approving_review_count: 0`, `require_code_owner_review: false`, required checks `check`, `contract`, `charter-drift`, `wardens-test`.
+### Problem (2026-11-07)
 
-Goal:
-- A dedicated GitHub App pushes agent branches and opens agent PRs.
-- Krzysztof becomes a real reviewer and code owner on every agent PR.
+- All agent pushes, PRs, comments and labels go out under `koszczapinski`.
+- GitHub: "Pull request authors cannot approve their own pull requests" [S5]. A required approval can therefore be met only through the admin bypass, and that bypass is not usable from GitHub Mobile.
+- Interim `main` ruleset (#37): 0 approvals, no code-owner review, required checks `check`, `contract`, `charter-drift`, `wardens-test`. Today any process that can use Krzysztof's `gh` token can merge a green PR with no approval at all.
+
+### Goal
+
+- A dedicated GitHub App authors agent branches and PRs.
+- Krzysztof becomes a real reviewer and code owner.
 - The ruleset goes back to one code-owner approval.
 
-Relation to other work:
-- Sandbox spec on PR #70 (`2026-11-06-wardens-sandbox.md`), Decision 8: option C is decided (no GitHub credential inside the sandbox). This spec is option D, the follow-up that decision names. It keeps C intact: the token never enters the sandbox.
-- [#64](https://github.com/LUNARITYai/lunarhunt/issues/64) `wardens overseer`: its fixed, shell-free operations are where the App-backed writes live.
-- [ADR-0008](../decisions/0008-autonomy-phases-and-risk-based-merge-policy.md) puts the App in phase 2 and Krzysztof's account in phases 0–1. This spec moves the App forward to phase 0 for pushes and PRs, so ADR-0008's "Agent identity" section needs an amending ADR (Task 2). C-27 still holds: the `Agent:` trailer stays.
+### Two stages (Decision 10)
 
-**Out of scope:**
-- the App itself, its key and repository settings (human-only, Rollout);
-- cloud and night-shift agents (phase 2), and one App per role;
-- phase-3 auto-merge and how it meets the review rule (ADR-0008 follow-up ADR);
-- signed or verified commits.
+- **Stage 1: attribution and mobile merge.** The App authors agent PRs, and one approval plus code-owner review is restored.
+  - Not a security boundary: agents still run as Krzysztof's OS user, so his `gh` keyring token and the osxkeychain git helper stay reachable.
+  - Known self-approval path: an agent runs `gh pr review --approve` as `koszczapinski` on the bot's PR and meets the code-owner rule.
+  - Stage 1 is still stricter than today. A forged approval needs an explicit review action, where today an agent can merge with no approval.
+- **Stage 2: security boundary.** Gated on all of:
+  - the sandbox (#69 / PR #70) enforced with `gate: block`;
+  - an in-sandbox probe showing Krzysztof's credentials are unreachable (`doctor human-credentials`);
+  - the Charter `commands.deny` and allow-list changes below.
+  - The ruleset is only as strong as the agent's lack of Krzysztof's credentials.
+
+### Relation to other work
+
+- **Sandbox spec, PR #70, Decision 8:** option C is decided (no GitHub credential inside the sandbox). This spec is its option D.
+  - The token never reaches a process an agent launched.
+  - Stage 2 also depends on sandbox Decision 7 / Task 4c, a sandbox runner for unsandboxed DoD code.
+- **#64 `wardens overseer`:** not a prerequisite. This spec defines its own human-only CLI, `wardens identity` (Plan), which owns its argument validation and makes in-process `fetch` calls.
+  - #64 stays the agent-facing read CLI and keeps `gh` for reads.
+  - Agent-triggered writes (I2) need a #64 spec first.
+- **ADR-0008** puts the App in phase 2. Stage 1 brings it forward to phase 0, so the "Agent identity" section needs an amending ADR (Task 2). C-27 holds: the `Agent:` trailer stays.
+- **Format:** Sources, Probes and Decisions follow Tasks, as in the worktree and sandbox specs.
+
+### Out of scope
+
+- creating the App, its key and repository settings (human-only, Rollout);
+- cloud and night-shift agents, one App per role (phase 2);
+- phase-3 auto-merge;
+- signed commits.
 
 ### Sources (checked 2026-11-07)
 
-- [S1] Installation token lifetime 1 hour; optional `repositories` / `permissions` narrowing at mint: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
-- [S2] App JWT `exp` at most 10 minutes ahead; `iat` 60 s in the past: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
-- [S3] Ruleset bypass actors include GitHub Apps; modes "Always allow" and "For pull requests only": https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository
-- [S4] Add/remove issue labels, create a label, create an issue comment: "Issues" or "Pull requests" write. Create a PR: "Pull requests" write: https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
+- [S1] Installation token expires after 1 hour; optional `repositories` / `permissions` narrowing: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
+- [S2] JWT `exp` ≤ 10 min ahead; `iat` 60 s in the past: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+- [S3] Ruleset bypass actors include GitHub Apps; modes "Always allow" / "For pull requests only": https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository
+- [S4] Issue labels and comments: "Issues" or "Pull requests" write; create a PR: "Pull requests" write: https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
 - [S5] "Pull request authors cannot approve their own pull requests": https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/approving-a-pull-request-with-required-reviews
-- [S6] Code owners are requested automatically when a PR opens, not for drafts; notified when a draft is marked ready. Code owners need write access: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-- [S7] Events triggered by `GITHUB_TOKEN` create no workflow runs; use an App installation token instead: https://docs.github.com/en/actions/concepts/security/github_token
-- [S8] `DELETE /installation/token` revokes the token in use; `PUT /app/installations/{id}/suspended` (JWT) blocks the App's API access: https://docs.github.com/en/rest/apps/installations#revoke-an-installation-access-token, https://docs.github.com/en/rest/apps/apps#suspend-an-app-installation
-- [S9] Private key: "the single most valuable secret"; never hard-coded; up to 25 keys; a new key must exist before the old one is deleted: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
+- [S6] Code owners are requested automatically on a non-draft PR and notified when a draft is marked ready; they need write access: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+- [S7] `GITHUB_TOKEN` events create no workflow runs; App installation tokens do: https://docs.github.com/en/actions/concepts/security/github_token
+- [S8] `DELETE /installation/token` revokes the token in use; `PUT /app/installations/{id}/suspended` needs a JWT and "blocks the app from accessing the account's resources": https://docs.github.com/en/rest/apps/installations#revoke-an-installation-access-token, https://docs.github.com/en/rest/apps/apps#suspend-an-app-installation
+- [S9] The private key is "the single most valuable secret"; up to 25 keys; a new key must exist before the old one can be deleted: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
 - [S10] Editing `.github/workflows` needs the "Workflows" permission; Apps have no permissions by default: https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app
-- [S11] Rulesets: code-owner review rule; "Restrict creations" / "Restrict deletions" apply to actors without bypass: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
+- [S11] Code-owner review rule; "Restrict creations / deletions" apply to actors without bypass: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets
 
-**Not verified in primary docs:**
-- that GitHub Mobile can approve and merge a PR under a ruleset (the Mobile docs list only "read, review, and collaborate"); Rollout step 6 tests it;
-- that deleting a private key invalidates installation tokens already minted. The kill procedure therefore suspends the installation as well;
-- the exact bot commit email; it is read from `GET /users/lunarhunt-agent%5Bbot%5D` at setup;
-- the author of a squash-merge commit for an App-authored PR; recorded in Rollout step 5.
+### Not verified (each has a probe or trial step)
+
+- U1: approve and squash-merge from GitHub Mobile under a ruleset. The Mobile docs list only "read, review, and collaborate" (R3).
+- U2: whether suspension or key deletion invalidates installation tokens already minted. The leak procedure assumes it does not (R4).
+- U3: whether an App's approving review counts toward `required_approving_review_count`. `require_code_owner_review` is the control that keeps the bot out.
+- U4: what `require_extra_approval_for_unattributed_changes` treats as "unattributed", and whether bot or noreply commits trigger it (Rollout step 6).
+- U5: the bot's commit email, read from `GET /users/lunarhunt-agent%5Bbot%5D` at setup.
+- U6: the author of the squash commit for an App-authored PR (Rollout step 6).
 
 ## Acceptance criteria (EARS)
 
-### The App (human setup, checked by `doctor`)
+### The App (human setup, human-checked)
 
-- THE App SHALL be private, named `lunarhunt-agent` (Decision 1), and installed on `LUNARITYai/lunarhunt` only ("Only select repositories").
-- THE App SHALL hold exactly these repository permissions: Contents read/write, Pull requests read/write, Issues read/write (Decision 2), Metadata read.
-- THE App SHALL NOT hold Administration, Workflows, Secrets, Variables, Environments, Actions, Deployments, Pages, Webhooks, Checks or Statuses permissions, or any organization or account permission.
-- THE App SHALL NOT be a bypass actor on any ruleset, a CODEOWNERS entry, or a collaborator.
-- THE App SHALL subscribe to no webhook events, and SHALL have no webhook URL.
-- WHEN `wardens doctor` runs with `identity.app` set in The Charter, THE `app-identity` check SHALL fail if any of the above differs. It uses `GET /repos/{owner}/{repo}/installation` for permissions and the ruleset API for `bypass_actors`.
+- THE App SHALL be private, owned by `LUNARITYai` (Decision 1), installed on `LUNARITYai/lunarhunt` only, and have no webhook.
+- In Stage 1, THE App SHALL hold exactly: Contents read/write, Pull requests read/write, Metadata read (Decision 2).
+- THE App SHALL NOT hold Administration, Workflows, Secrets, Variables, Environments, Actions, Deployments, Pages, Webhooks, Checks, Statuses, or any organization or account permission.
+- THE App SHALL NOT be a bypass actor on any ruleset, a CODEOWNERS entry or a collaborator.
+- The repository Actions setting "Allow GitHub Actions to create and approve pull requests" SHALL be off (`can_approve_pull_request_reviews: false`).
+- THE checks above SHALL be run by Krzysztof with `wardens identity check`. It reads the installation (App JWT) and the ruleset, and the Actions setting (his admin `gh`).
+  - It is human-only: it needs a TTY and the key prompt.
+  - `wardens doctor` stays agent-runnable and never touches the key.
 
 ### Private key
 
-- THE private key SHALL live only in the store chosen in Decision 3. It SHALL NOT exist as a file in the repository, any worktree, `~/.config/panopticon/`, `.env`, The Charter or The Ledger.
-- THE key store SHALL NOT be readable from a sandboxed Bash command, the Read tool, or MCP tools.
-- WHEN R1 shows that a sandboxed Bash can read the key item (for example `security find-generic-password` over Mach IPC rather than the denied `~/Library/Keychains` files), THE key item SHALL require an interactive confirmation for every access (Decision 3, K1).
+- THE key SHALL be stored as a login-Keychain generic-password item, service `panopticon.lunarhunt-agent`, created with `security add-generic-password -s panopticon.lunarhunt-agent -a lunarhunt-agent -T "" -w`.
+  - `-T ""`: no trusted app, so every access asks for confirmation.
+  - `-w` without a value: the value is typed or pasted at the prompt, never on argv.
+  - The value is the base64 of the PEM.
+- Krzysztof SHALL never click "Always Allow". He SHALL deny any Keychain prompt that the broker did not announce on its own TTY just before ("Keychain prompt for panopticon.lunarhunt-agent expected now").
+- THE key SHALL NOT exist as a file anywhere after import:
+  - download the `.pem` into a directory excluded from Time Machine, iCloud and Spotlight;
+  - import it;
+  - delete it and empty the Trash. APFS gives no overwrite guarantee, so the window is kept short.
+- No standing spare key SHALL exist (Revocation).
+- R1 SHALL pass before Rollout step 3.
+- Phases 1+ target: the key and JWT signing in a different UID (launchd daemon under a dedicated user, I2) or on a sign-only device (K3), as GitHub suggests [S9].
 
-### Token broker
+### Broker: `wardens identity` (human-only)
 
-- THE only code that reads the key or mints tokens SHALL be the broker: the `publish`, `pr comment`, `issue label` and `issue comment` operations of `wardens overseer` (#64), running outside the agent sandbox (Decision 4).
-- WHEN the broker runs an operation, THE SYSTEM SHALL:
-  - sign a JWT with `iat` = now − 60 s and `exp` ≤ now + 9 min [S2];
-  - mint one installation token with `repositories: ["lunarhunt"]` and only the permissions the operation needs [S1]: `publish` → `contents: write, pull_requests: write`; `pr comment` → `pull_requests: write`; `issue label`, `issue comment` → `issues: write`;
-  - run the operation;
+- THE only code that reads the key or mints tokens SHALL be `wardens identity publish` and `wardens identity check`.
+- IF stdin or stdout is not a TTY, THEN THE broker SHALL refuse. Agent Bash has no TTY.
+- THE Charter `commands.deny` SHALL contain `wardens identity*` and `security *` for agents.
+- WHEN `publish <worktree>` starts, THE broker SHALL:
+  - read The Charter from the trusted primary (`bundlePrimary`, #74), never from the worktree;
+  - check that the worktree's `.git` file points into the primary's `.git/worktrees/` list;
+  - require a clean tree and a branch that matches `worktree.naming.branch`;
+  - record `SHA = HEAD`.
+- THE broker SHALL run every git command with a clean environment:
+  - only `PATH=/usr/bin:/bin:<git dir>`, `HOME=<empty 0700 temp dir>`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `LANG=C`;
+  - no `GH_TOKEN`, `GITHUB_TOKEN`, `GIT_ASKPASS`, `SSH_AUTH_SOCK` or `GIT_*` besides those.
+- IF `git config --show-origin --list` (local and worktree scope) has a key outside the allowlist, THEN THE broker SHALL refuse.
+  - The allowlist: `core.repositoryformatversion`, `core.filemode`, `core.bare`, `core.logallrefupdates`, `core.ignorecase`, `core.precomposeunicode`, `extensions.worktreeconfig`, `remote.origin.url` (must equal `https://github.com/LUNARITYai/lunarhunt.git`), `remote.origin.fetch`, `branch.<name>.remote`, `branch.<name>.merge`, `user.name`, `user.email`.
+  - Anything under `url.*`, `http.*`, `credential.*`, `include*`, `remote.*.pushurl`, `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.pager` or `core.editor` is therefore refused.
+- **Phase A (hooks, no token):** THE broker SHALL run the Charter `definition_of_done` at `SHA`.
+  - No token exists yet and no extra fd is open.
+  - Stage 1: unsandboxed in Krzysztof's terminal. Same exposure as his manual push today; residual.
+  - Stage 2: under the sandbox runner of sandbox Decision 7 / Task 4c.
+  - IF it fails, THEN THE broker SHALL stop before showing any prompt.
+- **Confirmation:** THE broker SHALL print branch, `SHA`, `git diff --stat origin/main...SHA` and the PR title. It SHALL require Krzysztof to type the branch name, then announce the Keychain prompt.
+- **Phase B (token):** THE broker SHALL:
+  - sign a JWT (`iat` = now − 60 s, `exp` ≤ now + 9 min) [S2];
+  - mint one token with `repositories: ["lunarhunt"]`, `permissions: {contents: write, pull_requests: write}` [S1];
+  - push `git push --no-verify https://github.com/LUNARITYai/lunarhunt.git <SHA>:refs/heads/<branch>`;
+  - create the PR with in-process `fetch` (non-draft [S6], base `main`, body from a file the human names);
   - revoke the token with `DELETE /installation/token` in a `finally` block [S8].
-- THE broker SHALL keep the token and JWT in process memory only. They SHALL NOT appear in argv, the environment of any child process, stdout, stderr, files, the JSONL log or The Ledger.
-- THE broker SHALL make all GitHub API calls in-process (`fetch`), not through `gh` or `curl`.
-- WHEN `publish` pushes, THE SYSTEM SHALL run `git push` (Decision 5, P1) with:
-  - the remote URL fixed to `https://github.com/LUNARITYai/lunarhunt.git`;
-  - `-c credential.helper=` (clears every configured helper), then one helper, `wardens credential-pipe`, that reads the token once from an inherited pipe and closes it;
-  - `GIT_TERMINAL_PROMPT=0`, no `GH_TOKEN` / `GITHUB_TOKEN` / `GIT_ASKPASS` / `SSH_AUTH_SOCK` in its environment;
-  - exactly one refspec, `<branch>:refs/heads/<branch>`, where `<branch>` is the worktree's task branch and matches `<type>/<issue>-<slug>`.
-- THE push SHALL run the `pre-push` hooks as usual (C-21), inside the sandbox profile through `srt`, so agent-written code in `pnpm check` runs sandboxed.
-- IF a test `pre-push` hook reads the inherited pipe, THEN it SHALL get end-of-file (test asserts it).
-- THE broker SHALL refuse:
-  - refspecs for `main`, tags, deletions or force pushes;
-  - a worktree whose branch does not match the Charter `worktree.naming.branch`;
-  - PR bodies or comments not read from stdin or a `paths.external` file (#64 rule);
-  - labels not in `.github/labels.yml` (C-09).
-- WHEN `publish` opens a PR, THE PR SHALL be non-draft (code owners are requested only for non-draft PRs [S6]), have base `main`, and carry the body given.
-- THE token lifetime SHALL be the duration of one operation. GitHub's ceiling is 1 hour [S1].
+- `--no-verify` in Phase B is a broker-only exception to C-21/C-22. The hooks already ran in Phase A on the same `SHA`, and pushing the explicit `SHA` closes the race. The ADR (Task 2) records it. Agents stay denied `--no-verify`.
+- THE credential helper (`wardens credential-pipe`, fd 3) SHALL answer only `get` with `protocol=https`, `host=github.com`, `path=LUNARITYai/lunarhunt.git`.
+  - The broker sets `-c credential.useHttpPath=true -c credential.helper= -c credential.helper=<helper>`.
+  - It returns `username=x-access-token` and the token, reads fd 3 once, and answers any other request with nothing.
+  - With hooks off and the config allowlisted, only git, `git-remote-https` and the helper inherit fd 3.
+- THE token and JWT SHALL appear in no argv, child environment, stdout, stderr, file or log.
+- THE broker SHALL refuse: refspecs for `main`, tags, deletions, force pushes; a `SHA` that is not `HEAD` of the task branch; `kill_switch: true`; an unset `identity:` section.
+
+### Labels and escalation (Decision 2)
+
+- In Stage 1 (I1), THE App SHALL have no Issues permission, and the broker no label or comment operation.
+- WHERE I2 is enabled, THE App MAY gain Issues write, used only by an add-only allowlist from the trusted Charter (`identity.labels.add: ["agent:in-progress", "needs:human"]`): issues only, no PR labels, no removals.
+- **Deviation from #82's criterion "the agent shall stop and label `needs:human`":** under I1, the agent SHALL stop and state `needs:human` in its final message, and Krzysztof sets the label. Recorded here for Krzysztof's approval.
 
 ### Failure behaviour
 
-- IF the key is unavailable, the confirmation is declined, minting fails, or the network fails, THEN THE broker SHALL exit non-zero with `Blocked by Warden app-identity: <reason>; no App token was available. Stop and report needs:human; do not retry with another credential.`
-- THE broker SHALL NOT fall back to `gh auth`, `~/.config/gh`, the macOS git credential helper, SSH keys, `GH_TOKEN`, `GITHUB_TOKEN` or any human credential.
-- WHEN the failure prevents the agent from labelling the issue itself, THE agent SHALL stop and state `needs:human` in its final message. The broker records a failure event, and Krzysztof sets the label.
-- IF `identity.app` is unset in The Charter, THEN THE broker SHALL refuse every write operation with an `engine` message.
+- IF the key is unavailable, the prompt is declined, minting fails or the network fails, THEN THE broker SHALL exit non-zero with `Blocked by Warden app-identity: <reason>; no App token was available. Stop and report needs:human; do not retry with another credential.`
+- THE broker SHALL NOT fall back to `gh auth`, `~/.config/gh`, osxkeychain, SSH, `GH_TOKEN`, `GITHUB_TOKEN` or any human credential. The clean git environment enforces this for git.
+- Stage 2: agents SHALL be unable to use any human credential (probe `doctor human-credentials`).
 
 ### Commit authorship
 
-- WHEN `wardens worktree new` or `setup` creates a task worktree, THE SYSTEM SHALL set worktree-scoped `user.name = lunarhunt-agent[bot]` and `user.email = <bot id>+lunarhunt-agent[bot]@users.noreply.github.com` (`extensions.worktreeConfig`, `git config --worktree`). The values come from The Charter `identity.app.commit_email` (Decision 9).
-- THE primary checkout's identity SHALL stay Krzysztof's. His commits SHALL carry no `Agent:` trailer.
-- THE `agent-trailer` Warden SHALL keep requiring `Agent: <tool> (<model>)` on every agent commit.
-- WHEN CI runs `agent-trailer`, it SHALL fail a commit that has the bot author and no `Agent:` trailer, and warn on a commit that has a human author and an `Agent:` trailer.
+- WHEN `wardens worktree new|setup` creates a task worktree, THE SYSTEM SHALL set worktree-scoped `user.name = lunarhunt-agent[bot]` and `user.email` from Charter `identity.app.commit_email` (Decision 9).
+- THE primary checkout keeps Krzysztof's identity; his commits carry no `Agent:` trailer.
+- THE lefthook `agent-trailer` check SHALL keep requiring `Agent: <tool> (<model>)` on agent commits.
+- WHEN the CI `agent-trailer` job (Task 6, human-applied) runs on a PR authored by `lunarhunt-agent[bot]`, it SHALL fail if any commit lacks an `Agent:` trailer, whatever the commit author. The commit author can be overridden (`--author`, `-c user.name`), the PR author cannot.
 
-### Ruleset end state (human, checked by `ruleset-audit`)
+### Ruleset end state (human; compared in Rollout)
 
-- THE `main` ruleset SHALL have, in its `pull_request` rule: `required_approving_review_count: 1`, `require_code_owner_review: true`, `dismiss_stale_reviews_on_push: true`, `required_review_thread_resolution: true`, `allowed_merge_methods: ["squash"]`, `require_last_push_approval: false` (Decision 8).
-- THE `main` ruleset SHALL require the status checks `check`, `contract`, `charter-drift`, `wardens-test`, and keep `deletion`, `non_fast_forward` and `required_linear_history`.
-- THE `bypass_actors` SHALL be exactly what Decision 6 settles, and SHALL NOT contain an `Integration` actor [S3].
-- WHEN an App-authored PR is opened, GitHub SHALL request a review from `@koszczapinski` (CODEOWNERS `*`) [S6].
-- WHEN Krzysztof approves an App-authored PR and all four checks are green, he SHALL be able to squash-merge it from GitHub Mobile without the bypass (Rollout step 6).
+- THE `main` ruleset's `pull_request` rule SHALL be: `required_approving_review_count: 1`, `require_code_owner_review: true`, `dismiss_stale_reviews_on_push: true`, `required_review_thread_resolution: true`, `require_last_push_approval: false` (Decision 8), `require_extra_approval_for_unattributed_changes: true` (unchanged, U4), `required_reviewers: []`, `dismissal_restriction.enabled: false`, `allowed_merge_methods: ["squash"]`.
+- THE `main` ruleset SHALL keep `deletion`, `non_fast_forward`, `required_linear_history`, and the required checks `check`, `contract`, `charter-drift`, `wardens-test` (`strict: false`).
+- THE `bypass_actors` SHALL be exactly Decision 6, with no `Integration` actor [S3].
+- A tag ruleset (`refs/tags/**`: restrict creation, update and deletion; admin bypass mode "always") SHALL exist before any token is minted (Rollout step 2).
+- WHEN an App-authored PR is opened, GitHub SHALL request review from `@koszczapinski` [S6].
+- WHEN Krzysztof approves it and the four checks are green, he SHALL be able to squash-merge it from GitHub Mobile without the bypass (Rollout step 9).
 
-### Sandbox, `command-guard` and The Ledger
+### Sandbox and `command-guard`
 
-- WHILE `sandbox.enabled` is true, THE sandbox `deny_read` minimum and the "no credential in `env`" rule of the sandbox spec SHALL stay unchanged.
-- THE Charter `commands.deny` SHALL gain (Krzysztof, Task 4): `security *`, `gh auth token*`, `gh auth login*`, `gh auth refresh*`, `gh api * -X *`, `gh api * --method*`, `gh api * -f *`, `gh api * -F *`, `gh api * --field*`, `gh api * --raw-field*`, `gh api * --input*`, `gh pr merge*`, `curl * -H *uthorization*`, `curl * --header *uthorization*`. This overlaps #61 and sandbox Decision 5. These are a deny-side belt; the floor is that no token exists inside the sandbox.
-- WHEN the broker mints, uses, revokes or fails, THE SYSTEM SHALL record one event each: `identity_token_minted`, `identity_operation`, `identity_token_revoked`, `identity_failure`. The fields are: operation, issue, branch, PR number, pushed SHA, granted permissions, `expires_at`, installation id and result. Never the token, the JWT or the key. Until ADR-0010 lands, the events go to `.panopticon/wardens.log.jsonl` (core spec).
-- THE Ledger SHALL flag an App-authored PR merged through a bypass, and a push to a task branch by any actor other than the App (`ruleset-audit`, later).
+- THE sandbox's minimum `deny_read` and its "no credential in `env`" rule SHALL stay unchanged.
+- Stage 2 Charter changes (Krzysztof; a deny-side belt, not the floor):
+  - remove `gh pr create*`, `gh pr comment*`, `gh pr edit*`, `gh pr ready*`, `gh issue create*`, `gh issue comment*` and the label edits from `primary_read_only_commands`;
+  - add to `commands.deny`: `gh pr review*`, `gh pr merge*`, `gh pr close*`, `gh issue close*`, `gh release*`, `gh workflow*`, `gh repo*`, `gh secret*`, `gh auth token*`, `gh auth login*`, `gh auth refresh*`, `git credential*`, `security *`, `wardens identity*`;
+  - `gh api` mutating forms in flag-first and attached spellings: `gh api -X*`, `gh api * -X*`, `gh api --method*`, `gh api * --method*`, `gh api -f*`, `gh api * -f*`, `gh api -F*`, `gh api * -F*`, `gh api --field*`, `gh api * --field*`, `gh api --raw-field*`, `gh api * --raw-field*`, `gh api --input*`, `gh api * --input*`;
+  - `curl` with an auth header in any spelling: `curl *-H*uthorization*`, `curl *--header*uthorization*`, `curl *-*H*uthorization*`.
+  - A `command-guard` table test SHALL cover each spelling, including `gh api -X POST`, `gh api -fbody=x`, `gh api --method=PATCH`, `gh api x -XPOST`, `curl -H "Authorization: …"` and `curl -sH …`. This overlaps #61 and sandbox Decision 5.
+- `gh pr review*`, `git credential*`, `security *` and `wardens identity*` MAY land in Stage 1, since OVERSEER needs none of them.
+
+### The Ledger
+
+- WHEN the broker mints, pushes, creates a PR, revokes or fails, THE SYSTEM SHALL append one event each (`identity_token_minted`, `identity_operation`, `identity_token_revoked`, `identity_failure`). Fields: operation, issue, branch, `SHA`, PR number, permissions, `expires_at`, installation id, result. Never the token, JWT or key.
+- THE events SHALL go to `~/.local/state/panopticon/identity.log.jsonl` (0700 dir, outside the sandbox write set, sandbox spec), opened `O_APPEND`, until ADR-0010 lands.
+- WHEN Krzysztof runs `wardens identity audit`, THE SYSTEM SHALL compare:
+  - GitHub's repository events for actor `lunarhunt-agent[bot]` (public events API, unauthenticated);
+  - with the `identity_operation` events.
+  - Every unmatched GitHub event SHALL be reported as a leak alarm. GitHub is the source of truth; in Stage 1 the local log is same-UID writable.
 
 ### Revocation and kill switch
 
 - WHEN `autonomy.kill_switch` is true, THE broker SHALL refuse every operation.
-- THE kill procedure (documented in the ADR, Task 2) SHALL be: suspend the installation [S8], set `kill_switch`, then rotate the key: create the new key first, then delete the old one [S9].
-- WHEN a token may have leaked, THE procedure SHALL suspend the installation; waiting out the 1-hour expiry is not enough.
+- **Kill (no key needed):** suspend the installation in the GitHub web UI (org Settings → GitHub Apps → Configure → Suspend) as org owner; then set `kill_switch`.
+- **Key leak:**
+  1. Generate a new key in the UI [S9] and discard its download.
+  2. Delete the compromised key.
+  3. Uninstall the App in the UI. Unsuspend needs only a JWT, so suspension alone is reversible by the key holder.
+  4. Later, generate a fresh key, import it, and reinstall.
+- **Token leak:** uninstall or suspend in the UI. The 1-hour expiry [S1] is not relied on, and suspension's effect on live tokens is U2.
 
 ## Plan
 
 ### Settled points
 
-- **Why an App rather than a machine user or PAT:** short-lived, narrowable tokens [S1]; no seat; no password or 2FA to hold; suspension in one call [S8]. ADR-0008 option C, brought forward.
+- **App, not machine user or PAT:** short-lived, narrowable tokens [S1], suspension in one step, no seat or 2FA to hold (ADR-0008 option C, brought forward).
 - **Permissions:**
-  - Contents write is needed for the push; Pull requests write for creating and commenting on PRs [S4].
-  - Issues write is needed for issue labels and comments; for PRs, Pull requests write already covers labels [S4].
-  - No Workflows: a push that edits `.github/workflows/**` fails [S10], which backs up C-24 in ring 3.
-  - No Administration: the App cannot change rulesets or settings.
-- **Residual powers of a leaked token** (≤ 1 h, until suspension): push or delete non-`main` branches, create tags and releases, create labels, edit issue and PR bodies, merge an already-approved PR. Mitigations: per-operation narrowing and revocation; Decision 7 (tag ruleset); the Ledger flags.
-- **Workflows run on App PRs:** pushes and PRs made with an installation token trigger workflows, unlike `GITHUB_TOKEN` [S7]. The PR comes from a branch in the same repository, not a fork, so no fork approval applies.
-- **Krzysztof's own PRs:** with one required approval, a PR he authors cannot be approved by him [S5]. It merges through the admin bypass on the web (Decision 6).
-- **Renovate PRs** (ADR-0014) are authored by the Renovate App; Krzysztof approves them like agent PRs.
-- **`gh` reads:** `gh pr view`, `gh pr checks` and `git fetch` keep working unauthenticated inside the sandbox (public repository, sandbox spec).
+  - Contents write is needed for the push; Pull requests write for PR creation [S4].
+  - No Workflows: a push touching `.github/workflows/**` fails [S10], which backs up C-24.
+  - No Administration.
+- **Residual powers of a leaked Stage-1 token** (until uninstall):
+  - push to or delete non-`main` branches, including other PRs' branches;
+  - create releases;
+  - edit PR titles and bodies;
+  - resolve review threads (defeats `required_review_thread_resolution`);
+  - submit or dismiss reviews: an App approval does not meet the code-owner rule, while dismissal can drop Krzysztof's "request changes";
+  - enable auto-merge, close PRs, merge an already-approved PR.
+  - Controls: code-owner review, `dismiss_stale_reviews_on_push`, the tag ruleset, a token only in Phase B, revocation, `identity audit`.
+- **Workflows run on App PRs** [S7]. The PR comes from a same-repo branch, not a fork.
+- **Krzysztof's own PRs** cannot be approved by him [S5]. They merge through the admin bypass on the web (Decision 6).
+- **Renovate PRs** (ADR-0014): Krzysztof approves them like agent PRs.
+- **Token lifetime:** from Phase B start to `finally`. GitHub's ceiling is 1 h [S1].
 
 ### Charter (Krzysztof)
 
@@ -154,96 +229,119 @@ identity:
     app_id: <number>
     installation_id: <number>
     commit_email: "<bot id>+lunarhunt-agent[bot]@users.noreply.github.com"
-    key_store: keychain        # Decision 3
     keychain_service: panopticon.lunarhunt-agent
+  labels:
+    add: []            # ["agent:in-progress", "needs:human"] only with I2
 ```
 
-- No secret in it. The engine schema accepts an optional `identity:` section; when it is absent, the broker refuses and `doctor` skips `app-identity`.
+- No secret in it. When the section is absent, the broker refuses.
 
-### Engine and CLI changes (`wardens/**`)
+### Engine (`wardens/**`)
 
-- `wardens/src/identity/`: JWT signing (`node:crypto`, RS256, no new dependency), mint, narrow, revoke, Keychain read through `security` with argv (`execFileSync`). The `security` call is made only by the broker; agents are denied it (`commands.deny`).
-- `wardens credential-pipe`: a git credential helper that answers `get` from fd 3 once and ignores `store` / `erase`.
-- `wardens overseer publish|pr comment|issue label|issue comment`: shares #64's argument validation and adds the token path.
-- `doctor app-identity`; `agent-trailer` CI author check; worktree identity config in `wardens worktree new|setup`.
-- Tests: no token in argv, env, stdout, stderr or log (spawn spies); revoke on every exit path; refusal table; the `pre-push` pipe read gets end-of-file; no fallback when the key is missing (with `~/.config/gh` present in a throwaway `HOME`).
+- `wardens/src/identity/`: RS256 JWT (`node:crypto`, no new dependency), mint, revoke, Keychain read via `execFileSync("/usr/bin/security", …)`, clean git env, config allowlist, Phase A/B, Ledger append, `audit`, `check`.
+- `wardens credential-pipe`.
+- Tests:
+  - spawn spies assert no token in argv, env, stdout, stderr or logs;
+  - revoke runs on every exit path;
+  - a refusal table, with a hostile config case for each refused key;
+  - no fallback when `~/.config/gh` exists in a throwaway `HOME`;
+  - a fixture hook in Phase A that reads every fd and finds no token;
+  - the helper refuses another host or path.
 
-### Rollout (Krzysztof; nothing unmergeable in between)
+### Rollout (Krzysztof)
 
-1. This spec `ready`; ADR (Task 2) accepted.
-2. Create the App on `LUNARITYai` with the permissions above and no webhook. Install it on `lunarhunt` only. Generate two keys [S9]: store one per Decision 3, and keep the other offline as a rotation spare. Ruleset unchanged (0 approvals).
-3. Merge Tasks 3–5 under the interim ruleset; Krzysztof still pushes those PRs himself.
-4. Add `identity:` and the `commands.deny` entries to The Charter; `wardens sync`; `wardens doctor` green.
-5. Trial: one docs PR through `wardens overseer publish`. Check: author `lunarhunt-agent[bot]`; review requested from `@koszczapinski`; four checks run; Ledger events present. Record the squash-commit author after merge.
-6. Mobile trial on that PR, still at 0 approvals: approve and squash-merge from GitHub Mobile. If Mobile cannot merge, stop here and choose between waiting and using the web.
-7. Merge or close every open PR authored by `koszczapinski`, or accept that each one needs the web bypass after step 8.
-8. Switch the `main` ruleset to the end state, and apply Decision 7's tag ruleset.
-9. Covenant (human): `AGENTS.md` workflow step 7 says agents publish through `wardens overseer publish`; ADR-0008's identity section is marked amended.
+1. Spec `ready`. ADR (Task 2) accepted.
+2. Create the tag ruleset. Set the Actions setting off.
+3. R1 passes; then create the App (Stage 1 permissions, no webhook) and install it on `lunarhunt` only. Generate one key, import it per "Private key", delete the `.pem`.
+4. Merge Tasks 3–5 under the interim ruleset (Krzysztof pushes them himself).
+5. Add `identity:` to The Charter; `wardens sync`; `wardens identity check` green. Save `gh api repos/LUNARITYai/lunarhunt/rulesets/26499211` as the rollback copy.
+6. Web trial: one docs PR via `wardens identity publish`. Check:
+   - bot author and the review request;
+   - the four checks;
+   - Ledger events and `identity audit` clean;
+   - R4;
+   - U4 (does an extra approval get requested?);
+   - after merge, the squash-commit author (U6).
+7. Covenant PR (Task 7, `AGENTS.md` step 7: Krzysztof publishes agent work with `wardens identity publish`; the agent states `needs:human`). Merge it before step 8, while 0 approvals still applies.
+8. Merge or close open PRs authored by `koszczapinski`, then switch the `main` ruleset to the end state. Compare the result field by field with the end-state list.
+9. Mobile trial (R3) on a trivial bot PR: approve and squash-merge from GitHub Mobile. IF that fails, THEN restore the step-5 copy (0 approvals) with `gh api -X PUT`, and record the result on #82.
+10. Stage 2 (only after the gates in "Two stages"): the Charter changes in "Sandbox and `command-guard`"; the `doctor human-credentials` probe green inside the sandbox; Phase A under the sandbox runner.
 
 ### Known limitations
 
-- Phase 0–1 with Decision 4 = I1: a human still triggers each publish. The gain is identity and review, not autonomy.
-- A Keychain item is readable by any unsandboxed process of the same macOS user once access is confirmed. The sandbox, `commands.deny` and per-access confirmation narrow this; they do not remove it.
-- The squash commit on `main` may show Krzysztof as committer; authorship evidence is the PR author, the `Agent:` trailer and The Ledger.
+- Stage 1 gives no security boundary (Two stages). Phase A runs agent code unsandboxed, as Krzysztof's push does today.
+- With I1, a human triggers each publish. The gain is identity and review, not autonomy.
+- K1 relies on Krzysztof denying prompts the broker did not announce. Until R1 proves otherwise, a same-UID process can raise a lookalike prompt.
+- The local Ledger file is same-UID writable in Stage 1. `identity audit` against GitHub is the check.
 
 ## Tasks
 
 Each task becomes its own issue linked to #82.
 
 1. **This spec.** Sentinel review; Krzysztof sets `status: ready`. **Allowed paths:** `docs/specs/**`.
-2. **ADR: agent GitHub App identity** (amends ADR-0008 "Agent identity" and ADR-0001; kill procedure). `proposed`. `risk:high`. **Allowed paths:** `docs/decisions/**`, `docs/decision-log.md`.
+2. **ADR: agent GitHub App identity.** Amends ADR-0008 "Agent identity" and ADR-0001; covers the broker-only `--no-verify` exception and the kill and leak procedures. `proposed`, `risk:high`. **Allowed paths:** `docs/decisions/**`, `docs/decision-log.md`.
 3. **Charter `identity:` schema** (optional section, no behaviour change). `risk:high`. **Allowed paths:** `wardens/**`.
-4. **Broker:** `wardens/src/identity/`, `credential-pipe`, `overseer publish|pr comment|issue label|issue comment`, Ledger events, tests. Depends on 3 and on #64's operation framework. `risk:high`. **Allowed paths:** `wardens/**`. Charter `commands.deny` values: Krzysztof.
-5. **Authorship and checks:** worktree identity config, `agent-trailer` CI author check, `doctor app-identity`. Depends on 3. `risk:high`. **Allowed paths:** `wardens/**`.
-6. **Covenant update** (`AGENTS.md` step 7). Human-approved. `risk:high`. **Allowed paths:** `AGENTS.md`.
+4. **Broker:** `wardens identity publish|check|audit`, `credential-pipe`, Ledger file, tests. Depends on 3. `risk:high`. **Allowed paths:** `wardens/**`.
+5. **Worktree identity config and lefthook check:** `wardens worktree new|setup` writes the bot identity. Depends on 3. `risk:high`. **Allowed paths:** `wardens/**`.
+6. **CI `agent-trailer` job** keyed on PR author (Decision 11 on required or not). Krzysztof applies the workflow; an agent may draft the Warden side in `wardens/**`. `risk:high`. **Allowed paths:** `wardens/**`; `.github/workflows/**` human-only.
+7. **Covenant update** (`AGENTS.md` step 7), before Rollout step 8. `risk:high`. **Allowed paths:** `AGENTS.md`.
+8. **Stage 2:** the `doctor human-credentials` probe and the `command-guard` table tests in `wardens/**`; Charter values by Krzysztof. Depends on #69 enforced with `gate: block` and on sandbox Task 4c. `risk:high`. **Allowed paths:** `wardens/**`.
 
 Tasks 4 and 5 can run in parallel.
 
 ## Probes
 
-- **R1:** inside the Claude Code sandbox profile of the sandbox spec, does `security find-generic-password -s panopticon.lunarhunt-agent` succeed? It decides whether K1's confirmation is mandatory or a second layer.
-- **R2:** under `srt`, does `git push` with `credential-pipe` on fd 3 authenticate, and does a `pre-push` hook that reads fd 3 get end-of-file?
-- **R3:** GitHub Mobile approve and squash-merge under a ruleset (Rollout step 6).
+- **R1** (precondition of Rollout step 3): inside the sandbox profile and in a plain agent Bash, try to obtain the key or token:
+  - `security find-generic-password -s panopticon.lunarhunt-agent -w` (expect a prompt or a failure, never a value);
+  - while `publish` runs: `ps eww`, `lldb -p`, `sample` and `vmmap` against the broker pid (expect a refusal under SIP or no secret).
+- **R2:** a Phase A fixture hook reads fds 0–255 and the environment and finds no token. In Phase B, the helper refuses `host=evil.example`.
+- **R3:** approve and squash-merge from GitHub Mobile under the end-state ruleset (Rollout step 9).
+- **R4:** mint a token, suspend the installation in the UI, then call `GET /installation/repositories` with the old token. Record whether it still works (U2).
 
 ## Decisions (Krzysztof)
 
-1. **App owner and name.**
-   - A: a private App owned by the `LUNARITYai` organization, named `lunarhunt-agent`.
+1. **App owner.**
+   - A: private App owned by `LUNARITYai`.
    - B: owned by Krzysztof's personal account.
-   - **Recommendation: A.** The repository is org-owned, and the App outlives a personal account.
-2. **Issues permission.** The sandbox spec's D sketch said "no issues, labels". #82 says issues read/write.
-   - A: Issues write, narrowed per operation.
-   - B: none. Agents cannot label `agent:in-progress` / `needs:human` or comment on issues; Krzysztof does it.
-   - **Recommendation: A.** Escalation is an agent duty (C-31). Body edits stay blocked by the fixed operations and `commands.deny`. A leaked token's issue powers last ≤ 1 h.
-3. **Private key store.**
-   - K1: login Keychain item with no trusted apps, so every access asks for confirmation.
-   - K2: Keychain item trusted for a code-signed broker binary only. Needs a compiled helper; `node` itself cannot be the trusted app.
-   - K3: off-machine token vending (phase 2, cloud).
-   - **Recommendation: K1 for phases 0–1.** One click per publish, and never "Always Allow". K3 with phase 2.
-4. **How the broker runs outside the sandbox.**
-   - I1: Krzysztof runs `wardens overseer publish <worktree>` in his own terminal.
-   - I2: a per-user launchd broker on a Unix socket; the sandboxed `wardens overseer` client sends a fixed request (needs `allowUnixSockets` and sandbox R6).
-   - I3: sandbox `excludedCommands` for `wardens overseer *`. This reopens prefix matching on a shell string, the problem #64 removes.
-   - **Recommendation: I1 now, I2 as a follow-up after #64 and R6.** Reject I3.
-5. **Push transport.**
-   - P1: `git push` with `credential-pipe`, hooks sandboxed through `srt`.
-   - P2: push through the REST git data API: no hooks run, SHAs are rewritten, and commits are GitHub-verified.
-   - P3: an unsandboxed `git push` with the token in the environment.
-   - **Recommendation: P1.** Hooks still run (C-21), and the token is never in env or argv. Reject P3.
-6. **Admin bypass in the end state.**
-   - A: keep `RepositoryRole` admin, mode `pull_request`, for Krzysztof's own PRs and emergencies (web only); the Ledger flags bypass merges of App PRs.
-   - B: remove every bypass. Krzysztof's own PRs then cannot merge (one approver).
    - **Recommendation: A.**
-7. **Blast-radius rulesets for a leaked token.**
-   - A: add a tag ruleset (`refs/tags/**`: restrict creation, update and deletion; admin bypass) [S11].
-   - B: A, plus restricted deletion of `refs/heads/**` except the App's own task branches.
-   - C: none.
-   - **Recommendation: A now.** B only if branch deletion shows up in The Ledger.
+2. **Issues permission (depends on 4).**
+   - A: none in Stage 1. Issues write with an add-only label allowlist only once I2 exists.
+   - B: Issues write now.
+   - **Recommendation: A.** Under I1 the agent cannot use it, so B adds only risk. This accepts the recorded deviation from #82's `needs:human` criterion.
+3. **Key store.**
+   - K1: Keychain item, `-T ""`, a prompt per access.
+   - K2: Keychain item trusted for a code-signed helper.
+   - K3: a sign-only device or off-machine signing.
+   - **Recommendation: K1 for Stage 1. For phases 1+, a different-UID daemon (I2) or K3.**
+4. **Broker invocation.**
+   - I1: Krzysztof runs `wardens identity publish` in his terminal.
+   - I2: a launchd daemon under a dedicated macOS user, on a Unix socket; needs a #64 spec and sandbox R6.
+   - I3: sandbox `excludedCommands`.
+   - **Recommendation: I1 now, I2 later. Reject I3.**
+5. **Push mechanism.**
+   - P1: Phase A hooks with no token, then a Phase B `--no-verify` push of the same `SHA`, with the clean git env and the fd-3 helper.
+   - P2: push through the REST git data API (no hooks, rewritten SHAs).
+   - P3: token in the env, hooks on.
+   - **Recommendation: P1. Reject P3.**
+6. **Admin bypass.**
+   - A: keep `RepositoryRole` admin, mode `pull_request`, web only, for Krzysztof's own PRs.
+   - B: remove it.
+   - **Recommendation: A.** `identity audit` lists bypass merges of bot PRs.
+7. **Branch ruleset on `refs/heads/**`** (deletion and `non_fast_forward` except `main` patterns):
+   - A: now;
+   - B: defer to Stage 2, after checking that it does not block auto-delete of merged head branches.
+   - **Recommendation: B.** The tag ruleset is now mandatory, not a decision.
 8. **`require_last_push_approval`.**
-   - false: `dismiss_stale_reviews_on_push` already voids an approval on every new push.
-   - true: also blocks Krzysztof from approving after he pushes a fix-up to an agent PR.
-   - **Recommendation: false.**
+   - **Recommendation: false.** Stale approvals are already dismissed on push, and true would block Krzysztof from approving after he pushes a fix-up.
 9. **Commit author in task worktrees.**
-   - A: the bot identity (worktree-scoped config).
-   - B: keep Krzysztof as author; only the PR author is the bot.
-   - **Recommendation: A.** History separates agent work from human work (#82 problem statement). The `Agent:` trailer stays as the model record.
+   - A: the bot (worktree-scoped).
+   - B: Krzysztof.
+   - **Recommendation: A**, with the CI check keyed on PR author (Task 6).
+10. **Ship Stage 1 alone.**
+    - A: yes. Attribution, mobile merge and a real approval step now, with the same-UID self-approval residual stated.
+    - B: wait for Stage 2.
+    - **Recommendation: A.** It is strictly tighter than today's 0-approval ruleset.
+11. **CI `agent-trailer` as a required check.**
+    - A: required after one green week as non-required.
+    - B: never required.
+    - **Recommendation: A.**
