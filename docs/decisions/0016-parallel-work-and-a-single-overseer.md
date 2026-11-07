@@ -110,13 +110,28 @@ Thresholds are set in that ADR.
   - contract is generated, drift is checked: **enforced** (`pnpm check` contract drift, CI `contract`);
   - "agreed before parallel work": **not yet enforced**; D3's `serialize_on` keeps contract and client paths serial meanwhile.
 
+**D9. Review economy.** Set by Krzysztof on 2026-11-06, after #59 needed 9 review rounds.
+- At most 2 review rounds per PR, per reviewer role (Charter `review.max_rounds: 2`).
+  - Round 1 is exhaustive; Sentinel works through a full threat-class checklist.
+  - Round 2 is delta-only (`git diff <prev>..<new>`) and is the last.
+- After round 2, OVERSEER verifies remaining fixes itself (and replays the probes for Wardens changes). A third round happens only when a fix introduces a new, large class of change.
+- A blocking item of the same class still open after round 2 gets one of three outcomes:
+  - OVERSEER has the PR regression fixed and verifies the fix itself;
+  - the item moves to a follow-up issue;
+  - the PR is labelled `needs:human` with a summary.
+  - Never another review loop.
+- Blocking means all three: exploitable or reproducible, in the PR's scope, and a regression against `main`. A gap that already exists on `main` and lies outside the PR's purpose is a follow-up issue (C-11 scope rule).
+- Fix the class, not the instance: implementer briefs say "close the class and add a class test"; reviewer harnesses stay in the repo as tests.
+- Rationale: unbounded rounds trade reviewer and implementer capacity for diminishing findings, and block parallel work (D4) without raising safety. The round-1 depth (D6) stays unchanged.
+- Enforcement: **not yet enforced**; planned in `review-gate` (#60), which counts rounds per role from its structured review comments and escalates to `needs:human` above `review.max_rounds`. #60 currently proposes the key as `quality_gates.review.max_review_rounds`; the spec for #60 settles one name.
+
 ### Consequences
 
 - Good, because parallel work is capped by review and merge capacity, not by how many agents can start.
 - Good, because shared mechanisms change one at a time and never under a running agent.
 - Good, because the review gate stays independent of throughput pressure.
 - Good, because raising the limit is a data-gated decision, like autonomy phases.
-- Bad, because until the planned checks exist, D1–D4, D6 and D7's timing rely on OVERSEER following prose (C-01 gap, stated per decision).
+- Bad, because until the planned checks exist, D1–D4, D6, D7's timing and D9 rely on OVERSEER following prose (C-01 gap, stated per decision).
 - Bad, because serializing on `wardens/src/command.ts` and `guards.ts` slows Wardens work, where most current issues land.
 - Bad, because blocking on the subagent path waits for #51, and the count stays advisory while agents share Krzysztof's UID.
 - Neutral, because the Charter key needs a schema change first, so it lands with the D4 check, not before.
@@ -129,7 +144,7 @@ Thresholds are set in that ADR.
   - the `WorktreeCreate` hook and `wardens worktree new` refuse at the limit, on overlapping allowed paths, on `serialize_on` paths, and on an issue already counted;
   - `serialize-check` fails or labels a PR whose changed files hit `serialize_on` or another open PR's changed files;
   - every refusal uses the C-30 message format.
-- `review-gate` per #60.
+- `review-gate` per #60, including a test that a third round for one role escalates to `needs:human`.
 - The Ledger, once built, reports concurrent implementers, concurrent OVERSEER sessions and the D5 metrics.
 
 ## Pros and Cons of the Options
@@ -159,7 +174,7 @@ Agents do not edit these files: `docs/constitution.md` and `AGENTS.md` are `ask`
 
 Order:
 1. Charter schema change (`wardens/src/charter.ts`, `wardens/schema/charter.schema.json`) and the `doctor` `concurrency` check, through a normal Wardens issue.
-2. The Charter `concurrency:` section (Krzysztof).
+2. The Charter `concurrency:` and `review:` sections (Krzysztof).
 3. C-34 and the `AGENTS.md` lines, which reference those keys.
 
 ### `panopticon.charter.yaml`: new section
@@ -175,6 +190,9 @@ concurrency: # ADR-0016
     - "wardens/schema/charter.schema.json"
     - "packages/contracts/openapi.json"
     - "packages/api-client/src/**"
+
+review: # ADR-0016 D9
+  max_rounds: 2   # per PR, per reviewer role; then verify, follow-up issue or needs:human
 ```
 
 - `count`: every linked worktree counts as one implementer unless its branch matches `exclude_branches`; its issue resolves from `.panopticon/task.json`, else from its `<type>/<issue>-<slug>` branch, and a worktree with no issue counts as unattributed.
@@ -198,6 +216,7 @@ Add after "Workflow: issue to PR":
 
 - OVERSEER alone assigns tasks; at most `concurrency.max_parallel_implementers` run at once, and overlapping or `concurrency.serialize_on` tasks run one after another (C-34, [ADR-0016](docs/decisions/0016-parallel-work-and-a-single-overseer.md)).
 - Krzysztof rolls out merged bundle, hook, Charter or config changes between sessions (`git pull` in the primary, `wardens doctor`); OVERSEER announces when no implementer is running.
+- Review rounds: at most `review.max_rounds` (2); then OVERSEER verifies, moves the item to a follow-up, or labels `needs:human`.
 ```
 
 ## Open decisions
