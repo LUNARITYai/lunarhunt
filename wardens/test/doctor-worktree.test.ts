@@ -436,13 +436,13 @@ describe("doctor with the worktree checks", () => {
     const results = runChecks(false, doctorDeps(f));
     const ids = results.map((r) => r.id);
     expect(ids.slice(-7)).toEqual([
-      "duplicates",
-      "disable-all-hooks",
       "claude-version",
       "shell-glob-options",
       "worktrees",
       "task-databases",
       "charter-drift",
+      "task-integrity",
+      "primary-behind",
     ]);
     expect(ids).toContain("worktree-exclusions");
     expect(results.find((r) => r.id === "worktrees")?.status).toBe("warn");

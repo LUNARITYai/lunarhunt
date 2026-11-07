@@ -184,6 +184,8 @@ describe("wardens doctor", () => {
       "ok worktrees",
       "ok task-databases",
       "ok charter-drift",
+      "ok task-integrity",
+      "ok primary-behind",
     ]);
   });
 

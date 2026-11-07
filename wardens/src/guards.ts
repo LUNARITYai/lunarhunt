@@ -51,7 +51,7 @@ export function pathInScope(
   if (task.kind === "missing") {
     return true;
   }
-  if (task.kind === "invalid") {
+  if (task.kind !== "ok") {
     return false;
   }
   return anyGlob(task.allowed_paths, path, fold);
@@ -59,6 +59,17 @@ export function pathInScope(
 
 function isMutation(action: string): boolean {
   return action === "edit" || action === "write" || action === "delete";
+}
+
+function unverifiedTask(reason: "mismatch" | "unrecorded"): Objection {
+  return block(
+    "scope-guard",
+    "deny",
+    reason === "mismatch"
+      ? ".panopticon/task.json changed after wardens worktree setup recorded it"
+      : ".panopticon/task.json has no hash recorded by wardens worktree setup",
+    "Ask Krzysztof to run wardens worktree setup",
+  );
 }
 
 export function scopeGuard(ctx: RuleContext): Objection | null {
@@ -83,6 +94,9 @@ export function scopeGuard(ctx: RuleContext): Objection | null {
       ".panopticon/task.json is invalid for this task",
       "Ask for needs:human",
     );
+  }
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
   }
   if (!pathInScope(ctx.event.path, ctx.charter, ctx.task)) {
     return block(
@@ -701,6 +715,9 @@ function scopeGlob(
   segments: readonly string[],
 ): Objection | null {
   const probe = globProbe(segments);
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
+  }
   if (
     ctx.task.kind === "invalid" ||
     !pathInScope(probe, ctx.charter, ctx.task)

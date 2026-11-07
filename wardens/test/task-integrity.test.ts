@@ -18,6 +18,7 @@ import {
 } from "../src/doctor-worktree.ts";
 import { runHook } from "../src/engine.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { taskId } from "../src/task-integrity.ts";
 import { type Deps, runWorktree } from "../src/worktree/index.ts";
 import { normativeCharter } from "./support.ts";
 
@@ -220,6 +221,28 @@ describe("task.json integrity", () => {
       gh: () => ({ status: 1, stdout: "" }),
     };
     expect(runWorktree({ sub: "setup" }, offline).exitCode).toBe(0);
+  });
+});
+
+describe("task id", () => {
+  it("depends on the primary and the worktree path only, not on files inside the worktree", () => {
+    const f = fixture();
+    const before = hashFiles(f);
+    writeFileSync(join(f.wt, ".panopticon", "extra"), "x");
+    widen(f);
+    expect(setupAgain(f).exitCode).toBe(0);
+    expect(hashFiles(f)).toEqual(before);
+    expect(taskId(f.primary, f.wt)).toBe(before[0]?.replace(".sha256", ""));
+    expect(taskId(f.primary, join(f.wt, "..", "other"))).not.toBe(
+      taskId(f.primary, f.wt),
+    );
+  });
+
+  it("setup fails closed without a resolvable HOME", () => {
+    const f = fixture();
+    const res = setupAgain({ ...f, deps: { ...f.deps, env: { HOME: "" } } });
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr.trim()).toMatch(MESSAGE_PATTERN);
   });
 });
 

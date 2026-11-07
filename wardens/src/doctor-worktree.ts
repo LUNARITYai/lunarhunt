@@ -4,13 +4,14 @@ import {
   spawnSync,
 } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import {
   CHARTER_FILENAME,
   loadCharterAt,
   type WorktreeConfig,
 } from "./charter.ts";
 import type { CheckResult, CheckStatus } from "./doctor.ts";
+import { checkIntegrity } from "./task-integrity.ts";
 import { git, listWorktrees } from "./worktree/git.ts";
 import { GH_FAILED_STATE, issueOf, prState } from "./worktree/index.ts";
 import { type Deps, realDeps } from "./worktree/types.ts";
@@ -286,6 +287,97 @@ function realpathOr(path: string): string {
   } catch {
     return path;
   }
+}
+
+/**
+ * Per linked worktree with a task.json: `verified`, `unrecorded` (warn: set up
+ * before hashes existed) or `mismatch` (fail: changed after setup). Both
+ * non-verified states make the hooks deny edits there until a human runs
+ * `wardens worktree setup`.
+ */
+export function checkTaskIntegrity(primary: string, home: string): CheckResult {
+  const unrecorded: string[] = [];
+  const mismatched: string[] = [];
+  let checked = 0;
+  for (const entry of listWorktrees(primary).filter((e) => !e.primary)) {
+    let raw: Buffer;
+    try {
+      raw = readFileSync(join(entry.path, ".panopticon", "task.json"));
+    } catch {
+      continue;
+    }
+    checked += 1;
+    const state = isAbsolute(home)
+      ? checkIntegrity(raw, entry.path, { primary, home })
+      : "unrecorded";
+    if (state === "unrecorded") {
+      unrecorded.push(basename(entry.path));
+    } else if (state === "mismatch") {
+      mismatched.push(basename(entry.path));
+    }
+  }
+  const next = "Ask Krzysztof to run wardens worktree setup in it";
+  if (mismatched.length > 0) {
+    return result(
+      "task-integrity",
+      "fail",
+      `task.json changed after setup in ${mismatched.join(", ")}${unrecorded.length > 0 ? `; no recorded hash in ${unrecorded.join(", ")}` : ""}. ${next}`,
+    );
+  }
+  if (unrecorded.length > 0) {
+    return result(
+      "task-integrity",
+      "warn",
+      `no recorded task.json hash in ${unrecorded.join(", ")}. ${next}`,
+    );
+  }
+  return result(
+    "task-integrity",
+    "ok",
+    `${checked} task.json ${checked === 1 ? "file matches" : "files match"} the recorded hash`,
+  );
+}
+
+const PRIMARY_WATCHED = [CHARTER_FILENAME, "wardens/"];
+
+/**
+ * Advisory: the hooks run the primary's bundle and Charter. Compares the
+ * primary's working tree with the already-fetched `origin/main` (no network).
+ */
+export function checkPrimaryBehind(primary: string): CheckResult {
+  const ref = "refs/remotes/origin/main";
+  if (!git(primary, ["rev-parse", "--verify", "--quiet", ref]).ok) {
+    return result(
+      "primary-behind",
+      "ok",
+      "skipped: origin/main is not fetched in the primary checkout",
+    );
+  }
+  const diff = git(primary, [
+    "diff",
+    "--name-only",
+    ref,
+    "--",
+    ...PRIMARY_WATCHED,
+  ]);
+  if (!diff.ok) {
+    return result(
+      "primary-behind",
+      "ok",
+      "skipped: the primary checkout could not be compared with origin/main",
+    );
+  }
+  return diff.out.length > 0
+    ? result(
+        "primary-behind",
+        "warn",
+        `${PRIMARY_WATCHED.join(" and ")} in the primary checkout differ from origin/main (${diff.out.split("\n").slice(0, 3).join(", ")}). The hooks run the primary's copy against the last fetched ref). Run git pull in the primary`,
+      )
+    : result(
+        "primary-behind",
+        "ok",
+        "the primary's Charter and wardens/ equal origin/main",
+      );
 }
 
 export function checkWorktreeExclusions(toplevel: string): CheckResult {

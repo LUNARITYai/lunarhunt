@@ -126,8 +126,11 @@ function fixture(
   const steps: { command: string; cwd: string }[] = [];
   const failStep: { command: string | null } = { command: null };
   const ghFail = { on: false };
+  // Hashes of task.json go below this HOME, never the developer's.
+  const home = join(base, "home");
+  mkdirSync(home);
   const deps = (over: Partial<Deps> = {}): Deps => ({
-    env: {},
+    env: { HOME: home },
     cwd: primary,
     gh: (args) => {
       if (ghFail.on) {

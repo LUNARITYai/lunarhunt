@@ -30,6 +30,7 @@ import {
 } from "./rules.ts";
 import { type BundleProbe, staleWarning } from "./stale.ts";
 import { loadTask, type TaskState } from "./task.ts";
+import type { Integrity } from "./task-integrity.ts";
 import { allowVerdict, checkExitCode, type Verdict } from "./verdict.ts";
 import { crossWorktreeDeny } from "./worktree-guard.ts";
 
@@ -263,6 +264,7 @@ function readJson(stdin: string): { ok: true; value: unknown } | { ok: false } {
 function loadPolicy(
   toplevel: string,
   charterRoot: string,
+  integrity?: Integrity,
 ):
   | { ok: true; charter: Charter; task: TaskState }
   | { ok: false; verdict: Verdict } {
@@ -270,7 +272,11 @@ function loadPolicy(
   if (!loaded.ok) {
     return { ok: false, verdict: engineDeny(CHARTER_INVALID_MESSAGE) };
   }
-  return { ok: true, charter: loaded.charter, task: loadTask(toplevel) };
+  return {
+    ok: true,
+    charter: loaded.charter,
+    task: loadTask(toplevel, integrity),
+  };
 }
 
 export function runCheck(
@@ -496,7 +502,15 @@ export function runHook(
   if (deps.primary === null) {
     return fail(NO_PRIMARY_MESSAGE, toplevel, null);
   }
-  const policy = loadPolicy(toplevel, deps.primary ?? toplevel);
+  // task.json is believed only if it matches the hash that a human's `wardens
+  // worktree setup` recorded. Direct engine calls (no primary) skip that.
+  const policy = loadPolicy(
+    toplevel,
+    deps.primary ?? toplevel,
+    deps.primary
+      ? { primary: deps.primary, home: deps.home ?? homeOrUnresolved(deps.env) }
+      : undefined,
+  );
   if (!policy.ok) {
     return fail(CHARTER_INVALID_MESSAGE, toplevel, null);
   }

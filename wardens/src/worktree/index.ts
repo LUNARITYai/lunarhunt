@@ -6,6 +6,7 @@ import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
 import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
+import { forgetTaskHash, taskId } from "../task-integrity.ts";
 import { detectAgent } from "../trailer.ts";
 import { git, listWorktrees, type WorktreeEntry } from "./git.ts";
 import {
@@ -282,6 +283,7 @@ function newWorktree(
   }
   const setup = setupWorktree(
     target,
+    primary,
     cfg,
     { issue, branch, slug, allowedPaths: paths.paths },
     deps,
@@ -329,7 +331,13 @@ function setupHere(
       ),
     );
   }
-  const existing = loadTask(toplevel);
+  // Only a task.json that still matches its recorded hash is kept. A changed
+  // or unrecorded one is not blessed: the scope is read from the issue again.
+  const home = trustedHome(deps.env);
+  const existing = loadTask(
+    toplevel,
+    home === null ? undefined : { primary, home },
+  );
   if (existing.kind === "ok" && args.refresh !== true) {
     if (existing.issue !== parsed.issue) {
       return fail(
@@ -341,6 +349,7 @@ function setupHere(
     }
     const res = setupWorktree(
       toplevel,
+      primary,
       cfg,
       {
         issue: existing.issue,
@@ -369,6 +378,7 @@ function setupHere(
   }
   const res = setupWorktree(
     toplevel,
+    primary,
     cfg,
     {
       issue: parsed.issue,
@@ -493,6 +503,7 @@ function removeOne(
       }
     }
   }
+  const id = taskId(primary, entry.path);
   const removed = git(primary, [
     "worktree",
     "remove",
@@ -504,6 +515,10 @@ function removeOne(
       refused: `git worktree remove failed: ${firstLine(removed.out)}`,
       next: "Fix the cause or pass --force",
     };
+  }
+  const home = trustedHome(deps.env);
+  if (home !== null) {
+    forgetTaskHash(home, id);
   }
   let note = `removed ${name}`;
   const branch = entry.branch;
