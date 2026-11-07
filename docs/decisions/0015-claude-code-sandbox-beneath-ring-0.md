@@ -59,11 +59,15 @@ The decision:
   - **network:** an allowlist owned by The Charter, with no Anthropic API hosts.
 - **The hook launcher keeps the shipped trust anchor.** It runs only the bundle of a primary listed in `~/.config/panopticon/primaries`, a file written by a human step, and never consults git (GHSA-6phq-wv5j-xq2f). Hook runs take their policy from that anchored primary (#74). No agent-writable input decides which bundle runs, because hooks run outside the sandbox with the user's privileges. This ADR adds no second anchor and no bundle hash: the sandbox closes what the sync spec left to it, shell writes to the anchor and to the primary's bundle.
 - **A canary pass is bound to the effective sandbox settings.** A command byte-equal to the issued canary is judged by `sandbox-guard` alone. The argv-parsing rules would otherwise deny its absolute bundle path from a linked worktree. `sandbox-guard` lets it through with an explicit hook `allow`, because it is not in `permissions.allow` and `autoAllowBashIfSandboxed` is false.
-- **Sandboxed toolchains get non-secret task config** from `.panopticon/task.env`, exported into the session environment, because the worktree's `.env` stays unreadable to the shell. How `gh` and git authenticate inside the sandbox is an open decision in the spec (Decision 8).
+- **Sandboxed toolchains get non-secret task config** from `.panopticon/task.env`, exported into the session environment, because the worktree's `.env` stays unreadable to the shell.
+- **No GitHub credential inside the sandbox** (spec Decision 8, option C). The credential deny stays complete. `git push` and the writing `gh` commands happen outside the sandbox, done by Krzysztof. A bot identity with minimal permissions is a follow-up (option D, with #64).
+- **Ring 0 covers `.panopticon/**` and `.claude/**` through The Charter** (decided with the spec's review finding B2). `.panopticon/**` goes into `protected.deny` and `.claude/**` into `protected.ask`, which headless runs treat as deny. Krzysztof makes that change in his own Charter PR.
 - **An OVERSEER profile,** a separate generated settings file passed at launch, also denies writes to the repository working tree.
 - **A ring-0 rule, `sandbox-guard`:**
   - it denies `dangerouslyDisableSandbox`;
-  - it allows no other Bash command until an in-session **canary** has proven the sandbox boundary that fits the session's cwd.
+  - in its target mode (`sandbox.gate: block`), it allows no other Bash command until an in-session **canary** has proven the sandbox boundary that fits the session's cwd;
+  - it starts in `sandbox.gate: warn`, which asks for the canary and records the result without blocking. A Charter PR switches it to `block` once the spec's R4 shows that the canary passes in `-p` and in subagents, by the hook `allow` or by the per-machine fallback rule (spec Decision 2). `sandbox.required: true` is valid only with `block`.
+- **The sandbox runtime `srt` is a `doctor` diagnostic, not a gate.** It shows that the machine can enforce the rendered profile, not that a session runs under it.
 - **`doctor`** checks that the generated settings carry the sandbox block, and that no user or local settings switch it off or widen it. It also checks that local protected branches have not moved away from `origin`.
 - **Ring 0 keeps every policy rule:**
   - `scope-guard`, `protected-paths`, `secret-read-guard` and `generated-files-guard`, because the Edit, Write and Read tools run outside the sandbox;
@@ -79,15 +83,15 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 
 - Good, because writes by **Bash tool commands** outside the worktree fail in the kernel, whatever the spelling. Tested for direct writes, a subshell redirect and git-invoked code. Other forms (`eval`, interpreter one-liners) are covered by construction, since the kernel sees the same syscalls.
 - Good, because shell reads of secrets and of the home directory's credential locations fail in the kernel. That removes the read half of #63's risk for Claude Code.
-- Good, because Bash network egress gets an allowlist for the first time. **Only for Bash:** the allowlisted hosts themselves (github.com with the user's token), WebFetch, WebSearch and MCP remain exfiltration paths. The spec lists them as known gaps.
+- Good, because Bash network egress gets an allowlist for the first time. **Only for Bash:** WebFetch, WebSearch and MCP remain exfiltration paths, and so do the allowlisted hosts if a GitHub token leaks into the session environment. The spec lists them as known gaps.
 - Good, because `primary_read_only_commands` no longer has to be the only barrier against local writes.
 - Bad, because the shared `.git` stays writable from a linked worktree. A locally moved `main` never reaches origin (ruleset, ring 3), and only `doctor protected-refs` detects it locally, unless the R3 `denyWrite` retest succeeds.
 - Bad, because the sandbox is per project, not per role. The OVERSEER profile depends on how OVERSEER is launched. The canary detects a missing profile, but `doctor` cannot see a running session.
 - Bad, because the generated settings live in the project and can be loosened by user or local settings unless the precedence retest shows otherwise. Without managed settings in a one-person project, this is the kind of local-config bypass ADR-0004 already accepts for ring 0.
 - Bad, because hooks run outside the sandbox. The `definition-of-done` hook runs `pnpm check`, and so executes agent-written worktree code unsandboxed, unless the spec's Task 4c moves it under the sandbox profile (Decision 7).
-- Bad, because every session pays a denied Bash call and a canary call, and so may each subagent. Under a hard gate this works in `-p`, headless and subagent runs only if a hook `allow` skips the prompt there (spec R4). Otherwise those runs lose Bash. The spec's Decision 2 weighs a soft gate and a hook-run canary as alternatives.
-- Bad, because for shell writes to `.panopticon/**` and `.claude/**` the sandbox is the only control: ring 0 has no rule for them. Where the sandbox does not hold (a soft gate, Cursor, `required: false`), nothing stops such writes until The Charter protects those paths. The spec recommends that human change.
-- Bad, because the minimum credential deny removes the default `gh` and git HTTPS credentials from Bash. The spec's Decision 8 chooses a narrower token, an exemption, or no pushes and PRs from inside the sandbox.
+- Bad, because every session pays a denied Bash call and a canary call, and so may each subagent. The hard gate works in `-p`, headless and subagent runs only if a hook `allow` skips the prompt there (spec R4) or the per-machine fallback rule does. That is why the gate starts in `warn` and switches to `block` only after R4.
+- Bad, because during the `warn` phase a session whose sandbox is off is not stopped. Shell writes to `.panopticon/**` and `.claude/**` then have no control, and parsed spellings get ring 0 only after Krzysztof's Charter change merges. The phase is temporary by design.
+- Bad, because agents cannot push or open PRs from sandboxed Bash, since no GitHub credential is available inside it. Krzysztof does it until the bot identity exists. This changes step 7 of the `AGENTS.md` workflow (a Covenant change).
 - Bad, because sandboxed toolchains need explicit cache, network and task-config entries. That is a new source of "works outside, fails inside" errors.
 - Neutral: Cursor sessions get no OS floor yet; for them ring 0 alone applies, as today.
 
@@ -135,10 +139,11 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
   - ADR-0004 (rings), which this ADR adds a floor beneath without changing the ring table;
   - ADR-0012 (worktrees, Dev Container Cell in phase 2);
   - ADR-0013 (protected and secret paths).
-- If this ADR is accepted, `AGENTS.md` gets a glossary entry for the floor and a `sandbox-guard` line under "Rules Wardens will enforce". That is a Covenant change, so Krzysztof approves it.
+- If this ADR is accepted, `AGENTS.md` gets a glossary entry for the floor and a `sandbox-guard` line under "Rules Wardens will enforce". That is a Covenant change, so Krzysztof approves it. The same change updates workflow step 7, because agents no longer push or open PRs from sandboxed Bash.
 - Follow-ups:
   - #63 (unchanged);
   - #64 (narrowed to network-side operations);
   - #68 and the Cursor retest;
   - a per-role MCP and WebFetch policy;
+  - a GitHub App or bot account with minimal permissions: contents and pull requests on non-protected branches only, and no issues, labels, admin or workflows. It is outside the spec, linked with #64 (spec Decision 8, option D);
   - a per-role GitHub identity (phase 2).

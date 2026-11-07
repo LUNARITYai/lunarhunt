@@ -36,7 +36,7 @@ This spec adds no second anchor (see "Launcher and anchor").
 
 **Gating:**
 - `status: ready` needs R1, R6 and R7, because their answers change this design.
-- Rollout needs R2–R4 and Decision 8.
+- Rollout needs R2–R4. Decisions 2 and 8 are decided (Decisions, below).
 - ADR-0015 is accepted together with `ready`.
 
 ## Acceptance criteria (EARS)
@@ -45,11 +45,14 @@ This spec adds no second anchor (see "Launcher and anchor").
 
 - THE Charter schema SHALL accept an optional top-level `sandbox:` section, strict, with these keys:
   - `enabled` (bool) and `required` (bool, default false);
+  - `gate` (`warn` or `block`, default `warn`): the `sandbox-guard` mode (Decision 2). `warn` is the soft first step, `block` the hard target;
   - `filesystem.extra_write`, for sandbox-only toolchain caches (`~/` paths);
   - `filesystem.deny_read`, for credential locations outside the repository;
   - `network.allow`, for host names; a `*.` prefix is allowed;
   - `overseer.settings_path`, the repository-relative path of the generated OVERSEER profile, under `.claude/`.
 - WHEN the section is absent or `enabled` is false, THE SYSTEM SHALL render no `sandbox` block. `doctor` SHALL then report `sandbox: off`: as a failure when `required` is true, otherwise as a warning.
+- IF `required` is true while `gate` is not `block`, THEN Charter validation SHALL fail. The hard gate is the target, so the sandbox becomes mandatory only once it is enforced (Decision 2).
+- Switching `gate` is a human Charter PR (C-23). No other input changes the mode: no environment variable, no worktree file and no settings key.
 - IF `network.allow` contains any of the following, THEN Charter validation SHALL fail:
   - `*`, an IP literal or a TLD wildcard (`*.com`);
   - a wildcard on a user-content or object-store domain (`*.githubusercontent.com`, `*.amazonaws.com`);
@@ -60,7 +63,7 @@ This spec adds no second anchor (see "Launcher and anchor").
 - `doctor` SHALL check at runtime, because these depend on the machine:
   - that every `extra_write` entry, resolved physically, lies under the physical `~/.cache` joined with the literal `panopticon-sandbox`. Comparing with the physical `~/.cache/panopticon-sandbox` itself would pass trivially when that directory is a symlink. It SHALL also fail when `~/.cache/panopticon-sandbox` is a symlink (`lstat`) (F10);
   - that no entry covers a `PATH` directory or `PNPM_HOME`.
-- IF `filesystem.deny_read` lacks any entry of the minimum default set (Settled points, "Credential reads") while `enabled` is true, THEN Charter validation SHALL fail. Decision 8 may change that set; the minimum and R2 change together.
+- IF `filesystem.deny_read` lacks any entry of the minimum default set (Settled points, "Credential reads") while `enabled` is true, THEN Charter validation SHALL fail. Decision 8 (option C) keeps that set as it is.
 
 ### Rendering (`wardens sync`)
 
@@ -92,7 +95,7 @@ This spec adds no second anchor (see "Launcher and anchor").
 
   How much of this ring 0 also covers differs per class (B2):
   - **Defence in depth** for the Charter (`protected.deny`), the `.git` pointer and the git metadata, and the anchor and state directories (`gitMetadataDeny`). Ring 0 denies the shell writes to them that it can parse (#76). A parsed shell write outside the worktree, to the primary or to `~`, fails the escape check. `denyWrite` covers every other spelling.
-  - **The only control** for `.panopticon/**` and `.claude/**`. Neither glob is in the Charter's `protected` lists, `gitMetadataDeny` does not cover them, and `scope-guard` ignores shell events. Ring 0 therefore does not deny a shell write to them in any spelling; only `denyWrite` does (Known gaps).
+  - **Today the only control** for `.panopticon/**` and `.claude/**`. Neither glob is in the Charter's `protected` lists yet, `gitMetadataDeny` does not cover them, and `scope-guard` ignores shell events. Krzysztof has decided the Charter change that makes them defence in depth too (Settled points, "Ring-0 coverage of `.panopticon/` and `.claude/`"). Until his Charter PR merges, only `denyWrite` stops a shell write to them (Known gaps).
 
   The controls that must hold are the launcher anchor and the canary binding below.
 - THE block's network allowlist SHALL be exactly `sandbox.network.allow`.
@@ -107,7 +110,7 @@ This spec adds no second anchor (see "Launcher and anchor").
 - THE rendered hook commands SHALL keep the shipped launcher unchanged (sync spec, "Bundle location"). It never consults git or repository data. It runs `<primary>/wardens/dist/wardens.mjs` only for a session directory that equals a primary listed in `~/.config/panopticon/primaries`, or lies under that primary's `.claude/worktrees/`. Otherwise it fails closed with the `launcher` message. The render tests of the sync spec pin it; Task 3 keeps them byte-equal.
 - THE anchor SHALL stay the single trust anchor: a list of primary checkouts, written only by `wardens sync`, a human step. This spec SHALL NOT add a second anchor file or a bundle content hash (U7, U9).
   - Why no hash: a hash protects against a writer who can change `<primary>/wardens/dist/` but not `~/.config/panopticon/`. In this design those two sets are the same. Sandboxed Bash can write neither: P02, P04, the OVERSEER profile and the `denyWrite` entries above. The Edit and Write tools can write neither (ring 0). Code that runs unsandboxed can write both: the DoD hook (Decision 7) and human git hooks. A hash would close no attack, and every rebuild path would have to refresh it.
-  - One case depends on retests and decisions: a primary-cwd session launched without the OVERSEER profile. If R6 shows that the `<primary>/wardens/dist/` `denyWrite` cannot override the cwd write, its Bash can write the bundle. Under the hard gate (Decision 2 option A) it never passes the canary, so it runs no such command. Under a soft gate (option B) only `worktree-guard`'s parser stops it, and this spec is revised to add a hash, with the refresh requirement below.
+  - One case depends on retests and decisions: a primary-cwd session launched without the OVERSEER profile. If R6 shows that the `<primary>/wardens/dist/` `denyWrite` cannot override the cwd write, its Bash can write the bundle. With `gate: block` (Decision 2's target) it never passes the canary, so it runs no such command. During the `warn` phase only `worktree-guard`'s parser stops it. That phase is temporary and ends with the switch to `block`. IF the switch does not happen, THEN this spec is revised to add a hash, with the refresh requirement below.
   - So no rebuild path touches the anchor. The `post-merge` and `post-rewrite` rebuilds and a manual `pnpm --filter wardens build` stay as in the sync spec. The stale-bundle and missing-bundle messages keep `Run pnpm --filter wardens build in the primary checkout.`, which stays correct.
   - IF a later revision adds a bundle hash, THEN every one of these rebuild paths SHALL refresh it, and the messages SHALL name the refresh step.
 - The canary state directory `~/.local/state/panopticon/` holds no trust anchor, only nonces and verdicts (Canary state, below).
@@ -121,8 +124,14 @@ This spec adds no second anchor (see "Launcher and anchor").
 ### Ring 0: `sandbox-guard`
 
 - WHEN a Bash tool call has `tool_input.dangerouslyDisableSandbox` set to true, THE SYSTEM SHALL deny it with `Blocked by Warden sandbox-guard: commands run only inside the sandbox. Retry without dangerouslyDisableSandbox.`
-- `sandbox-guard` SHALL read `sandbox.enabled` and `sandbox.required` from the Charter that the hook run already loads from the trusted primary (#74), never from the worktree's.
-- WHILE `sandbox.enabled` is true and the session has no valid canary pass, THE SYSTEM SHALL deny every Bash command except the exact canary command it issued. The message is `Blocked by Warden sandbox-guard: prove the sandbox first. Run exactly: <command>.`
+- `sandbox-guard` SHALL read `sandbox.enabled`, `sandbox.required` and `sandbox.gate` from the Charter that the hook run already loads from the trusted primary (#74), never from the worktree's.
+- **Gate modes (Decision 2).** The criteria below describe `gate: block`. WHERE `gate` is `warn`, `sandbox-guard` SHALL do the same work but never block for an unproven or failed sandbox:
+  - it issues nonces and fixtures, applies the short-circuit and the explicit canary `allow`, consumes results and records passes and failures exactly as in `block`, so the warn phase measures whether the canary passes in interactive, `-p` and subagent runs;
+  - at `SessionStart` it issues the session's nonce and returns `Sandbox not proven yet. Run exactly: <command>.` as `additionalContext`;
+  - every verdict that `block` would render as a deny becomes an allow carrying that message as a warning, and is logged (to the Ledger, once it exists) with the session id and the reason: unproven, not enforced, or could not run;
+  - the `dangerouslyDisableSandbox` deny, the fixture-creation deny and the unrepresentable-path deny stay denies in both modes. They do not depend on a proof.
+- WHEN the Charter's `gate` changes, the next hook run SHALL use the new mode. A pass recorded in `warn` stays valid in `block`, because the settings hash binds it.
+- WHILE `sandbox.enabled` is true, `gate` is `block` and the session has no valid canary pass, THE SYSTEM SHALL deny every Bash command except the exact canary command it issued. The message is `Blocked by Warden sandbox-guard: prove the sandbox first. Run exactly: <command>.`
   - `<command>` is `<node> <bundle> sandbox canary <nonce>`. `<node>` is the absolute path of the Node binary running the hook (`process.execPath`), and `<bundle>` is the absolute primary bundle path. No `PATH` lookup decides what runs.
   - Quoting (F4): a path that consists only of `A–Z a–z 0–9 _ @ % + = : , . / -` is written bare. Any other path is written in single quotes. IF a path contains a single quote, a newline, a control character or bytes that are not UTF-8, THEN the hook SHALL NOT issue a nonce. It SHALL deny with `Blocked by Warden sandbox-guard: the canary command cannot be written for this Node or checkout path. Ask Krzysztof (needs:human).` The issued command is stored byte for byte, so the quoting never has to be parsed back.
 - **Canary short-circuit (B1).** WHEN a Claude Code `PreToolUse` Bash command is byte-equal to the command issued for the session's outstanding nonce, THE engine SHALL evaluate `sandbox-guard` only, and SHALL skip every other rule.
@@ -203,7 +212,7 @@ This spec adds no second anchor (see "Launcher and anchor").
 ### Sandboxed toolchains: task config and credentials
 
 - THE worktree's `.env` SHALL stay in `denyRead`, because it is a Charter secret path. Sandboxed tests and dev servers therefore cannot read it (U5).
-- WHEN `wardens worktree new` or `setup` writes a task's `.env`, THE SYSTEM SHALL also write `.panopticon/task.env`. It holds the same non-secret values and nothing else: `TASK_ISSUE`, `WEB_PORT`, `API_PORT`, and `DATABASE_URL` when `resources.database` is set. Like `.env`, it never takes a value from the primary's `.env`. Only those human-only subcommands write it (`HUMAN_ONLY` in `worktree/index.ts`). It is readable inside the sandbox, because it is not a secret path. Only the sandbox's `denyWrite` on `.panopticon/**` keeps the shell from writing it (B2, Known gaps).
+- WHEN `wardens worktree new` or `setup` writes a task's `.env`, THE SYSTEM SHALL also write `.panopticon/task.env`. It holds the same non-secret values and nothing else: `TASK_ISSUE`, `WEB_PORT`, `API_PORT`, and `DATABASE_URL` when `resources.database` is set. Like `.env`, it never takes a value from the primary's `.env`. Only those human-only subcommands write it (`HUMAN_ONLY` in `worktree/index.ts`). It is readable inside the sandbox, because it is not a secret path. Until Krzysztof's Charter change merges, only the sandbox's `denyWrite` on `.panopticon/**` keeps the shell from writing it. After it, ring 0's `protected.deny` also covers the parsed spellings (Settled points).
 - WHEN a Claude Code `SessionStart` event arrives in a worktree that has `.panopticon/task.env`, THE SYSTEM SHALL parse it strictly and append its values to the file named by `CLAUDE_ENV_FILE` as `export` lines (F5).
   - Accepted lines are `KEY=value` with no spaces around `=` and no blank or comment lines. Each of the four keys may appear at most once.
   - `TASK_ISSUE` is 1–9 decimal digits. `WEB_PORT` and `API_PORT` are decimal integers in 1–65535.
@@ -214,8 +223,12 @@ This spec adds no second anchor (see "Launcher and anchor").
   - Sandboxed Bash commands then get the task config from the environment. IF R2 shows that `CLAUDE_ENV_FILE` does not reach sandboxed or subagent Bash, or that it is sourced outside the sandbox from a file that sandboxed Bash can write, THEN the package scripts load `.panopticon/task.env` explicitly instead.
 - Toolchains and app config SHALL take task values from the environment, and SHALL treat an unreadable `.env` like a missing one. R2 records how each loader behaves on EPERM: pydantic-settings, python-dotenv, Next.js `@next/env`, Vitest and pytest. A loader that fails is a follow-up issue under `apps/**`, outside this spec's tasks.
 - A secret that a test needs is not available inside the sandbox, by design.
-- GitHub credentials (U6): the minimum `deny_read` removes the default `gh` and git HTTPS credential stores (`~/.config/gh`, `~/Library/Keychains`), so sandboxed `gh pr create` and `git push` lose their credential. Decision 8 chooses the mechanism. Whichever option it picks, THE minimum `deny_read` and R2 SHALL agree with it in the same revision.
-- SSH remotes do not work inside the sandbox under any option: `~/.ssh` is denied, and the agent socket would need `allowUnixSockets`. Task worktrees push over HTTPS.
+- GitHub credentials (U6, Decision 8 decided: option C). THE sandboxed Bash SHALL hold no GitHub credential:
+  - the minimum `deny_read` stays as it is, including `~/.config/gh` and `~/Library/Keychains`;
+  - the rendered settings `env` SHALL NOT carry `GH_TOKEN`, `GITHUB_TOKEN` or any other credential; the strict `sandbox:` section has no key for environment values;
+  - WHEN a Claude Code `SessionStart` hook sees `GH_TOKEN` or `GITHUB_TOKEN` in its own environment, which sandboxed commands inherit, its verdict SHALL carry the warning `GH_TOKEN or GITHUB_TOKEN is set in the session environment; sandboxed commands can use it. Launch the session without it.`;
+  - `git push` and the writing `gh` commands (`gh pr create`, `gh pr comment`, `gh pr edit`, `gh issue create`, `gh issue comment`, label edits) therefore fail inside the sandbox. They happen outside it, done by Krzysztof (Decision 8). Reads such as `gh pr view` and `git fetch` keep working unauthenticated, because the repository is public, within GitHub's anonymous rate limit.
+- SSH remotes do not work inside the sandbox either: `~/.ssh` is denied, and the agent socket would need `allowUnixSockets`.
 
 ### `doctor`
 
@@ -228,6 +241,11 @@ This spec adds no second anchor (see "Launcher and anchor").
 - THE `doctor` SHALL add a `protected-refs` check that fails when a local `worktree.protected_branches` ref is neither equal to its `origin/` counterpart nor an ancestor of it.
   - This is the only detector for a locally moved `main` (P10, P11). The `main` ruleset only stops such a ref from reaching origin.
 - THE `doctor` `worktrees` check SHALL warn on a task worktree whose generated `.claude/settings.json` differs from the primary's. A worktree on an old branch would otherwise run with old settings. It SHALL treat a `.claude/worktrees/.canary-<nonce>/` directory as a canary fixture, not as a worktree.
+- THE `doctor` SHALL report `sandbox gate: warn` as a warning while `gate` is `warn`, so the soft phase stays visible until the switch (Decision 2).
+- THE `doctor` SHALL add a `sandbox-runtime` diagnostic (Decision 2: `srt` is a diagnostic, not a gate). WHERE the sandbox runtime CLI `srt` (`@anthropic-ai/sandbox-runtime`) is on `PATH`, it runs the canary's probes under `srt` with the rendered profile and reports `ok`, or `warn` with the first failing probe. Otherwise it reports that it was skipped.
+  - It SHALL never report `fail`, is not part of `--ci`, and no hook or gate reads its result.
+  - It shows that this machine can enforce the rendered profile, not that any session runs under it.
+  - `srt` is not added as a dependency of the bundle.
 - THE `doctor` `coverage` check SHALL keep both directions: the Bash `PostToolUse` matcher and its mapping row ship in the same task (Task 4a, U3).
 - `--ci` SHALL check only the generated files.
 
@@ -242,9 +260,12 @@ This spec adds no second anchor (see "Launcher and anchor").
 | Launcher and anchor | One anchor, `~/.config/panopticon/primaries` (shipped). No bundle hash: it would close no attack and would need a refresh on every rebuild path (see Launcher and anchor). The canary state directory is not an anchor. |
 | Canary trust | Every anchor sits outside the agent's reach: <br>- the state file in `~` (not writable by the shell, and probed by the canary); <br>- the gate read from the Charter that hooks load from the trusted primary (#74); <br>- the canary pinned to the absolute Node and primary bundle paths, with byte equality; <br>- single-use nonces, at most one outstanding, with per-nonce fixtures; <br>- a reset on every `SessionStart`. <br>The nonce gives replay resistance only. Unforgeability comes from `PostToolUse` seeing the real command and its real output. |
 | Canary permission | A command byte-equal to the issued canary is judged by `sandbox-guard` alone (the short-circuit), which lets it through with an explicit hook `allow`. Neither `permissions.allow` nor `autoAllowBashIfSandboxed` is involved. R4 confirms that this works in `-p` and subagents. |
+| Gate mode (Decision 2, decided) | `sandbox.gate` starts at `warn` and switches to `block` by a Charter PR once R4 confirms the hook `allow` in `-p` and subagents, or once the per-machine fallback rule is in place (Rollout). `required: true` needs `block`. `srt` is a `doctor` diagnostic only. |
+| GitHub credentials (Decision 8, decided: C) | No GitHub credential inside the sandbox. The minimum `deny_read` stays. Pushes and PR creation happen outside the sandbox, done by Krzysztof. A bot identity with minimal permissions (option D) is an out-of-scope follow-up with #64. |
+| Ring-0 coverage of `.panopticon/` and `.claude/` (B2, decided) | Krzysztof applies it in his own Charter PR: `.panopticon/**` goes to `paths.protected.deny` (it holds `task.json` and `task.env`, which only humans write), and `.claude/**` to `paths.protected.ask` (C-24). `non_interactive_ask: deny` makes the latter a deny in headless runs, with no constitution amendment. Ring 0's shell-write rule (#76) and the generated `Edit(...)` rules then cover the parsed spellings, and `denyWrite` the rest. Hooks and the human-only `wardens worktree` subcommands still write there, because ring 0 does not apply to them. After the change: rebuild the bundle and run `wardens doctor`. The protected lists also render into `permissions` in `.claude/settings.json`, so `wardens sync` (or `sync --check` and `charter-drift`) has to agree in the same PR. |
 | `.git` carve-out | The shared `.git` is writable from a worktree (P10, P11 moved local `main`). The ruleset stops that ref from reaching origin, and `doctor protected-refs` detects it locally. R3 decides whether `denyWrite` closes it. |
 | Network list | Charter-owned and minimal: `github.com`, `api.github.com`, `codeload.github.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`. No Anthropic hosts. Anything else needs a Charter PR. |
-| Credential reads | Proposed `deny_read`: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.docker`, `~/.claude.json`, `~/.claude/.credentials*`, `~/Library/Keychains`, browser profile dirs. Env tokens are a known gap. Decision 8 decides how `gh` and git authenticate with these denied. |
+| Credential reads | Proposed `deny_read`: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.docker`, `~/.claude.json`, `~/.claude/.credentials*`, `~/Library/Keychains`, browser profile dirs. Env tokens are a known gap. With Decision 8 C, `gh` and git get no credential inside the sandbox. |
 | Secret reads across worktrees | The secret globs are rendered at any depth under the primary, so a worktree cannot read a sibling's `.env` (U10). |
 | Task config | Non-secret task values come from `.panopticon/task.env`, exported through `CLAUDE_ENV_FILE` at `SessionStart`. The worktree's `.env` stays unreadable to the shell (U5). |
 | Toolchain caches | `extra_write` may name only paths under `~/.cache/panopticon-sandbox/` (for example `{uv,pnpm}`), set through the rendered `env`. A poisoned cache cannot reach the human's own tools. `lefthook install` writes `.git/hooks`, so it is expected to fail inside the sandbox: run it at setup time (a hook or a human), never by widening `allowWrite`. |
@@ -256,19 +277,13 @@ This spec adds no second anchor (see "Launcher and anchor").
 ### Known gaps (not closed by this spec)
 
 - **WebFetch, WebSearch and MCP servers** run outside the sandbox. The network allowlist does not apply to them, and ring 0 has no MCP rule. Follow-up: a Charter per-role MCP and WebFetch policy.
-- **Allowlisted hosts are sinks.** With a GitHub token, data can leave through github.com (gists, comments, pushes). Decision 8 sets which token that is. Follow-up: a GitHub App per role (phase 2, C-27).
-- **Environment tokens** are inherited by sandboxed commands. Decision 8 option A puts a GitHub token there on purpose.
+- **Allowlisted hosts are sinks.** With a GitHub token, data can leave through github.com (gists, comments, pushes). Decision 8 C puts no token inside the sandbox, so this needs a token that leaked into the environment. Follow-up: the bot identity (Decision 8 D, with #64) and a GitHub App per role (phase 2, C-27).
+- **Environment tokens** are inherited by sandboxed commands. A `GH_TOKEN` or `GITHUB_TOKEN` in the launching shell would undo Decision 8 C; `SessionStart` only warns about it.
 - **`--setting-sources` without the project source** drops the sandbox and the hooks together. No hook can see this, and only the Ledger's "sessions without hook events" signal (ADR-0004) can.
 - **`$TMPDIR`** is shared across the user's apps (above).
 - **`definition-of-done` runs worktree code outside the sandbox.** The Stop hook runs `pnpm check` (`dod.ts`), so agent-written scripts, tests, configs and the shared caches execute with the user's privileges, with no human step. Such code can also write the anchor and the primary's bundle. Decision 7 picks between closing this in Task 4c and accepting it.
 - **The sandbox-only caches are shared across tasks.** Task A can poison the cache task B uses. Accepted for phase 0; a cache per task is a follow-up.
-- **Shell writes to `.panopticon/**` and `.claude/**` are stopped only by the sandbox (B2).** Ring 0 does not deny them in any spelling (Rendering, `denyWrite`). Those paths hold `task.json` (whose absence widens scope to the Charter's `allowed_paths`), `task.env` (which feeds the session environment), the DoD state, the logs and the generated `.claude/settings.json` (the hooks and the sandbox block, applied at the next reload). Where the sandbox does not hold, an agent can rewrite them:
-  - **Decision 2 option B (soft gate):** Bash runs before the sandbox is proven. A session whose sandbox is switched off can write them, and its next reload can run without hooks or sandbox.
-  - **Cursor:** it has no sandbox floor (ADR-0015), so Cursor shell commands can write both trees today, and still could after this spec.
-  - **`required: false`, `enabled: false` and the rollout window before step 5:** sessions without a rendered sandbox have no control on these paths, as today.
-  - **Recommendation (a human Charter change, C-23):** Krzysztof adds `.panopticon/**` to `paths.protected.deny`. Then ring 0's shell-write rule (#76) and the generated `Edit(...)` deny cover it. Hooks and the human-only `wardens worktree` subcommands still write there, because ring 0 does not apply to them.
-  - The same recommendation applies to `.claude/**`, with one caveat: C-24 classifies agent configs (`.claude/**`) as `ask`. The constitution-conformant form is therefore `paths.protected.ask`, which is denied in non-interactive sessions. A `deny` entry would need a C-24 amendment (C-32).
-  - Ring 0 then still misses unparsed spellings; the sandbox stays the full control.
+- **Shell writes to `.panopticon/**` and `.claude/**` are stopped only by the sandbox until Krzysztof's Charter PR merges (B2).** The fix is decided (Settled points); this entry is closed once that PR merges and the bundle is rebuilt. Until then ring 0 does not deny these writes in any spelling. The paths hold `task.json` (whose absence widens scope to the Charter's `allowed_paths`), `task.env` (which feeds the session environment), the DoD state, the logs and the generated `.claude/settings.json` (the hooks and the sandbox block, applied at the next reload). Where the sandbox does not hold, an agent can rewrite them: during the `warn` phase in a session whose sandbox is off, in Cursor, and with `enabled: false`. After the merge, ring 0 covers the parsed spellings in those cases too, but unparsed spellings stay open there.
 - **`.env` variants outside the fixed list** (for example `.env.foo`) are not in `denyRead`, because `denyRead` has no negation and `.env.*` would also hide `.env.example` (F8). Only `secret-read-guard` covers them, by parsing.
 
 ### Retest (Krzysztof runs it, with the #66 kit extended)
@@ -282,15 +297,14 @@ This spec adds no second anchor (see "Launcher and anchor").
   - IF a portable form does not exist, THEN machine-specific paths go to a per-machine file rendered at setup time, and this spec is revised.
 - **R2 (blocks rollout).** Toolchain inside the sandbox, on the real layout (task worktrees nested at `.claude/worktrees/<name>`):
   - `pnpm install --frozen-lockfile`, `uv sync --frozen`, `pnpm check`, `git commit` with lefthook, and `gh pr view`;
-  - `gh pr create` and an HTTPS `git push` on a task branch, with the credential mechanism Decision 8 chose. Check whether Keychain-backed credentials work inside the sandbox at all;
-  - under Decision 8 option A, check what the token can do and record each result (F6): merge a PR, push to `main`, edit a label (`risk:*`, `needs:human`), and edit an issue body. Try each through `gh` and through `curl` or `gh api` to `api.github.com`; the `curl` and `gh api` forms are not covered by `commands.deny`. The token gets a short expiry (at most 7 days) for the test and for use;
+  - Decision 8 C: with no `GH_TOKEN` or `GITHUB_TOKEN` in the environment, sandboxed `gh pr create`, `gh pr comment`, a label edit and an HTTPS `git push` on a task branch fail for lack of a credential, and nothing in `~/.config/gh` or the Keychain is readable. Check that `gh pr view` and `git fetch` still work unauthenticated. Then push and open the PR from outside the sandbox, the way Krzysztof will;
   - task config (U5, F5): use a throwaway `SessionStart` hook in the #66 kit that writes an export to `CLAUDE_ENV_FILE`, because Task 6 merges after R2. With the worktree's `.env` unreadable, a test and a dev server get their ports and database from that export. Check that the export reaches sandboxed and subagent Bash, where `CLAUDE_ENV_FILE` lies and whether sandboxed Bash can write it, and whether the file is sourced inside the sandbox. Record how each loader treats EPERM on `.env`;
   - Postgres on localhost;
   - writes to the session scratchpad. Check whether Claude Code exposes the session's own temp path. If it does not, the shell gets no scratchpad `allowWrite` at all (the Write tool still has it), never the all-sessions glob;
   - a sandboxed write to `~/.local/state/panopticon/` fails.
 - **R3 (blocks rollout).** `denyWrite` on the protected-branch ref set:
   - the set: `<common>/refs/heads/<branch>`, `logs/refs/heads/<branch>`, `refs/remotes/origin/<branch>`, `packed-refs`, the primary `HEAD` and `index`, `worktrees/*/HEAD`, and their `*.lock` siblings;
-  - re-run P10 and P11, then commit, fetch and push on a task branch.
+  - re-run P10 and P11, then commit and fetch on a task branch inside the sandbox, and push it from outside (Decision 8 C).
 - **R4 (blocks rollout).**
   - With `allowUnsandboxedCommands: false`, the model retries a denied write with `dangerouslyDisableSandbox`, and the write must stay denied.
   - With `autoAllowBashIfSandboxed: false`, a command outside `commands.allow` still prompts, or is denied in `-p`.
@@ -323,71 +337,62 @@ This spec adds no second anchor (see "Launcher and anchor").
   - an allow level in `RANK`, below `ask`;
   - in `evaluateLifecycle`, Bash post events routed to `sandbox-guard` only, never to `postEditAudit`, and a no-op allow when `sandbox.enabled` is false.
 - `render.ts` (hook output): an explicit `permissionDecision: "allow"` for the one canary verdict (Claude Code only).
-- `rules.ts`: the `sandbox-guard` rule. There is no Charter or `worktree-guard` exception for the canary; the short-circuit replaces it.
+- `rules.ts`: the `sandbox-guard` rule with its two modes (`gate: warn|block`) and the `SessionStart` token warning. There is no Charter or `worktree-guard` exception for the canary; the short-circuit replaces it.
 - `guards.ts`: the built-in launcher-configuration deny extended to `~/.local/state/panopticon/`.
 - `git.ts`: `classifyCwd` relative to the trusted primary.
 - New `sandbox/` module: the state store in `~/.local/state/panopticon/`, the per-nonce fixtures, and the `wardens sandbox canary <nonce>` subcommand.
 - `worktree/`: `.panopticon/task.env` next to `.env`; the strict parser and the `SessionStart` export through `CLAUDE_ENV_FILE`.
-- `doctor.ts`: the `sandbox` and `protected-refs` checks, the `launcher-anchor` additions, fixture and state cleanup, and the settings-drift warning in `worktrees`.
+- `doctor.ts`: the `sandbox` and `protected-refs` checks, the `sandbox gate: warn` warning, the `sandbox-runtime` (`srt`) diagnostic, the `launcher-anchor` additions, fixture and state cleanup, and the settings-drift warning in `worktrees`.
 
 ### Rollout (Krzysztof)
 
-1. Run R1, R6 and R7, then revise this spec, set it to `ready` and accept ADR-0015. Run the R4 hook-allow item with the #66 kit, then take Decisions 2 and 8.
-2. Merge Tasks 2–3, add the `sandbox:` values to The Charter, rebuild the bundle and run `wardens sync`. The Bash `PostToolUse` matcher is not rendered yet, so no unmapped event reaches the engine (U3). Run R2–R4 with the generated files.
-3. Merge Tasks 4a, 4b and 6. Task 4a brings the matcher and its mapping together. **Rebuild the primary first** (F3): pull the merged `main` and rebuild in the primary checkout, then run `wardens doctor` (`bundle`, `coverage`). Only after that may any task worktree rebase onto it or start a session with the new settings. A worktree whose settings carry the Bash matcher while the primary's bundle is still old would turn every Bash call into NOT_MAPPED. From then on, every Claude Code session starts with the canary.
-4. Launch OVERSEER with `--settings .claude/overseer.settings.json`.
-5. Set `sandbox.required: true`.
+Decision 2 sets the order: soft first, hard after R4.
+
+1. Run R1, R6 and R7, then revise this spec, set it to `ready` and accept ADR-0015. Separately, and at any time, Krzysztof's own Charter PR for the B2 decision adds `.panopticon/**` to `protected.deny` and `.claude/**` to `protected.ask`, followed by a bundle rebuild, `wardens sync` and `wardens doctor`.
+2. Merge Tasks 2–3, add the `sandbox:` values to The Charter with `gate: warn`, rebuild the bundle and run `wardens sync`. The Bash `PostToolUse` matcher is not rendered yet, so no unmapped event reaches the engine (U3). Run R2 and R3 with the generated files, and the R4 hook-allow item with the #66 kit.
+3. Merge Tasks 4a, 4b, 5 and 6. Task 4a brings the matcher and its mapping together. **Rebuild the primary first** (F3): pull the merged `main` and rebuild in the primary checkout, then run `wardens doctor` (`bundle`, `coverage`). Only after that may any task worktree rebase onto it or start a session with the new settings. A worktree whose settings carry the Bash matcher while the primary's bundle is still old would turn every Bash call into NOT_MAPPED.
+4. **Soft phase (`gate: warn`).** Every Claude Code session is asked to run the canary and is never blocked for it. Run R4 with the real hooks, and re-check the R6 and R7 results (profile, pointer protection, post payloads) with the real hooks and generated files. The recorded passes show whether the canary passes in interactive, `-p` and subagent runs. Launch OVERSEER with `--settings .claude/overseer.settings.json` in this phase, so its canary is proven before the switch.
+5. **Switch to the hard gate (`gate: block`)**, by a Charter PR:
+   - IF R4 confirms that the hook `allow` works in `-p` and in subagents, THEN switch directly;
+   - otherwise, first add the fallback `permissions.allow` rule `Bash(<node> <bundle> sandbox canary *)` to the per-machine settings (R1), check that the canary passes in `-p` and subagents with it, then switch.
+6. Set `sandbox.required: true`. Validation accepts it only with `gate: block`.
 
 ## Tasks
 
 Each task becomes its own issue, linked to #69.
 
 1. **This spec and ADR-0015.** Krzysztof decides. **Allowed paths:** `docs/specs/**`, `docs/decisions/**`, `docs/decision-log.md`.
-2. **Charter `sandbox:` schema and validation** (no behaviour change). `risk:high`. **Allowed paths:** `wardens/**`.
+2. **Charter `sandbox:` schema and validation** (no behaviour change), including `gate: warn|block` (default `warn`) and the `required` needs `block` rule. `risk:high`. **Allowed paths:** `wardens/**`.
 3. **Render:** the `sandbox` block, the `env` cache entries and the OVERSEER profile, with render tests. The launcher stays byte-equal, and the `PostToolUse` matcher is not extended. `risk:high`. **Allowed paths:** `wardens/**`. Depends on 2, R1 and R6.
 4. **`sandbox-guard`:**
-   - **4a.** The rule, with the Bash `PostToolUse` matcher, its mapping row and its `mapLifecycle` mapping shipped together (U3). It also brings the canary short-circuit and its explicit `allow`, the `RANK` allow level, the Bash post routing and `Mapped.tool_output`, the nonce cap, the state store and fixtures, the `SessionStart` reset, `classifyCwd` relative to the trusted primary and the state-directory deny. It comes with DENIED/ALLOWED tables per rule, including forged canary forms, and the real-bundle test from a linked worktree (B1).
+   - **4a.** The rule in both gate modes, with tables for `warn` and `block`, plus the Bash `PostToolUse` matcher, its mapping row and its `mapLifecycle` mapping shipped together (U3). It also brings the `SessionStart` token warning, the canary short-circuit and its explicit `allow`, the `RANK` allow level, the Bash post routing and `Mapped.tool_output`, the nonce cap, the state store and fixtures, the `SessionStart` reset, `classifyCwd` relative to the trusted primary and the state-directory deny. It comes with DENIED/ALLOWED tables per rule, including forged canary forms, and the real-bundle test from a linked worktree (B1).
    - **4b.** The `wardens sandbox canary` subcommand and its cwd-class checks, with per-nonce fixtures, run-unique probe names, the three result lines and exit 0 in every case.
    - **4c** (if Decision 7 chooses it). The DoD runs `pnpm check` under the rendered sandbox profile.
 
    `risk:high`. **Allowed paths:** `wardens/**`. Depends on 2 and R7. 4a also depends on 3.
-5. **`doctor`:** the `sandbox` and `protected-refs` checks, the `launcher-anchor` additions, fixture and state cleanup, and the settings-drift warning. `risk:high`. **Allowed paths:** `wardens/**`. Depends on 3 and R1.
+5. **`doctor`:** the `sandbox` and `protected-refs` checks, the `sandbox gate: warn` warning, the `sandbox-runtime` (`srt`) diagnostic (warn only, never a gate), the `launcher-anchor` additions, fixture and state cleanup, and the settings-drift warning. `risk:high`. **Allowed paths:** `wardens/**`. Depends on 3 and R1.
 6. **Task config for sandboxed toolchains:** `.panopticon/task.env` in `wardens worktree new` and `setup`, its strict parser, and the `SessionStart` export through `CLAUDE_ENV_FILE`. `risk:high`. **Allowed paths:** `wardens/**`. Depends on R2. Loader fixes under `apps/**` that R2 finds are separate issues.
 
 ## Decisions (Krzysztof)
 
 1. **Accept ADR-0015** after R1, R6 and R7, or reject it and keep ring 0 alone.
-2. **Canary gate.** *Changed facts (U2, U4):* the canary is not in `permissions.allow` and `autoAllowBashIfSandboxed` is false, so it prompts, or is denied in `-p`, headless and subagent runs. With fixed probe names, parallel canaries could also lock a sandboxed session out. *Changed facts (Sentinel B1, B2):* in a linked worktree, `secret-read-guard` denied the canary command itself, so under the hard gate no linked session could ever pass. The canary short-circuit fixes that. Separately, `.panopticon/**` and `.claude/**` have no ring-0 shell-write control. This revision adds the explicit hook `allow`, the short-circuit, the nonce cap and per-nonce fixtures. Option A's cost and feasibility now depend on R4.
-   - Option A: hard gate. Every session blocks Bash until the canary passes, and `sandbox-guard` lets the canary through with an explicit hook `allow` (proposed, if R4 confirms the hook allow).
-     - *Before:* "one extra turn per session, subagents and `-p` runs included".
-     - *After:* one denied Bash call plus the canary call per session. That includes each subagent when its hook payloads carry their own `session_id` (R4). At most two nonces are issued per proof cycle, then the session fails closed.
-     - It works in `-p` and subagents only if R4 shows that a hook `allow` skips the prompt there. If not, the fallback is a per-machine `permissions.allow` prefix rule (R1 file). Without either, A removes Bash for good from every `-p`, headless and subagent session, so it is not workable.
-   - Option B: soft gate, warn only. Bash runs before any canary; the hook asks for the canary through `additionalContext` and logs unproven sessions to the Ledger.
-     - No turn cost and no lock-out.
-     - A session with the sandbox switched off is not stopped.
-     - A primary-cwd session launched without the OVERSEER profile can write the primary checkout by Bash, including the bundle the launcher runs, unless R6 shows the `wardens/dist/` `denyWrite` holds. Otherwise only `worktree-guard`'s parser stands in the way, and B brings back the bundle hash and its refresh on every rebuild path (Launcher and anchor).
-     - Under B, a session whose sandbox is off can write `.panopticon/**` (`task.json`, `task.env`) and `.claude/settings.json`, and ring 0 does not stop it in any spelling (Known gaps, B2). B therefore also needs the recommended Charter change (`.panopticon/**` in `protected.deny`, `.claude/**` in `protected.ask`), and even then only parsed spellings are covered.
-   - Option C (new): the hook runs the canary itself. Outside the session, it wraps the canary in the open-source sandbox runtime that Claude Code uses (`@anthropic-ai/sandbox-runtime`, `srt`), with the rendered profile.
-     - No Bash turn and no permission rule, so it works in `-p`, headless and subagent runs.
-     - It proves only that the rendered profile is enforceable on this machine, not that this session's Bash runs under it. Local settings, `--settings` or `--setting-sources` that switch the sandbox off would pass.
-     - It adds a dependency, and its profile must match Claude Code's. The session-level proof falls back to `doctor` and the Ledger.
+2. **Canary gate: decided.** The target is A, the hard gate, reached in two steps (recorded on PR #70).
+   - **Step 1, B (soft, warnings only)** during R4 and while R6 and R7 are re-checked with the real hooks. It shows whether the canary passes in practice: interactive, `-p` and subagents.
+   - **Step 2, A (hard).** Switch once R4 confirms that the hook `allow` works in `-p` and subagents. Otherwise put the per-machine `permissions.allow` fallback rule in place first, then switch.
+   - **C alone is rejected.** `srt` proves that the machine can enforce the profile, not that this session runs under it. It stays as a `doctor` diagnostic (`sandbox-runtime`), not as a gate.
+   - **Why:** B on its own leaves gaps for good: writes to `.panopticon/**` and `.claude/**` from a session without the profile. A without R4 can take Bash away from headless and subagent runs for good.
+   - **In this spec:** `sandbox.gate: warn|block`, default `warn` (Charter section); the two modes (Ring 0); `required: true` only with `block`; Rollout steps 2–6; Tasks 2, 4a and 5.
+   - **Cost of A, kept from the analysis:** one denied Bash call plus the canary call per session, and per subagent when it has its own `session_id` (R4). At most two nonces per proof cycle, then the session fails closed.
 3. **The `.git` carve-out:** if R3 fails, accept it with the ruleset and `doctor protected-refs`, or wait for the Dev Container.
 4. **Network list and `deny_read` set:** confirm the initial values. *Changed facts (U6, U10):* the minimum `deny_read` removes the default `gh` and git HTTPS credentials, which Decision 8 has to settle before R2. The secret globs are now rendered at any depth under the primary, which also denies sibling worktrees' secrets.
 5. **`commands.deny` additions** (Charter, human): `gh pr merge*` and the mutating `gh api` forms. The latter overlaps with #61.
 6. **B3 on `main` today: resolved.** It was handled as GHSA-6phq-wv5j-xq2f, merged as 46b6792, and #74 added the anchored primary for policy. This spec keeps that anchor and adds no hash (Launcher and anchor).
 7. **DoD outside the sandbox:** close it in Task 4c (run `pnpm check` under the sandbox profile) or accept it as a known gap for phase 0. *Changed facts (U5, U7):*
-   - The hook runs outside the session's sandbox, so Task 4c needs a sandbox runner of its own (`srt`, as in Decision 2 option C).
+   - The hook runs outside the session's sandbox, so Task 4c needs a sandbox runner of its own (`srt`, the runtime Decision 2 keeps as a `doctor` diagnostic).
    - Inside it, `pnpm check` cannot read `.env` and takes its task config from `.panopticon/task.env` (Task 6).
    - Unsandboxed DoD code can write the anchor and the primary's bundle. That is why a bundle hash would not help, and why accepting the gap now also accepts that exposure.
-8. **GitHub credentials inside the sandbox (new, U6).** With the minimum `deny_read`, sandboxed `gh` and HTTPS `git push` have no credential. SSH is out under every option.
-   - Option A: a fine-grained personal access token for this repository only, exported as `GH_TOKEN` in the environment that launches the session. Its permissions are contents, pull requests and issues (read and write), with no administration, workflows or secrets. git uses `gh`'s credential helper (`gh auth setup-git`, a human setup step), which reads `GH_TOKEN`. The minimum `deny_read` stays as it is (proposed).
-     - The token is in every sandboxed command's environment (the "environment tokens" gap, with a narrower token).
-     - It is still Krzysztof's identity. If his ruleset bypass applies to it, it can merge and push to `main`; R2 checks this.
-     - `commands.deny` does not contain it (F6). That list is a parser over command text. With `GH_TOKEN` in the environment, `curl` or `gh api` to the allowlisted `api.github.com` can merge, comment or change settings that the token permits, whatever Decision 5 adds. Decision 5 narrows only the `gh` spellings it names.
-     - The issues permission lets it edit labels (`risk:*`, `needs:human`) and issue bodies. #38's scope control (`gh issue edit … --body` in `commands.deny`) is also only a parser deny, so the token can widen a task's allowed paths through the API.
-     - The agent can publish the token itself, in a public comment or a gist, for example after a prompt injection. github.com is allowlisted, so the sandbox does not stop it.
-     - It needs a short expiry (at most 7 days, proposed), is rotated by hand, and is never committed.
-   - Option B: exempt the `gh` credential store. Drop `~/.config/gh` from the minimum and keep the token in `hosts.yml` (`gh auth login --insecure-storage`), since the Keychain is denied or unreachable (R2).
-     - Sandboxed Bash can read Krzysztof's full token, with every scope and the bypass, and github.com is allowlisted. This removes the point of the credential deny for GitHub and conflicts with the spirit of C-18.
-   - Option C: no GitHub credential inside the sandbox. `git push`, `gh pr create` and the other `gh` writes run outside it: by Krzysztof, or later through #64's fixed operations run by a hook. Reads keep working unauthenticated, because the repository is public.
-     - Until #64 lands, agents cannot push or open PRs, and step 7 of the `AGENTS.md` workflow changes. R2 then checks that these commands fail cleanly instead of working.
+8. **GitHub credentials inside the sandbox: decided, option C** (recorded on PR #70). No GitHub credential is available inside the sandbox, and the minimum `deny_read` stays as it is.
+   - **Rejected:** A (a fine-grained token in `GH_TOKEN`), because of the `commands.deny` bypass through `gh api` or `curl`, label and body edits, token leakage, and the ruleset bypass under Krzysztof's identity. B (exempting `~/.config/gh`), because the agent would read the full token.
+   - **Cost:** pushes and `gh pr create` happen outside the sandbox. Krzysztof runs them, or OVERSEER runs them from an unsandboxed session, which depends on R6. Step 7 of the `AGENTS.md` workflow changes accordingly; that is a Covenant change Krzysztof approves.
+   - **Open design point for the OVERSEER variant:** with `sandbox.enabled`, every Claude Code session in this project runs Bash under the sandbox and its `deny_read`, the OVERSEER profile included ("the same `sandbox` block"). Under `gate: block` it is also gated by the canary. An unsandboxed OVERSEER session therefore needs a profile or launch mode that this spec does not define yet. R6 must show whether one is expressible, and it must agree with the hard gate and with the `doctor` `sandbox` allowlist. Until it is designed, Krzysztof pushes and opens PRs.
+   - **Later, D (outside this spec):** a GitHub App or bot account with minimal permissions: contents and pull requests on non-protected branches only, and no issues, labels, admin or workflows. It is not Krzysztof's identity, so the ruleset bypass does not apply. To be linked with #64.
