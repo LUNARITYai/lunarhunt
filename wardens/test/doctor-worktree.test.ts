@@ -435,13 +435,14 @@ describe("doctor with the worktree checks", () => {
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     const results = runChecks(false, doctorDeps(f));
     const ids = results.map((r) => r.id);
-    expect(ids.slice(-7)).toEqual([
+    expect(ids.slice(-8)).toEqual([
       "claude-version",
       "shell-glob-options",
       "worktrees",
       "task-databases",
       "charter-drift",
       "task-integrity",
+      "issue-repo",
       "primary-behind",
     ]);
     expect(ids).toContain("worktree-exclusions");

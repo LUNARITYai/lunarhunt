@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
   checkCharterDrift,
+  checkIssueRepo,
   checkPrimaryBehind,
   checkTaskDatabases,
   checkTaskIntegrity,
@@ -794,6 +795,7 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkTaskDatabases(primary, worktreeDeps),
       checkCharterDrift(toplevel, primary),
       checkTaskIntegrity(primary, deps.home),
+      checkIssueRepo(primary, deps.home),
       checkPrimaryBehind(primary),
     );
   }

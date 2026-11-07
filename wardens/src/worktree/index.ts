@@ -4,6 +4,7 @@ import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
 import { gitToplevel, primaryCheckout } from "../git.ts";
 import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
+import { githubRepo, readRepo } from "../sync/anchor.ts";
 import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
 import { forgetTaskHash, taskId } from "../task-integrity.ts";
@@ -59,25 +60,42 @@ function baseBranchOf(cfg: WorktreeConfig): string | null {
     : null;
 }
 
-const GITHUB_REMOTE =
-  /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
-
 /**
- * `owner/repo` of the primary's `remote.origin.url`, or a failure message. The
- * scope of a task comes from this repository's issue, so `gh` must not pick
- * the repository from the worktree it runs in.
+ * `owner/repo` that `wardens sync` recorded for the primary, or a failure
+ * message. The scope of a task comes from this repository's issue, so the
+ * source must be one an agent cannot write: `.git/config` is shared with every
+ * worktree and is only cross-checked, never trusted.
  */
-function originRepo(primary: string): string | { error: string } {
+function issueRepo(deps: Deps, primary: string): string | { error: string } {
+  const sync = "Ask Krzysztof to run wardens sync";
+  const home = trustedHome(deps.env);
+  if (home === null) {
+    return {
+      error: msg(
+        "cannot resolve HOME, so the issue repository recorded by wardens sync cannot be read",
+        "Set HOME to an absolute path of an existing directory",
+      ),
+    };
+  }
+  const repo = readRepo(home, primary);
+  if (repo === null) {
+    return {
+      error: msg(
+        "wardens sync recorded no issue repository for this primary checkout",
+        sync,
+      ),
+    };
+  }
   const url = git(primary, ["config", "--get", "remote.origin.url"]);
-  const match = url.ok ? GITHUB_REMOTE.exec(url.out) : null;
-  return match?.[1] === undefined
-    ? {
-        error: msg(
-          "remote.origin.url of the primary checkout is not a github.com repository, so the issue cannot be read from a known source",
-          "Fix the origin remote of the primary checkout and run it again",
-        ),
-      }
-    : match[1];
+  if ((url.ok ? githubRepo(url.out) : null) !== repo) {
+    return {
+      error: msg(
+        `remote.origin.url of the primary checkout does not match ${repo}, the repository recorded by wardens sync`,
+        sync,
+      ),
+    };
+  }
+  return repo;
 }
 
 function fetchIssue(
@@ -86,7 +104,7 @@ function fetchIssue(
   issue: number,
   primary: string,
 ): IssueInfo | string {
-  const repo = originRepo(primary);
+  const repo = issueRepo(deps, primary);
   if (typeof repo !== "string") {
     return repo.error;
   }

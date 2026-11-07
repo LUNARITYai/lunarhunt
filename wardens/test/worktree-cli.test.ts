@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { writeRepo } from "../src/sync/anchor.ts";
 import {
   type Deps,
   type Result,
@@ -137,6 +138,8 @@ function fixture(
   // Hashes of task.json go below this HOME, never the developer's.
   const home = join(base, "home");
   mkdirSync(home);
+  // What `wardens sync` records for the primary; setup reads the issue repository only from here.
+  writeRepo(home, primary, "o/r");
   const deps = (over: Partial<Deps> = {}): Deps => ({
     env: { HOME: home },
     cwd: primary,

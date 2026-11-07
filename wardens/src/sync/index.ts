@@ -5,7 +5,14 @@ import { gitToplevel } from "../git.ts";
 import { trustedHome } from "../home.ts";
 import { engineMessage, wardenMessage } from "../messages.ts";
 import { detectAgent } from "../trailer.ts";
-import { anchorPath, writeAnchor } from "./anchor.ts";
+import { git } from "../worktree/git.ts";
+import {
+  anchorPath,
+  githubRepo,
+  reposPath,
+  writeAnchor,
+  writeRepo,
+} from "./anchor.ts";
 import { structuralPrimary } from "./primary.ts";
 import { render } from "./render.ts";
 
@@ -102,6 +109,7 @@ export function runSync(
       )}\n`,
     };
   }
+  let repo: string | null = null;
   try {
     for (const [path, text] of files) {
       const target = join(toplevel, path);
@@ -109,6 +117,17 @@ export function runSync(
       writeFileSync(target, text);
     }
     writeAnchor(home, verified.primary);
+    // The human-run sync is where the issue repository is pinned: worktree
+    // commands read it from here, never from the config an agent can edit.
+    const remote = git(verified.primary, [
+      "config",
+      "--get",
+      "remote.origin.url",
+    ]);
+    repo = remote.ok ? githubRepo(remote.out) : null;
+    if (repo !== null) {
+      writeRepo(home, verified.primary, repo);
+    }
   } catch {
     return {
       exitCode: 2,
@@ -118,7 +137,11 @@ export function runSync(
   }
   return {
     exitCode: 0,
-    stdout: `launcher anchor ${anchorPath(home)} lists ${verified.primary}\n`,
+    stdout: `launcher anchor ${anchorPath(home)} lists ${verified.primary}\n${
+      repo === null
+        ? "issue repository not recorded: remote.origin.url is not a github.com repository\n"
+        : `issue repository ${repo} recorded in ${reposPath(home)}\n`
+    }`,
     stderr: "",
   };
 }

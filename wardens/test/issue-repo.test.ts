@@ -28,16 +28,18 @@ function issueCalls(f: Fixture): string[][] {
 
 describe("setup and new read the issue repository from the sidecar only", () => {
   it("fail with the sync next action, and call no gh, when the sidecar entry is missing", () => {
-    const f = fixture({ repos: false, worktree: false });
+    const f = fixture();
+    rmSync(reposFile(f));
+    const before = issueCalls(f).length;
     for (const res of [
-      runWorktree({ sub: "new", arg: "5" }, f.deps),
+      runWorktree({ sub: "new", arg: "6" }, f.deps),
       setupAgain(f, true),
     ]) {
       expect(res.exitCode).toBe(2);
       expect(res.stderr.trim()).toMatch(MESSAGE_PATTERN);
       expect(res.stderr).toContain(SYNC_NEXT);
     }
-    expect(issueCalls(f)).toEqual([]);
+    expect(issueCalls(f)).toHaveLength(before);
   });
 
   it("fail when the only entry names another primary", () => {
@@ -135,8 +137,7 @@ describe("doctor issue-repo", () => {
   });
 
   it("warns when the entry is absent and names wardens sync", () => {
-    const f = fixture({ repos: false });
-    rmSync(reposFile(f), { force: true });
+    const f = fixture({ repos: false, worktree: false });
     const res = checkIssueRepo(f.primary, f.home);
     expect(res.status).toBe("warn");
     expect(res.message).toContain("wardens sync");

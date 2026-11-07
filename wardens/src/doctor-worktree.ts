@@ -11,6 +11,7 @@ import {
   type WorktreeConfig,
 } from "./charter.ts";
 import type { CheckResult, CheckStatus } from "./doctor.ts";
+import { githubRepo, readRepo } from "./sync/anchor.ts";
 import { integrityOf, listRecords, real } from "./task-integrity.ts";
 import { git, listWorktrees } from "./worktree/git.ts";
 import { GH_FAILED_STATE, issueOf, prState } from "./worktree/index.ts";
@@ -374,6 +375,42 @@ export function checkTaskIntegrity(primary: string, home: string): CheckResult {
       ? "no task worktree has a task.json"
       : `${verified} task.json ${verified === 1 ? "file matches" : "files match"} the recorded hash`,
   );
+}
+
+/**
+ * The repository `wardens worktree new|setup` read issues from is the entry
+ * `wardens sync` wrote for this primary; `remote.origin.url` is only compared.
+ */
+export function checkIssueRepo(primary: string, home: string): CheckResult {
+  const id = "issue-repo";
+  if (!isAbsolute(home)) {
+    return result(
+      id,
+      "warn",
+      "HOME could not be resolved, so the issue repository recorded by wardens sync cannot be read. Set HOME to an absolute path of an existing directory",
+    );
+  }
+  const repo = readRepo(home, primary);
+  if (repo === null) {
+    return result(
+      id,
+      "warn",
+      "wardens sync recorded no issue repository for this primary checkout, so wardens worktree new and setup fail. Ask Krzysztof to run wardens sync",
+    );
+  }
+  const url = git(primary, ["config", "--get", "remote.origin.url"]);
+  const current = url.ok ? githubRepo(url.out) : null;
+  return url.ok && current !== repo
+    ? result(
+        id,
+        "warn",
+        `remote.origin.url names ${current ?? "no github.com repository"} but wardens sync recorded ${repo}. Ask Krzysztof to check the remote and run wardens sync`,
+      )
+    : result(
+        id,
+        "ok",
+        `issues are read from ${repo}, recorded by wardens sync`,
+      );
 }
 
 const PRIMARY_WATCHED = [CHARTER_FILENAME, "wardens/"];

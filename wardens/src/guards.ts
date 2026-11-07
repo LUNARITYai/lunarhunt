@@ -12,6 +12,7 @@ import {
   secretCandidates,
   tokenizeAll,
   valueTargets,
+  walkCommands,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
@@ -1048,6 +1049,14 @@ const GIT_CONFIG_READ_EXTRAS = new Set([
   "-z",
   "--null",
 ]);
+/** `git remote` subcommands that leave every URL as it is. */
+const GIT_REMOTE_KEEPS_URL = new Set([
+  "show",
+  "get-url",
+  "update",
+  "prune",
+  "set-head",
+]);
 const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "--namespace", "--super-prefix"]);
 
 function gitMetadataCommandBlock(what: string): Objection {
@@ -1066,6 +1075,22 @@ function gitMetadataCommandBlock(what: string): Objection {
  * `--git-dir` and `--work-tree` in front of a subcommand that writes.
  */
 function gitRewriteDeny(segment: Segment): Objection | null {
+  // The segment's own command word and every command a see-through wrapper
+  // (`env`, `command`, `nohup`, `sudo`, `xargs`, `find -exec`, ...) may run.
+  const starts = [...walkCommands(segment.argv).at].sort((a, b) => a - b);
+  for (const start of starts) {
+    const denied = gitRewriteDenyOne({
+      ...segment,
+      argv: segment.argv.slice(start),
+    });
+    if (denied) {
+      return denied;
+    }
+  }
+  return null;
+}
+
+function gitRewriteDenyOne(segment: Segment): Objection | null {
   const argv = segment.argv;
   if (foldCase((argv[0] ?? "").split("/").pop() ?? "") !== "git") {
     return null;
@@ -1134,9 +1159,9 @@ function gitRewriteDeny(segment: Segment): Objection | null {
   }
   if (sub === "remote") {
     const verb = args.find((a) => !a.startsWith("-"));
-    if (verb !== undefined && verb !== "show" && verb !== "get-url") {
+    if (verb !== undefined && !GIT_REMOTE_KEEPS_URL.has(verb)) {
       return gitMetadataCommandBlock(
-        "git remote changes are denied; only git remote, -v, show and get-url are allowed",
+        "git remote changes are denied; only git remote, -v, show, get-url, update, prune and set-head are allowed",
       );
     }
   }
