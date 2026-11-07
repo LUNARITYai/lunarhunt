@@ -34,6 +34,18 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
   - the Charter `commands.deny` and allow-list changes below.
   - The ruleset is only as strong as the agent's lack of Krzysztof's credentials.
 
+### Stage 1 threat model
+
+- In Stage 1 the agent runs as Krzysztof's UID without a sandbox. Anything his session can reach, the agent can reach or spoof: Keychain prompts, the broker process, `.git` config, his `gh` token.
+- Stage 1 is attribution and mobile merge, **not a security control**. The only gates are Krzysztof refusing an unannounced prompt and reviewing diffs.
+- The TTY check, the typed confirmation and "human-only" are conveniences, not enforced against an agent: a pty (`script`, Python `pty`) or another spelling of the CLI defeats them.
+- Known residuals, accepted for Stage 1:
+  - config or proxy redirect of the push between Phase A and Phase B (`http.proxy` with `sslVerify=false`, `extraHeader`, `insteadOf`, `commondir`, `alternates`);
+  - a lookalike Keychain prompt fired by a process left over from Phase A at the announced moment;
+  - `wardens identity` reached through other spellings or a pty;
+  - self-approval through Krzysztof's `gh` token.
+- The Stage 1 key is treated as burnt. The Stage 2 gate generates a fresh key and deletes the Stage 1 key.
+
 ### Relation to other work
 
 - **Sandbox spec, PR #70, Decision 8:** option C is decided (no GitHub credential inside the sandbox). This spec is its option D.
@@ -84,8 +96,11 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 - THE App SHALL NOT hold Administration, Workflows, Secrets, Variables, Environments, Actions, Deployments, Pages, Webhooks, Checks, Statuses, or any organization or account permission.
 - THE App SHALL NOT be a bypass actor on any ruleset, a CODEOWNERS entry or a collaborator.
 - The repository Actions setting "Allow GitHub Actions to create and approve pull requests" SHALL be off (`can_approve_pull_request_reviews: false`).
-- THE checks above SHALL be run by Krzysztof with `wardens identity check`. It reads the installation (App JWT) and the ruleset, and the Actions setting (his admin `gh`).
-  - It is human-only: it needs a TTY and the key prompt.
+- THE checks above SHALL be run by Krzysztof with `wardens identity check`. Its credentials:
+  - the App JWT (one announced key prompt) for the installation;
+  - his own `gh` for the ruleset and the Actions setting.
+  - It prints only field names and pass or fail, never response bodies or tokens.
+  - It is human-run; the no-fallback rule applies to `publish` only.
   - `wardens doctor` stays agent-runnable and never touches the key.
 
 ### Private key
@@ -93,7 +108,7 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 - THE key SHALL be stored as a login-Keychain generic-password item, service `panopticon.lunarhunt-agent`, created with `security add-generic-password -s panopticon.lunarhunt-agent -a lunarhunt-agent -T "" -w`.
   - `-T ""`: no trusted app, so every access asks for confirmation.
   - `-w` without a value: the value is typed or pasted at the prompt, never on argv.
-  - The value is the base64 of the PEM.
+  - The value is the base64 of the PEM. The exact import form is the one probe R5 shows to round-trip about 2.2 KB without truncation.
 - Krzysztof SHALL never click "Always Allow". He SHALL deny any Keychain prompt that the broker did not announce on its own TTY just before ("Keychain prompt for panopticon.lunarhunt-agent expected now").
 - THE key SHALL NOT exist as a file anywhere after import:
   - download the `.pem` into a directory excluded from Time Machine, iCloud and Spotlight;
@@ -106,38 +121,48 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 ### Broker: `wardens identity` (human-only)
 
 - THE only code that reads the key or mints tokens SHALL be `wardens identity publish` and `wardens identity check`.
-- IF stdin or stdout is not a TTY, THEN THE broker SHALL refuse. Agent Bash has no TTY.
-- THE Charter `commands.deny` SHALL contain `wardens identity*` and `security *` for agents.
+- IF stdin or stdout is not a TTY, THEN THE broker SHALL refuse. This is a convenience, not a control (Stage 1 threat model).
+- THE Charter `commands.deny` SHALL contain, as a belt only: `security *`, `wardens identity*`, `node *wardens* identity*`, `*wardens.mjs identity*`, `pnpm exec wardens identity*`, `script *`.
 - WHEN `publish <worktree>` starts, THE broker SHALL:
   - read The Charter from the trusted primary (`bundlePrimary`, #74), never from the worktree;
   - check that the worktree's `.git` file points into the primary's `.git/worktrees/` list;
-  - require a clean tree and a branch that matches `worktree.naming.branch`;
-  - record `SHA = HEAD`.
+  - run the config check below as its first git call;
+  - then require a clean tree and a branch that matches `worktree.naming.branch`;
+  - record `SHA = HEAD`;
+  - read the PR body file once into memory.
 - THE broker SHALL run every git command with a clean environment:
-  - only `PATH=/usr/bin:/bin:<git dir>`, `HOME=<empty 0700 temp dir>`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `LANG=C`;
+  - only `PATH=/usr/bin:/bin:<directory of the git binary>`, `HOME=<empty 0700 temp dir>`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `LANG=C`;
   - no `GH_TOKEN`, `GITHUB_TOKEN`, `GIT_ASKPASS`, `SSH_AUTH_SOCK` or `GIT_*` besides those.
-- IF `git config --show-origin --list` (local and worktree scope) has a key outside the allowlist, THEN THE broker SHALL refuse.
-  - The allowlist: `core.repositoryformatversion`, `core.filemode`, `core.bare`, `core.logallrefupdates`, `core.ignorecase`, `core.precomposeunicode`, `extensions.worktreeconfig`, `remote.origin.url` (must equal `https://github.com/LUNARITYai/lunarhunt.git`), `remote.origin.fetch`, `branch.<name>.remote`, `branch.<name>.merge`, `user.name`, `user.email`.
-  - Anything under `url.*`, `http.*`, `credential.*`, `include*`, `remote.*.pushurl`, `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.pager` or `core.editor` is therefore refused.
-- **Phase A (hooks, no token):** THE broker SHALL run the Charter `definition_of_done` at `SHA`.
+- **Config check:** IF `git config --show-origin --list` (local and worktree scope) has a dangerous key, THEN THE broker SHALL refuse.
+  - The deny list (case-insensitive): `url.*` (including `insteadOf` and `pushInsteadOf`), `http.*`, `credential.*`, `include.*`, `includeIf.*`, `remote.*.pushurl`, `remote.*.proxy`, `remote.*.receivepack`, `remote.*.uploadpack`, `remote.*.vcs`, `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `core.gitProxy`, `core.askPass`, `core.pager`, `core.editor`, `core.worktree`, `filter.*`, `diff.*.textconv`, `diff.*.command`, `merge.*.driver`, `protocol.*`, `uploadpack.*`, `receive.*`, `gpg.*`, `alias.*`, `sequence.editor`.
+  - `remote.origin.url` must equal `https://github.com/LUNARITYai/lunarhunt.git`. Every other key (`branch.*.*`, `gc.*`, `pull.*`, benign `core.*` scalars) passes.
+  - A test SHALL run the check against this repository's real config and pass.
+- **Phase A (hooks, no token):** THE broker SHALL run exactly the `pre-push` command from the trusted primary's `lefthook.yml` (today `pnpm check`) at `SHA`. These are the hooks `--no-verify` skips in Phase B; the worktree's own `lefthook.yml` is never read.
   - No token exists yet and no extra fd is open.
   - Stage 1: unsandboxed in Krzysztof's terminal. Same exposure as his manual push today; residual.
   - Stage 2: under the sandbox runner of sandbox Decision 7 / Task 4c.
   - IF it fails, THEN THE broker SHALL stop before showing any prompt.
-- **Confirmation:** THE broker SHALL print branch, `SHA`, `git diff --stat origin/main...SHA` and the PR title. It SHALL require Krzysztof to type the branch name, then announce the Keychain prompt.
+- **Confirmation:** THE broker SHALL print branch, `SHA`, `git diff --stat origin/main...SHA`, the PR title (from the first line of the body file) and the SHA-256 of the body. It SHALL strip C0, C1 and ESC characters from everything it prints. It SHALL require Krzysztof to type the branch name, then announce the Keychain prompt.
 - **Phase B (token):** THE broker SHALL:
   - sign a JWT (`iat` = now − 60 s, `exp` ≤ now + 9 min) [S2];
   - mint one token with `repositories: ["lunarhunt"]`, `permissions: {contents: write, pull_requests: write}` [S1];
   - push `git push --no-verify https://github.com/LUNARITYai/lunarhunt.git <SHA>:refs/heads/<branch>`;
-  - create the PR with in-process `fetch` (non-draft [S6], base `main`, body from a file the human names);
+  - IF an open PR exists for the branch, THEN push only (update); otherwise create the PR with in-process `fetch` (non-draft [S6], base `main`, the in-memory body). A test covers both cases;
   - revoke the token with `DELETE /installation/token` in a `finally` block [S8].
-- `--no-verify` in Phase B is a broker-only exception to C-21/C-22. The hooks already ran in Phase A on the same `SHA`, and pushing the explicit `SHA` closes the race. The ADR (Task 2) records it. Agents stay denied `--no-verify`.
+- `--no-verify` in Phase B is a broker-only exception to C-21/C-22. Phase A already ran the same `pre-push` command on the same `SHA`, and pushing the explicit `SHA` closes the race. The ADR (Task 2) records it. Agents stay denied `--no-verify`.
 - THE credential helper (`wardens credential-pipe`, fd 3) SHALL answer only `get` with `protocol=https`, `host=github.com`, `path=LUNARITYai/lunarhunt.git`.
   - The broker sets `-c credential.useHttpPath=true -c credential.helper= -c credential.helper=<helper>`.
   - It returns `username=x-access-token` and the token, reads fd 3 once, and answers any other request with nothing.
-  - With hooks off and the config allowlisted, only git, `git-remote-https` and the helper inherit fd 3.
+  - With hooks off and the config checked, only git, `git-remote-https` and the helper inherit fd 3.
 - THE token and JWT SHALL appear in no argv, child environment, stdout, stderr, file or log.
 - THE broker SHALL refuse: refspecs for `main`, tags, deletions, force pushes; a `SHA` that is not `HEAD` of the task branch; `kill_switch: true`; an unset `identity:` section.
+- **Stage 2 broker requirements** (against an agent that can write the worktree and the shared `.git`):
+  - repeat the config check right before the JWT is signed;
+  - push from a broker-created bare repository in a 0700 temp dir: broker-owned config, `objects/info/alternates` pointing at the primary's `.git/objects`, `update-ref refs/heads/<branch> <SHA>`. No agent-writable config is read in Phase B;
+  - pin `-c http.proxy= -c http.sslVerify=true -c http.sslCAInfo=<system bundle> -c http.extraHeader= -c core.fsmonitor=false`;
+  - use absolute `/usr/bin/git`, an explicit `GIT_EXEC_PATH`, and the helper as an absolute `node` path plus the primary's bundle;
+  - run Phase A in its own process group, and refuse to prompt while any descendant of it is alive;
+  - a Phase A fixture that rewrites the config SHALL cause a refusal.
 
 ### Labels and escalation (Decision 2)
 
@@ -148,7 +173,7 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 ### Failure behaviour
 
 - IF the key is unavailable, the prompt is declined, minting fails or the network fails, THEN THE broker SHALL exit non-zero with `Blocked by Warden app-identity: <reason>; no App token was available. Stop and report needs:human; do not retry with another credential.`
-- THE broker SHALL NOT fall back to `gh auth`, `~/.config/gh`, osxkeychain, SSH, `GH_TOKEN`, `GITHUB_TOKEN` or any human credential. The clean git environment enforces this for git.
+- `publish` SHALL NOT fall back to `gh auth`, `~/.config/gh`, osxkeychain, SSH, `GH_TOKEN`, `GITHUB_TOKEN` or any human credential. The clean git environment enforces this for git.
 - Stage 2: agents SHALL be unable to use any human credential (probe `doctor human-credentials`).
 
 ### Commit authorship
@@ -156,7 +181,10 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 - WHEN `wardens worktree new|setup` creates a task worktree, THE SYSTEM SHALL set worktree-scoped `user.name = lunarhunt-agent[bot]` and `user.email` from Charter `identity.app.commit_email` (Decision 9).
 - THE primary checkout keeps Krzysztof's identity; his commits carry no `Agent:` trailer.
 - THE lefthook `agent-trailer` check SHALL keep requiring `Agent: <tool> (<model>)` on agent commits.
-- WHEN the CI `agent-trailer` job (Task 6, human-applied) runs on a PR authored by `lunarhunt-agent[bot]`, it SHALL fail if any commit lacks an `Agent:` trailer, whatever the commit author. The commit author can be overridden (`--author`, `-c user.name`), the PR author cannot.
+- WHEN the CI `agent-trailer` job (Task 6, human-applied) runs on a PR authored by `lunarhunt-agent[bot]`, it SHALL fail if any commit lacks an `Agent:` trailer.
+  - Exemption: a commit whose author and committer are both Krzysztof's GitHub account (the commit's GitHub-resolved `author.login` and `committer.login` = `koszczapinski`, from the API), so his fix-ups never need the bypass.
+  - The match uses the GitHub-resolved login, not the free-text name. A spoofed `user.email` still resolves to his account; that is the Stage 1 same-UID residual.
+  - The commit author can be overridden (`--author`, `-c user.name`), the PR author cannot.
 
 ### Ruleset end state (human; compared in Rollout)
 
@@ -174,8 +202,9 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
   - remove `gh pr create*`, `gh pr comment*`, `gh pr edit*`, `gh pr ready*`, `gh issue create*`, `gh issue comment*` and the label edits from `primary_read_only_commands`;
   - add to `commands.deny`: `gh pr review*`, `gh pr merge*`, `gh pr close*`, `gh issue close*`, `gh release*`, `gh workflow*`, `gh repo*`, `gh secret*`, `gh auth token*`, `gh auth login*`, `gh auth refresh*`, `git credential*`, `security *`, `wardens identity*`;
   - `gh api` mutating forms in flag-first and attached spellings: `gh api -X*`, `gh api * -X*`, `gh api --method*`, `gh api * --method*`, `gh api -f*`, `gh api * -f*`, `gh api -F*`, `gh api * -F*`, `gh api --field*`, `gh api * --field*`, `gh api --raw-field*`, `gh api * --raw-field*`, `gh api --input*`, `gh api * --input*`;
-  - `curl` with an auth header in any spelling: `curl *-H*uthorization*`, `curl *--header*uthorization*`, `curl *-*H*uthorization*`.
-  - A `command-guard` table test SHALL cover each spelling, including `gh api -X POST`, `gh api -fbody=x`, `gh api --method=PATCH`, `gh api x -XPOST`, `curl -H "Authorization: …"` and `curl -sH …`. This overlaps #61 and sandbox Decision 5.
+  - A `command-guard` table test SHALL cover each spelling, including `gh api -X POST`, `gh api -fbody=x`, `gh api --method=PATCH` and `gh api x -XPOST`. This overlaps #61 and sandbox Decision 5.
+  - **No `curl` entries.** Single-token globs cannot match `-H` and its value as separate tokens, nor `-u`, `--oauth2-bearer` or `-K`. This is a known gap; the floor is that no token exists inside the sandbox.
+- Stage 2 also needs a replacement for the agent comment and label path that the removals take away (I2 with a #64 spec, or a human-run `wardens identity comment`). It is a Stage 2 gate.
 - `gh pr review*`, `git credential*`, `security *` and `wardens identity*` MAY land in Stage 1, since OVERSEER needs none of them.
 
 ### The Ledger
@@ -185,7 +214,11 @@ Issue: [#82](https://github.com/LUNARITYai/lunarhunt/issues/82).
 - WHEN Krzysztof runs `wardens identity audit`, THE SYSTEM SHALL compare:
   - GitHub's repository events for actor `lunarhunt-agent[bot]` (public events API, unauthenticated);
   - with the `identity_operation` events.
+  - Match key: event type, ref or PR number, head SHA, and a time window of ±10 min around the local event.
   - Every unmatched GitHub event SHALL be reported as a leak alarm. GitHub is the source of truth; in Stage 1 the local log is same-UID writable.
+  - It SHALL also list approvals and merges by `koszczapinski` on bot PRs, for Krzysztof to confirm as his own. This is the only signal for the Stage 1 self-approval residual.
+  - Cadence: after each publish and at each OVERSEER session start.
+  - Gaps, stated: event latency of 30 s to 6 h, 30-day and 300-event limits, no events for reads, PR or issue body edits, review-thread resolution or auto-merge enablement. A recent leak can look clean.
 
 ### Revocation and kill switch
 
@@ -252,9 +285,9 @@ identity:
 
 1. Spec `ready`. ADR (Task 2) accepted.
 2. Create the tag ruleset. Set the Actions setting off.
-3. R1 passes; then create the App (Stage 1 permissions, no webhook) and install it on `lunarhunt` only. Generate one key, import it per "Private key", delete the `.pem`.
+3. R1 and R5 pass; then create the App (Stage 1 permissions, no webhook) and install it on `lunarhunt` only. Generate one key, import it per "Private key", delete the `.pem`.
 4. Merge Tasks 3–5 under the interim ruleset (Krzysztof pushes them himself).
-5. Add `identity:` to The Charter; `wardens sync`; `wardens identity check` green. Save `gh api repos/LUNARITYai/lunarhunt/rulesets/26499211` as the rollback copy.
+5. Add `identity:` to The Charter; `wardens sync`; `wardens identity check` green. Save the rollback copy as a `PUT`-shaped body: only `name`, `target`, `enforcement`, `conditions`, `rules` and `bypass_actors` from `gh api repos/LUNARITYai/lunarhunt/rulesets/26499211`.
 6. Web trial: one docs PR via `wardens identity publish`. Check:
    - bot author and the review request;
    - the four checks;
@@ -265,13 +298,25 @@ identity:
 7. Covenant PR (Task 7, `AGENTS.md` step 7: Krzysztof publishes agent work with `wardens identity publish`; the agent states `needs:human`). Merge it before step 8, while 0 approvals still applies.
 8. Merge or close open PRs authored by `koszczapinski`, then switch the `main` ruleset to the end state. Compare the result field by field with the end-state list.
 9. Mobile trial (R3) on a trivial bot PR: approve and squash-merge from GitHub Mobile. IF that fails, THEN restore the step-5 copy (0 approvals) with `gh api -X PUT`, and record the result on #82.
-10. Stage 2 (only after the gates in "Two stages"): the Charter changes in "Sandbox and `command-guard`"; the `doctor human-credentials` probe green inside the sandbox; Phase A under the sandbox runner.
+10. Krzysztof applies the CI `agent-trailer` job (Task 6) as a non-required check. After one green week, he adds it to the required checks (Decision 11) and to the end-state list.
+11. Stage 2 (only after the gates in "Two stages"):
+    - generate a fresh key, import it, and delete the Stage 1 key;
+    - the Charter changes in "Sandbox and `command-guard`";
+    - the `doctor human-credentials` probe green inside the sandbox;
+    - the Stage 2 broker requirements;
+    - Phase A under the sandbox runner;
+    - the comment and label replacement path.
 
 ### Known limitations
 
 - Stage 1 gives no security boundary (Two stages). Phase A runs agent code unsandboxed, as Krzysztof's push does today.
 - With I1, a human triggers each publish. The gain is identity and review, not autonomy.
-- K1 relies on Krzysztof denying prompts the broker did not announce. Until R1 proves otherwise, a same-UID process can raise a lookalike prompt.
+- K1 relies on Krzysztof denying prompts the broker did not announce. A same-UID process can raise a lookalike prompt at the announced moment (Stage 1 threat model).
+- **Deferred to Stage 2 or later:**
+  - killing Phase A leftovers before the prompt (Stage 2 process-group rule);
+  - a code-signed Keychain helper (K2);
+  - refusing when an ancestor process is an agent launcher;
+  - the repository activity API for push audit.
 - The local Ledger file is same-UID writable in Stage 1. `identity audit` against GitHub is the check.
 
 ## Tasks
@@ -291,9 +336,12 @@ Tasks 4 and 5 can run in parallel.
 
 ## Probes
 
-- **R1** (precondition of Rollout step 3): inside the sandbox profile and in a plain agent Bash, try to obtain the key or token:
+- **R1** (precondition of Rollout step 3): with a **dummy item** of service `panopticon.lunarhunt-agent`, in a plain agent Bash (Stage 1) and, once #70 lands, inside the sandbox profile, try to obtain the value or a token:
   - `security find-generic-password -s panopticon.lunarhunt-agent -w` (expect a prompt or a failure, never a value);
-  - while `publish` runs: `ps eww`, `lldb -p`, `sample` and `vmmap` against the broker pid (expect a refusal under SIP or no secret).
+  - while `publish` runs: `ps eww`, `lldb -p`, `sample` and `vmmap` against the broker pid (expect a refusal under SIP or no secret);
+  - an agent-driven `publish` through a pty, and a background process left over from Phase A that fires its own prompt.
+  - IF any of these yields a value without a prompt, THEN Stage 1 does not start, and the design moves to the different-UID broker (I2). Prompt-gated results are the accepted Stage 1 residual.
+- **R5** (precondition of Rollout step 3): round-trip a 2.2 KB dummy value through the exact import command and `find-generic-password -w`, then compare bytes. Record the working form; if `-w` at the prompt truncates, use another encoding or input form and note any short argv exposure.
 - **R2:** a Phase A fixture hook reads fds 0–255 and the environment and finds no token. In Phase B, the helper refuses `host=evil.example`.
 - **R3:** approve and squash-merge from GitHub Mobile under the end-state ruleset (Rollout step 9).
 - **R4:** mint a token, suspend the installation in the UI, then call `GET /installation/repositories` with the old token. Record whether it still works (U2).
@@ -329,7 +377,7 @@ Tasks 4 and 5 can run in parallel.
    - **Recommendation: A.** `identity audit` lists bypass merges of bot PRs.
 7. **Branch ruleset on `refs/heads/**`** (deletion and `non_fast_forward` except `main` patterns):
    - A: now;
-   - B: defer to Stage 2, after checking that it does not block auto-delete of merged head branches.
+   - B: defer to Stage 2, after checking that it blocks neither auto-delete of merged head branches nor a force-push after a rebase of a task branch.
    - **Recommendation: B.** The tag ruleset is now mandatory, not a decision.
 8. **`require_last_push_approval`.**
    - **Recommendation: false.** Stale approvals are already dismissed on push, and true would block Krzysztof from approving after he pushes a fix-up.
