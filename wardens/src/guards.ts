@@ -16,7 +16,7 @@ import {
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { segmentsMeet } from "./glob-meet.ts";
-import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { anyGlob, basename, denyListMatches, foldCase } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
@@ -42,8 +42,9 @@ export function pathInScope(
   path: string,
   charter: Charter,
   task: TaskState,
+  fold = false,
 ): boolean {
-  if (!anyGlob(charter.paths.allowed_paths, path)) {
+  if (!anyGlob(charter.paths.allowed_paths, path, fold)) {
     return false;
   }
   if (task.kind === "missing") {
@@ -52,7 +53,7 @@ export function pathInScope(
   if (task.kind === "invalid") {
     return false;
   }
-  return anyGlob(task.allowed_paths, path);
+  return anyGlob(task.allowed_paths, path, fold);
 }
 
 function isMutation(action: string): boolean {
@@ -129,7 +130,7 @@ export function generatedFilesGuard(ctx: RuleContext): Objection | null {
       "Ask for needs:human",
     );
   }
-  if (anyGlob(ctx.charter.paths.generated, ctx.event.path)) {
+  if (anyGlob(ctx.charter.paths.generated, ctx.event.path, true)) {
     return block(
       "generated-files-guard",
       "deny",
@@ -213,7 +214,10 @@ function provablyInside(
   }
   const expanded = expandHome(path, home);
   for (const part of expanded.split("/")) {
-    if (/[*?[]/.test(part) && picomatch.isMatch(".git", part, { dot: false })) {
+    if (
+      /[*?[]/.test(part) &&
+      picomatch.isMatch(".git", part, { dot: false, nocase: true })
+    ) {
       return false;
     }
   }
@@ -633,10 +637,11 @@ function protectedEdit(ctx: RuleContext): Objection | null {
     return denied;
   }
   const path = ctx.event.path;
-  if (!pathInScope(path, ctx.charter, ctx.task)) {
+  // Scope is read in any case here: another spelling of an in-scope ask path still asks.
+  if (!pathInScope(path, ctx.charter, ctx.task, true)) {
     return null;
   }
-  if (!anyGlob(ctx.charter.paths.protected.ask, path)) {
+  if (!anyGlob(ctx.charter.paths.protected.ask, path, true)) {
     return null;
   }
   if (!ctx.event.interactive) {
@@ -767,7 +772,7 @@ function gitMetadataCommandBlock(what: string): Objection {
  */
 function gitRewriteDeny(segment: Segment): Objection | null {
   const argv = segment.argv;
-  if ((argv[0] ?? "").split("/").pop() !== "git") {
+  if (foldCase((argv[0] ?? "").split("/").pop() ?? "") !== "git") {
     return null;
   }
   const configs: string[] = [];
@@ -907,8 +912,8 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      (word.split("/").pop() ?? "") === "env" &&
-      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
+      foldCase(word.split("/").pop() ?? "") === "env" &&
+      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(foldCase(w))),
   );
   if (envAt >= 0) {
     const words = segment.argv.slice(envAt + 1);

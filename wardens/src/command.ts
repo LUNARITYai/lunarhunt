@@ -1,3 +1,5 @@
+import { foldCase } from "./globs.ts";
+
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
 
@@ -527,8 +529,13 @@ const EXECUTORS = new Set([
   "ssh",
 ]);
 
+/**
+ * The tool a command word runs, in lower case: a case-insensitive volume
+ * resolves `CP` and `Git` to the real tools (#77), so every table and deny
+ * pattern is looked up by this name.
+ */
 function commandName(word: string): string {
-  return word.slice(word.lastIndexOf("/") + 1);
+  return foldCase(word.slice(word.lastIndexOf("/") + 1));
 }
 
 function isExecutor(word: string): boolean {
@@ -541,7 +548,7 @@ function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
     return true;
   }
   return prepared.every((segment, index) => {
-    const head = segment.argv[0] ?? "";
+    const head = foldCase(segment.argv[0] ?? "");
     if (raw[index]?.heredoc && !HEREDOC_CONSUMERS.has(head)) {
       return false;
     }
@@ -1089,7 +1096,7 @@ function consumesValue(flag: string, subcommand: string | null): boolean {
 }
 
 function annotate(argv: string[]): ArgToken[] {
-  if (argv[0] !== "git") {
+  if (foldCase(argv[0] ?? "") !== "git") {
     return argv.map((text) => ({ text, value: false }));
   }
   const valueIndexes = new Set<number>();
@@ -1254,7 +1261,7 @@ export function segmentMatches(pattern: string, segment: Segment): boolean {
   // `/usr/bin/git push --force` is `git push --force`.
   if (
     !first ||
-    !tokenMatches(head, { ...first, text: commandName(first.text) })
+    !tokenMatches(foldCase(head), { ...first, text: commandName(first.text) })
   ) {
     return false;
   }
@@ -1267,11 +1274,12 @@ function rightSideMatches(pattern: string, segment: Segment): boolean {
     .split(/\s+/)
     .filter((part) => part.length > 0);
   const head = commandName(segment.argv[0] ?? "");
+  const name = foldCase(parts[0] ?? "");
   if (parts.length === 1) {
-    return head === parts[0];
+    return head === name;
   }
   if (parts.length === 2) {
-    return head === parts[0] && segment.argv[1] === parts[1];
+    return head === name && segment.argv[1] === parts[1];
   }
   return false;
 }
@@ -1334,7 +1342,11 @@ export function rewriteCommand(
       .filter((part) => part.length > 0);
     if (
       parts.length === segment.argv.length &&
-      parts.every((part, index) => part === segment.argv[index])
+      parts.every((part, index) =>
+        index === 0
+          ? foldCase(part) === foldCase(segment.argv[0] ?? "")
+          : part === segment.argv[index],
+      )
     ) {
       return to;
     }
@@ -1425,7 +1437,7 @@ export function secretCandidates(segment: Segment): PathCandidate[] {
  * The command word and device paths are never targets.
  */
 export function writeTargets(segment: Segment): string[] {
-  const command = segment.argv[0] ?? "";
+  const command = foldCase(segment.argv[0] ?? "");
   const writer =
     WRITE_ALL.has(command) ||
     command === "cp" ||
@@ -1815,12 +1827,14 @@ function wrappedCommandIndex(argv: readonly string[]): number {
 function collectCandidates(segment: Segment): Candidate[] {
   const found: Candidate[] = [];
   const argv = segment.argv;
+  // A builtin (`echo`, `cd`) is matched as typed; a tool is matched by its folded name.
   const command = argv[0] ?? "";
+  const tool = foldCase(command);
   const assignmentsEnd = wrappedCommandIndex(argv);
   const keyless = ASSIGNING_BUILTINS.has(command);
-  const readOnly = READ_ONLY.has(command);
-  const writeAll = WRITE_ALL.has(command);
-  const copyLike = command === "cp" || command === "mv" || command === "ln";
+  const readOnly = READ_ONLY.has(tool);
+  const writeAll = WRITE_ALL.has(tool);
+  const copyLike = tool === "cp" || tool === "mv" || tool === "ln";
   const hereStrings = new Set<number>();
   let lastPositional = -1;
   for (let index = 1; index < argv.length; index += 1) {
@@ -1833,7 +1847,7 @@ function collectCandidates(segment: Segment): Candidate[] {
   );
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index] ?? "";
-    if (index > 0 && isMessageFlag(word, command)) {
+    if (index > 0 && isMessageFlag(word, tool)) {
       index += 1;
       continue;
     }

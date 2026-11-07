@@ -1,6 +1,7 @@
 declare module "picomatch" {
   interface Options {
     dot?: boolean;
+    nocase?: boolean;
   }
 
   interface Picomatch {
