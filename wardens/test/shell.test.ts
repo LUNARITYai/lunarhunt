@@ -216,6 +216,41 @@ describe("message-like option values", () => {
   });
 });
 
+describe("key=value candidates (#75)", () => {
+  function candidates(command: string) {
+    const pipeline = tokenize(command);
+    expect(pipeline.ok).toBe(true);
+    return pipeline.ok
+      ? secretCandidates(pipeline.segments[0] as never).map((c) => c.path)
+      : [];
+  }
+
+  it("lists the value of a key=value word and of an --opt=value word", () => {
+    expect(candidates("dd if=a of=/abs/b")).toContain("/abs/b");
+    expect(candidates("dd if=a of=/abs/b")).toContain("a");
+    expect(candidates("tool --out=../x")).toContain("../x");
+  });
+
+  it("does not list the assignments in front of the command", () => {
+    expect(candidates("A=/tmp/x pnpm check")).not.toContain("/tmp/x");
+    expect(candidates("env A=/tmp/x B=../y pnpm check")).not.toContain(
+      "/tmp/x",
+    );
+    expect(candidates("env A=/tmp/x pnpm check B=/abs")).toContain("/abs");
+  });
+
+  it("keeps a glued short option value secret-read only", () => {
+    const pipeline = tokenize("cut -d/ -f1 f");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      const glued = secretCandidates(pipeline.segments[0] as never).find(
+        (c) => c.path === "/",
+      );
+      expect(glued).toEqual({ path: "/", write: false, secretOnly: true });
+    }
+  });
+});
+
 describe("paths.external in shell", () => {
   it("allows a read below paths.external.read and a write below write", () => {
     const f = fixture();
@@ -470,6 +505,62 @@ describe("device paths in shell", () => {
           "path escapes the worktree",
         );
       }
+    }
+  });
+});
+
+describe("a home that cannot be resolved (#73)", () => {
+  function viaEnv(f: Fixture, command: string, env: NodeJS.ProcessEnv): string {
+    return runHook(
+      "claude",
+      "PreToolUse",
+      JSON.stringify({
+        cwd: f.root,
+        tool_name: "Bash",
+        tool_input: { command },
+      }),
+      { cwd: () => f.root, env },
+    ).stdout;
+  }
+
+  function withHomeGlob(f: Fixture): void {
+    const doc = parse(charterWithoutWorktree());
+    doc.paths.external = { read: ["~/.wardens-cache/**"], write: [] };
+    writeFileSync(join(f.root, "panopticon.charter.yaml"), stringify(doc));
+  }
+
+  it("grants a ~ external read only when HOME resolves", () => {
+    const f = fixture();
+    withHomeGlob(f);
+    const command = "cat ~/.wardens-cache/x";
+    expect(allowed(viaEnv(f, command, { HOME: f.home }))).toBe(true);
+    for (const HOME of ["", "relative/home"]) {
+      expect(allowed(viaEnv(f, command, { HOME }))).toBe(false);
+    }
+  });
+
+  it("denies writes to and reads of home-relative paths as unprovable", () => {
+    const f = fixture();
+    for (const HOME of ["", "relative/home"]) {
+      for (const command of [
+        "echo hi > ~/x",
+        "tee ~/x",
+        "cat ~/.ssh/id_rsa",
+        "cd ~ && touch y",
+      ]) {
+        expect(allowed(viaEnv(f, command, { HOME })), command).toBe(false);
+      }
+      const write = runHook(
+        "claude",
+        "PreToolUse",
+        JSON.stringify({
+          cwd: f.root,
+          tool_name: "Write",
+          tool_input: { file_path: "~/x", content: "x" },
+        }),
+        { cwd: () => f.root, env: { HOME } },
+      ).stdout;
+      expect(allowed(write)).toBe(false);
     }
   });
 });

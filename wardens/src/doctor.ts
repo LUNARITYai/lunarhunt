@@ -1,15 +1,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
+  checkCharterDrift,
   checkTaskDatabases,
   checkWorktreeExclusions,
   checkWorktrees,
@@ -18,12 +23,13 @@ import {
 } from "./doctor-worktree.ts";
 import { mapPayload, type ToolName } from "./event.ts";
 import { gitToplevel } from "./git.ts";
+import { trustedHome, UNRESOLVED_HOME } from "./home.ts";
 import { MAPPING_ROWS } from "./mapping.ts";
+import { CHARTER_INVALID_MESSAGE } from "./messages.ts";
 import { embeddedHash, hashSources } from "./source-hash.ts";
 import {
   anchorListsPrimary,
   anchorPath,
-  homeOf,
   parseAnchor,
   readAnchorText,
   writeAnchor,
@@ -370,11 +376,24 @@ function breakHookRealBundle(
   if (readText(bundlePath) === null) {
     return ["the real bundle is missing, so (b) and (c) cannot run"];
   }
-  const repo = mkdtempSync(join(tmpdir(), "wardens-doctor-"));
+  // The hook reads the Charter of the primary its bundle sits in (#73), so the
+  // bundle is copied into an anchored throwaway primary that holds the invalid
+  // Charter, under a throwaway HOME. The deny must name that reason.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "wardens-doctor-")));
+  const repo = join(home, "primary");
+  const copy = join(repo, "wardens", "dist", "wardens.mjs");
   const problems: string[] = [];
   try {
+    mkdirSync(repo);
     execFileSync("git", ["init", "-q"], { cwd: repo, stdio: "ignore" });
     writeFileSync(join(repo, "panopticon.charter.yaml"), "invalid: [\n");
+    mkdirSync(dirname(copy), { recursive: true });
+    cpSync(bundlePath, copy);
+    const schema = join(dirname(bundlePath), "..", "schema");
+    if (existsSync(schema)) {
+      cpSync(schema, join(repo, "wardens", "schema"), { recursive: true });
+    }
+    writeAnchor(home, repo);
     for (const tool of ["claude", "cursor"] as const) {
       const args = ["hook", "--tool", tool, "--event", PRE_EVENT[tool]];
       const attempts: [string, string][] = [
@@ -382,20 +401,25 @@ function breakHookRealBundle(
         ["malformed stdin", "not json"],
       ];
       for (const [what, input] of attempts) {
-        const res = spawnSync(process.execPath, [bundlePath, ...args], {
+        const res = spawnSync(process.execPath, [copy, ...args], {
           cwd: repo,
-          env: { ...env, CLAUDE_PROJECT_DIR: repo },
+          env: { ...env, HOME: home, CLAUDE_PROJECT_DIR: repo },
           input,
           encoding: "utf8",
           timeout: CHILD_TIMEOUT_MS,
         });
-        if (!isToolDeny(tool, res.stdout ?? "")) {
+        const stdout = res.stdout ?? "";
+        const reason =
+          what === "an invalid Charter"
+            ? stdout.includes(CHARTER_INVALID_MESSAGE)
+            : true;
+        if (!isToolDeny(tool, stdout) || !reason) {
           problems.push(`${tool} hook does not deny ${what}`);
         }
       }
     }
   } finally {
-    rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
   return problems;
 }
@@ -424,6 +448,13 @@ function checkLauncherAnchor(
   home: string,
   uid: number | undefined,
 ): CheckResult {
+  if (!isAbsolute(home)) {
+    return result(
+      "launcher-anchor",
+      "fail",
+      "cannot resolve HOME, so the launcher anchor was not checked. Set HOME to an absolute path of an existing directory",
+    );
+  }
   const file = anchorPath(home);
   const text = readAnchorText(home);
   if (text === null) {
@@ -586,7 +617,7 @@ function checkDuplicates(toplevel: string, now: number): CheckResult {
 function checkDisableAllHooks(toplevel: string, home: string): CheckResult {
   const files = [
     join(toplevel, ".claude", "settings.local.json"),
-    join(home, ".claude", "settings.json"),
+    ...(isAbsolute(home) ? [join(home, ".claude", "settings.json")] : []),
   ];
   const offenders = files.filter(
     (file) => readJsonFile(file)?.disableAllHooks === true,
@@ -642,7 +673,7 @@ export function defaultDoctorDeps(): DoctorDeps {
   return {
     cwd: process.cwd(),
     env: process.env,
-    home: homeOf(process.env),
+    home: trustedHome(process.env) ?? "",
     now: () => Date.now(),
     claudeVersion: defaultClaudeVersion,
   };
@@ -655,7 +686,10 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
   }
   let primary = deps.primary;
   if (primary === undefined) {
-    const derived = structuralPrimary(toplevel, deps.home);
+    const derived = structuralPrimary(
+      toplevel,
+      isAbsolute(deps.home) ? deps.home : UNRESOLVED_HOME,
+    );
     if (!derived.ok) {
       return [
         result(
@@ -686,8 +720,9 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),
-      checkWorktrees(toplevel, primary, worktreeDeps),
-      checkTaskDatabases(toplevel, primary, worktreeDeps),
+      checkWorktrees(primary, worktreeDeps),
+      checkTaskDatabases(primary, worktreeDeps),
+      checkCharterDrift(toplevel, primary),
     );
   }
   return results;

@@ -1,6 +1,6 @@
 import { join } from "node:path";
+import { trustedHome } from "./home.ts";
 import { hashSources } from "./source-hash.ts";
-import { homeOf } from "./sync/anchor.ts";
 import { structuralPrimary } from "./sync/primary.ts";
 
 export const STALE_MESSAGE =
@@ -25,8 +25,9 @@ function embedded(): string | null {
 export const defaultBundleProbe: BundleProbe = {
   running: embedded(),
   current: (root) => {
-    const derived = structuralPrimary(root, homeOf(process.env));
-    const primary = derived.ok ? derived.primary : null;
+    const home = trustedHome(process.env);
+    const derived = home === null ? null : structuralPrimary(root, home);
+    const primary = derived?.ok ? derived.primary : null;
     return primary ? hashSources(join(primary, "wardens", "src")) : null;
   },
 };

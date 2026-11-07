@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -634,6 +635,99 @@ describe("worktree-guard configuration", () => {
       "worktree-guard",
     );
     expect(bash(f, f.primary, "touch x")).not.toContain("worktree-guard");
+  });
+});
+
+describe("a worktree cannot change the policy that judges it (#73)", () => {
+  type CharterDoc = {
+    paths: { allowed_paths: string[] };
+    commands: { deny: string[] };
+    worktree: { primary_read_only_commands: string[] };
+  };
+
+  /** Rewrites the Charter in `wt` only; the primary keeps the committed one. */
+  function ownCharter(f: Fixture, wt: string, edit: (doc: CharterDoc) => void) {
+    const doc = parse(
+      readFileSync(join(f.primary, "panopticon.charter.yaml"), "utf8"),
+    ) as CharterDoc;
+    edit(doc);
+    writeFileSync(join(wt, "panopticon.charter.yaml"), stringify(doc));
+  }
+
+  /** The decision of a hook run: `trusted` passes the primary the way the CLI does. */
+  function decide(
+    f: Fixture,
+    cwd: string,
+    tool: string,
+    input: object,
+    trusted: boolean,
+  ): string {
+    const out = runHook(
+      "claude",
+      "PreToolUse",
+      JSON.stringify({ cwd, tool_name: tool, tool_input: input }),
+      {
+        cwd: () => cwd,
+        env: {},
+        home: f.home,
+        ...(trusted ? { primary: f.primary } : {}),
+      },
+    ).stdout;
+    return out === ""
+      ? "allow"
+      : `${JSON.parse(out).hookSpecificOutput.permissionDecision} ${out}`;
+  }
+
+  it("a widened allowed_paths has no effect", () => {
+    const f = fixture();
+    ownCharter(f, f.linked, (doc) => doc.paths.allowed_paths.push("infra/**"));
+    const input = { file_path: join(f.linked, "infra/x.ts") };
+    // Control: without a trusted primary the session's own Charter is believed.
+    expect(decide(f, f.linked, "Edit", input, false)).toBe("allow");
+    const trusted = decide(f, f.linked, "Edit", input, true);
+    expect(trusted).toMatch(/^deny /);
+    expect(trusted).toContain("Blocked by Warden scope-guard");
+  });
+
+  it("a dropped commands.deny entry has no effect", () => {
+    const f = fixture();
+    ownCharter(f, f.linked, (doc) => {
+      doc.commands.deny = doc.commands.deny.filter(
+        (entry) => entry !== "git push --force*",
+      );
+    });
+    const input = { command: "git push --force origin feat/1-one" };
+    expect(decide(f, f.linked, "Bash", input, false)).toBe("allow");
+    const trusted = decide(f, f.linked, "Bash", input, true);
+    expect(trusted).toMatch(/^deny /);
+    expect(trusted).toContain("Blocked by Warden command-guard");
+  });
+
+  it("an added primary_read_only_commands entry has no effect", () => {
+    const f = fixture();
+    git(f.linked, "checkout", "-q", "--detach");
+    ownCharter(f, f.linked, (doc) =>
+      doc.worktree.primary_read_only_commands.push("echo *"),
+    );
+    const input = { command: "echo hi" };
+    expect(decide(f, f.linked, "Bash", input, false)).toBe("allow");
+    const trusted = decide(f, f.linked, "Bash", input, true);
+    expect(trusted).toMatch(/^deny /);
+    expect(trusted).toContain("HEAD is detached");
+  });
+
+  it("a stale detached worktree switches itself forward with the primary's allowlist", () => {
+    const f = fixture();
+    git(f.linked, "checkout", "-q", "--detach");
+    ownCharter(f, f.linked, (doc) => {
+      doc.worktree.primary_read_only_commands =
+        doc.worktree.primary_read_only_commands.filter(
+          (entry) => entry !== "git switch --detach origin/main",
+        );
+    });
+    const input = { command: "git switch --detach origin/main" };
+    expect(decide(f, f.linked, "Bash", input, false)).toMatch(/^deny /);
+    expect(decide(f, f.linked, "Bash", input, true)).toBe("allow");
   });
 });
 

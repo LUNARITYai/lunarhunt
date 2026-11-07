@@ -2,7 +2,9 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
 import { gitToplevel, primaryCheckout } from "../git.ts";
+import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
+import { structuralPrimary } from "../sync/primary.ts";
 import { loadTask } from "../task.ts";
 import { detectAgent } from "../trailer.ts";
 import { git, listWorktrees, type WorktreeEntry } from "./git.ts";
@@ -566,10 +568,21 @@ function prune(
   return ok(out.map((l) => `${l}\n`).join(""));
 }
 
+/** The refusal for an agent running a human-only subcommand, or null. Needs no repository, home or primary. */
+export function agentRefusal(
+  sub: string,
+  env: NodeJS.ProcessEnv,
+): Result | null {
+  return HUMAN_ONLY.has(sub) && detectAgent(env) !== null
+    ? fail(AGENT_REFUSAL)
+    : null;
+}
+
 /** `wardens worktree <sub>`. */
 export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
-  if (HUMAN_ONLY.has(args.sub) && detectAgent(deps.env) !== null) {
-    return fail(AGENT_REFUSAL);
+  const refusal = agentRefusal(args.sub, deps.env);
+  if (refusal !== null) {
+    return refusal;
   }
   const toplevel = gitToplevel(deps.cwd);
   const primary = primaryCheckout(deps.cwd);
@@ -581,7 +594,32 @@ export function runWorktree(args: WorktreeArgs, deps: Deps = realDeps): Result {
       ),
     );
   }
-  const loaded = loadCharterAt(toplevel);
+  // Policy comes from the primary checkout, never from the invoker's branch
+  // (#73). Without a trusted bundle the primary is derived structurally, as
+  // `wardens doctor` does, and not from the pointers git data names.
+  let charterRoot = deps.charterRoot;
+  if (charterRoot === undefined) {
+    const home = trustedHome(deps.env);
+    if (home === null) {
+      return fail(
+        msg(
+          "cannot resolve HOME, so the primary checkout cannot be verified",
+          "Set HOME to an absolute path of an existing directory",
+        ),
+      );
+    }
+    const derived = structuralPrimary(toplevel, home);
+    if (!derived.ok) {
+      return fail(
+        msg(
+          `${toplevel} is not a verified primary checkout or task worktree (${derived.reason})`,
+          "Run it from the primary checkout or a worktree under .claude/worktrees",
+        ),
+      );
+    }
+    charterRoot = derived.primary;
+  }
+  const loaded = loadCharterAt(charterRoot);
   if (!loaded.ok) {
     return fail(
       `${msg("Charter validation failed", "Fix panopticon.charter.yaml")}\n${loaded.errors.join("\n")}`,

@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import type { Action } from "./event.ts";
+import { UNRESOLVED_HOME } from "./home.ts";
 import { resolveAbsolutePath } from "./paths.ts";
 
 const MAGIC = /[*?[\]{}()!+@]/;
@@ -12,6 +13,10 @@ function escapeLiteral(text: string): string {
 
 /** Expand `~/`, then realpath the literal prefix so `/tmp/x-*` matches `/private/tmp/x-1`. */
 function expandGlob(glob: string, home: string): string | null {
+  // An unresolved home gives a `~` glob nothing to match.
+  if (glob.startsWith("~/") && home === UNRESOLVED_HOME) {
+    return null;
+  }
   const expanded = glob.startsWith("~/") ? join(home, glob.slice(2)) : glob;
   const segments = expanded.split("/").filter((part) => part.length > 0);
   const firstMagic = segments.findIndex((part) => MAGIC.test(part));

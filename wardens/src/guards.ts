@@ -1,19 +1,21 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import {
   directoryChange,
+  expandsDdOperand,
   firstDeny,
   rewriteCommand,
   type Segment,
   secretCandidates,
   shellWriteTargets,
   tokenizeAll,
+  valueTargets,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -111,6 +113,9 @@ export function protectedDeny(ctx: RuleContext): Objection | null {
 }
 
 export function generatedFilesGuard(ctx: RuleContext): Objection | null {
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, generatedFilesGuard);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
@@ -173,6 +178,23 @@ function expansionBlock(): Objection {
 }
 
 /**
+ * The one verdict for a command the tokenizer rejects: a subshell, group,
+ * process substitution, reserved word in command position, brace expansion,
+ * command substitution, a `-c` command string, or a `#` the two readings
+ * disagree on. Returned by `command-guard` and, as defence in depth, by
+ * `expansionDeny` (so `protected-paths` and `secret-read-guard` never skip a
+ * pipeline they cannot read).
+ */
+function unparseableBlock(): Objection {
+  return block(
+    "command-guard",
+    "deny",
+    "the command could not be parsed safely",
+    "Retry without subshells, groups or shell comments",
+  );
+}
+
+/**
  * A word the shell rewrites (a variable, an unquoted glob or brace, `~user`)
  * names a path we cannot read from the text. It is provably inside the
  * worktree only when it has no variable, brace or `~user`, no glob segment can
@@ -220,7 +242,7 @@ type Step = {
  */
 function trackedSteps(ctx: RuleContext, command: string): Step[] {
   const out: Step[] = [];
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const pipeline of tokenizeAll(command)) {
     if (!pipeline.ok) {
       continue;
@@ -288,7 +310,10 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
   }
-  const home = ctx.home ?? homedir();
+  if (tokenizeAll(ctx.event.command).some((pipeline) => !pipeline.ok)) {
+    return unparseableBlock();
+  }
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const step of trackedSteps(ctx, ctx.event.command)) {
     const path = step.change?.path;
     if (
@@ -311,7 +336,75 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       return expansionBlock();
     }
   }
+  // `out=$HOME/x`, `--sink=x$X`, `of=~root/x` (#75): a key=value value the
+  // shell may rewrite must be provably inside, whatever the key. So must any
+  // operand of `dd` that the shell fills in: it may be `of=`.
+  for (const { segment, cwd } of trackedSteps(ctx, ctx.event.command)) {
+    if (expandsDdOperand(segment)) {
+      return expansionBlock();
+    }
+    for (const value of valueTargets(segment)) {
+      if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
+        return expansionBlock();
+      }
+    }
+  }
   return null;
+}
+
+/**
+ * Every path a shell command writes, as repo-relative paths: its own write
+ * targets plus `key=value` and `--opt=value` values. Paths that resolve outside
+ * the worktree are left to the escape check in `secretReadGuard`.
+ */
+function shellEditPaths(ctx: RuleContext, command: string): string[] {
+  const home = ctx.home ?? homeOrUnresolved(process.env);
+  const out: string[] = [];
+  for (const { segment, cwd } of trackedSteps(ctx, command)) {
+    for (const target of [
+      ...shellWriteTargets(segment),
+      ...valueTargets(segment)
+        .filter((value) => !value.pattern)
+        .map((value) => value.path),
+    ]) {
+      const resolved = resolveRepoPath(expandHome(target, home), cwd, ctx.root);
+      // A secret is already denied as a candidate by `secret-read-guard`, which
+      // keeps its own verdict (a `--config=.env` may be a read).
+      if (
+        resolved.ok &&
+        !denyListMatches(ctx.charter.paths.secrets_deny_read, resolved.path)
+      ) {
+        out.push(resolved.path);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Applies an edit-tool rule to each path a shell command writes (#75), as if
+ * an Edit tool call had named it. The strongest objection wins; a deny ends
+ * the walk.
+ */
+function shellEditVerdict(
+  ctx: RuleContext,
+  rule: (edit: RuleContext) => Objection | null,
+): Objection | null {
+  if (ctx.event.action !== "shell" || ctx.event.command === null) {
+    return null;
+  }
+  let found: Objection | null = null;
+  for (const path of shellEditPaths(ctx, ctx.event.command)) {
+    const objection = rule({
+      ...ctx,
+      event: { ...ctx.event, action: "write", path, command: null },
+    });
+    if (objection?.decision === "deny") {
+      return objection;
+    }
+    found ??= objection;
+  }
+  return found;
 }
 
 /**
@@ -349,7 +442,7 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
   if (unexpandable) {
     return unexpandable;
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const target of shellTargets(ctx, command)) {
     if (target.kind !== "write") {
       continue;
@@ -363,6 +456,25 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
       return gitMetadataBlock();
     }
   }
+  // `foo out=.git/x`, `foo --sink=.git` (#75): the value of any key=value word.
+  for (const { segment, cwd } of trackedSteps(ctx, command)) {
+    for (const value of valueTargets(segment)) {
+      const path = expandHome(value.path, home);
+      const absolute = resolveAbsolutePath(path, cwd);
+      if (value.pattern || value.gitGlobal) {
+        continue;
+      }
+      if (
+        isGitMetadataPath(path) ||
+        (absolute !== null && isGitMetadataPath(absolute))
+      ) {
+        return gitMetadataBlock();
+      }
+      if (absolute !== null && ANCHOR_DIR.test(absolute)) {
+        return anchorBlock();
+      }
+    }
+  }
   return null;
 }
 
@@ -372,9 +484,17 @@ export function protectedPaths(ctx: RuleContext): Objection | null {
     return gitMetadata;
   }
   // `ask` guards edits only: agents must read the Covenant files (#46).
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, protectedEdit);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
+  return protectedEdit(ctx);
+}
+
+/** The deny and ask verdicts for an edit of `ctx.event.path`, without the git-metadata check. */
+function protectedEdit(ctx: RuleContext): Objection | null {
   const denied = protectedDeny(ctx);
   if (denied || ctx.event.path === null) {
     return denied;
@@ -654,7 +774,7 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      word === "env" &&
+      (word.split("/").pop() ?? "") === "env" &&
       segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
   );
   if (envAt >= 0) {
@@ -662,7 +782,12 @@ function environmentDeny(segment: Segment): Objection | null {
     for (const [index, word] of words.entries()) {
       const name = word.split("=")[0] ?? "";
       if (
-        /^(-C|--chdir|-S|--split-string)/.test(word) ||
+        // `-S` / `-C` also inside a cluster (`-iS`), and any unambiguous
+        // abbreviation of `--split-string` / `--chdir` (`--sp`, `--c`).
+        // (`-u` takes the rest as its value: `env -uSHELL ls` is fine.)
+        /^-[^uSC-]*[SC]/.test(word) ||
+        longOption(word, "--split-string", 3) ||
+        longOption(word, "--chdir", 3) ||
         (words[index - 1] === "-u" && REDIRECTING_ENV.test(word))
       ) {
         return envBlock(word);
@@ -694,12 +819,7 @@ export function commandGuard(ctx: RuleContext): Objection | null {
   const pipelines = tokenizeAll(ctx.event.command);
   const parsed = pipelines.filter((pipeline) => pipeline.ok);
   if (parsed.length !== pipelines.length) {
-    return block(
-      "command-guard",
-      "deny",
-      "the command could not be parsed safely",
-      "Retry without shell comments or with a simpler command",
-    );
+    return unparseableBlock();
   }
   for (const pipeline of parsed) {
     const denied = firstDeny(ctx.charter.commands.deny, pipeline);
@@ -766,12 +886,18 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
   if (expansion) {
     return expansion;
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   // Each word resolves from the directory the shell is in when it runs.
   for (const { segment, cwd } of trackedSteps(ctx, ctx.event.command)) {
     for (const candidate of secretCandidates(segment)) {
       const path = expandHome(candidate.path, home);
       const resolved = resolveRepoPath(path, cwd, ctx.root);
+      if (!resolved.ok && candidate.secretOnly) {
+        if (denyListMatches(secrets, basename(path))) {
+          return secretDeny(path);
+        }
+        continue;
+      }
       if (!resolved.ok) {
         // Same treatment as the Read and Write tools: an outside path must match
         // `paths.external` for this read or write, and only its basename is checked.
