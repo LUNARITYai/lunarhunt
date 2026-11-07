@@ -1,9 +1,7 @@
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -18,142 +16,25 @@ import {
   checkPrimaryBehind,
   checkTaskIntegrity,
 } from "../src/doctor-worktree.ts";
-import { runHook } from "../src/engine.ts";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
 import { taskId } from "../src/task-integrity.ts";
-import { type Deps, runWorktree } from "../src/worktree/index.ts";
-import { normativeCharter } from "./support.ts";
+import { runWorktree } from "../src/worktree/index.ts";
+import {
+  cleanupFixtures,
+  edit,
+  type Fixture,
+  fixture,
+  hashFiles,
+  hook,
+  NEXT,
+  setupAgain,
+  sh,
+  taskFile,
+  track,
+  widen,
+} from "./integrity-fixture.ts";
 
-const bases: string[] = [];
-
-afterAll(() => {
-  for (const dir of bases) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-function sh(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-
-const NEXT = "Ask Krzysztof to run wardens worktree setup";
-
-type Fixture = {
-  origin: string;
-  primary: string;
-  home: string;
-  wt: string;
-  tasksDir: string;
-  deps: Deps;
-  /** Arguments of every `gh` call the commands made. */
-  ghCalls: string[][];
-};
-
-const REMOTE = "https://github.com/o/r.git";
-
-/** A primary clone with one task worktree made by `wardens worktree new` (issue 5, Allowed paths `wardens/**`). */
-function fixture(options: { worktree?: boolean } = {}): Fixture {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "wardens-integrity-")));
-  bases.push(base);
-  const origin = join(base, "origin");
-  mkdirSync(origin);
-  sh(origin, "init", "-q", "-b", "main");
-  sh(origin, "config", "commit.gpgsign", "false");
-  sh(origin, "config", "user.email", "t@example.com");
-  sh(origin, "config", "user.name", "t");
-  writeFileSync(join(origin, "panopticon.charter.yaml"), normativeCharter());
-  writeFileSync(join(origin, ".env.example"), "TASK_ISSUE=\n");
-  writeFileSync(
-    join(origin, ".gitignore"),
-    ".panopticon/\n.claude/worktrees/\n",
-  );
-  mkdirSync(join(origin, "wardens"));
-  writeFileSync(join(origin, "wardens", "x.ts"), "export {};\n");
-  sh(origin, "add", "-A");
-  sh(origin, "commit", "-q", "-m", "init");
-  const primary = join(base, "primary");
-  execFileSync("git", ["clone", "-q", origin, primary]);
-  sh(primary, "config", "commit.gpgsign", "false");
-  sh(primary, "config", "user.email", "t@example.com");
-  sh(primary, "config", "user.name", "t");
-  // GitHub's URL on record (what setup parses), fetched from the local origin.
-  sh(primary, "config", "remote.origin.url", REMOTE);
-  sh(primary, "config", `url.${origin}.insteadOf`, REMOTE);
-  const home = join(base, "home");
-  mkdirSync(home);
-  const ghCalls: string[][] = [];
-  const deps: Deps = {
-    env: { HOME: home },
-    cwd: primary,
-    gh: (args) => {
-      ghCalls.push(args);
-      if (args[0] !== "issue") {
-        return { status: 0, stdout: "[]" };
-      }
-      return {
-        status: 0,
-        stdout: JSON.stringify({
-          title: "Fix the thing",
-          body: "### Allowed paths\nwardens/**\n",
-          labels: [{ name: "type:bug" }],
-          state: "OPEN",
-          url: "https://github.com/o/r/issues/5",
-        }),
-      };
-    },
-    step: () => 0,
-  };
-  const wt = join(primary, ".claude", "worktrees", "5-fix-the-thing");
-  const tasksDir = join(home, ".config", "panopticon", "tasks");
-  const made = { origin, primary, home, wt, tasksDir, deps, ghCalls };
-  if (options.worktree !== false) {
-    expect(runWorktree({ sub: "new", arg: "5" }, deps).exitCode).toBe(0);
-  }
-  return made;
-}
-
-function hashFiles(f: Fixture): string[] {
-  return existsSync(f.tasksDir) ? readdirSync(f.tasksDir) : [];
-}
-
-function setupAgain(f: Fixture, refresh = false) {
-  return runWorktree(
-    { sub: "setup", ...(refresh ? { refresh: true } : {}) },
-    { ...f.deps, cwd: f.wt },
-  );
-}
-
-function taskFile(f: Fixture): string {
-  return join(f.wt, ".panopticon", "task.json");
-}
-
-function widen(f: Fixture): void {
-  const task = JSON.parse(readFileSync(taskFile(f), "utf8"));
-  task.allowed_paths.push("docs/**");
-  writeFileSync(taskFile(f), JSON.stringify(task));
-}
-
-/** `allow`, or `<decision> <message>` for a hook run with a trusted primary. */
-function hook(f: Fixture, tool: string, input: object, cwd = f.wt): string {
-  const out = runHook(
-    "claude",
-    "PreToolUse",
-    JSON.stringify({ cwd, tool_name: tool, tool_input: input }),
-    { cwd: () => cwd, env: { HOME: f.home }, home: f.home, primary: f.primary },
-  ).stdout;
-  if (out === "") {
-    return "allow";
-  }
-  const decision = JSON.parse(out).hookSpecificOutput;
-  return `${decision.permissionDecision} ${decision.permissionDecisionReason}`;
-}
-
-function edit(f: Fixture, rel: string, cwd = f.wt): string {
-  return hook(f, "Write", { file_path: join(cwd, rel), content: "x" }, cwd);
-}
+afterAll(cleanupFixtures);
 
 describe("task.json integrity", () => {
   it("worktree new records one hash and the task scope applies", () => {
@@ -341,7 +222,7 @@ describe("worktree remove", () => {
 describe("task id", () => {
   const insensitive = (() => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "wardens-case-")));
-    bases.push(dir);
+    track(dir);
     return existsSync(dir.toUpperCase());
   })();
 
