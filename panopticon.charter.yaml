@@ -94,6 +94,11 @@ commands:
     - "gh issue edit * --body*"
     - "gh issue edit * -b *"
     - "gh issue edit * --body-file*"
+    # Sandbox spec decision 5 (#94): agents use Krzysztof's gh token; no agent merges or approvals.
+    - "gh pr merge*"
+    - "gh pr review*"
+    - "gh api *merge*"
+    - "gh api *reviews*"
   allow:
     - "pnpm turbo run *"
     - "pnpm check*"
