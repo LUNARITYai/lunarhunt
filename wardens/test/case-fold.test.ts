@@ -5,6 +5,9 @@ import { segmentsMeet } from "../src/glob-meet.ts";
 import { anyGlob, denyListMatches } from "../src/globs.ts";
 import { repoRoot, tempRepo } from "./support.ts";
 
+const folded = (patterns: string[], path: string) =>
+  anyGlob(patterns, path, true);
+
 const charter = (() => {
   const loaded = loadCharterAt(repoRoot);
   if (!loaded.ok) {
@@ -156,10 +159,10 @@ describe("policy globs fold case (#77)", () => {
       denyListMatches(charter.paths.secrets_deny_read, "SECRETS/a/b"),
     ).toBe(true);
     expect(
-      anyGlob(charter.paths.generated, "Packages/Contracts/OpenAPI.json"),
+      anyGlob(charter.paths.generated, "Packages/Contracts/OpenAPI.json", true),
     ).toBe(true);
     expect(
-      anyGlob(charter.paths.protected.ask, "Apps/API/Migrations/001.sql"),
+      anyGlob(charter.paths.protected.ask, "Apps/API/Migrations/001.sql", true),
     ).toBe(true);
   });
 
@@ -168,7 +171,7 @@ describe("policy globs fold case (#77)", () => {
     expect(
       denyListMatches(charter.paths.secrets_deny_read, "ſecrets/key"),
     ).toBe(true);
-    expect(anyGlob(["a/k.md"], "a/K.md")).toBe(true);
+    expect(folded(["a/k.md"], "a/K.md")).toBe(true);
   });
 
   it("keeps allowed_paths exact: a different case is a different directory", () => {

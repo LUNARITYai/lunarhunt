@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -59,6 +59,49 @@ export function nearestExistingReal(absolute: string): Located {
       // resolved. Re-appending the basename would hide an outside write.
       return { ok: false, reason: "unresolvable" };
     }
+  }
+}
+
+function swapCase(text: string): string {
+  return [...text]
+    .map((ch) =>
+      ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase(),
+    )
+    .join("");
+}
+
+/**
+ * True when the file system holding `path` reads another case as the same
+ * name (APFS, NTFS), or when that cannot be told (#77). Probes the nearest
+ * existing ancestor whose name has a letter: its case-swapped sibling is the
+ * same inode on a case-insensitive volume and missing on a case-sensitive one.
+ * Used only where folding widens what is allowed; deny lists always fold.
+ */
+export function caseInsensitiveAt(path: string): boolean {
+  let current = resolve(path);
+  for (;;) {
+    const parent = dirname(current);
+    if (parent === current) {
+      return true;
+    }
+    const name = basename(current);
+    const swapped = swapCase(name);
+    if (swapped !== name) {
+      try {
+        const original = statSync(current);
+        try {
+          const other = statSync(join(parent, swapped));
+          return other.ino === original.ino && other.dev === original.dev;
+        } catch (err) {
+          return errorCode(err) !== "ENOENT";
+        }
+      } catch (err) {
+        if (errorCode(err) !== "ENOENT") {
+          return true;
+        }
+      }
+    }
+    current = parent;
   }
 }
 

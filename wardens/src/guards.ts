@@ -42,8 +42,9 @@ export function pathInScope(
   path: string,
   charter: Charter,
   task: TaskState,
+  fold = false,
 ): boolean {
-  if (!anyGlob(charter.paths.allowed_paths, path)) {
+  if (!anyGlob(charter.paths.allowed_paths, path, fold)) {
     return false;
   }
   if (task.kind === "missing") {
@@ -52,7 +53,7 @@ export function pathInScope(
   if (task.kind === "invalid") {
     return false;
   }
-  return anyGlob(task.allowed_paths, path);
+  return anyGlob(task.allowed_paths, path, fold);
 }
 
 function isMutation(action: string): boolean {
@@ -129,7 +130,7 @@ export function generatedFilesGuard(ctx: RuleContext): Objection | null {
       "Ask for needs:human",
     );
   }
-  if (anyGlob(ctx.charter.paths.generated, ctx.event.path)) {
+  if (anyGlob(ctx.charter.paths.generated, ctx.event.path, true)) {
     return block(
       "generated-files-guard",
       "deny",
@@ -633,10 +634,11 @@ function protectedEdit(ctx: RuleContext): Objection | null {
     return denied;
   }
   const path = ctx.event.path;
-  if (!pathInScope(path, ctx.charter, ctx.task)) {
+  // Scope is read in any case here: another spelling of an in-scope ask path still asks.
+  if (!pathInScope(path, ctx.charter, ctx.task, true)) {
     return null;
   }
-  if (!anyGlob(ctx.charter.paths.protected.ask, path)) {
+  if (!anyGlob(ctx.charter.paths.protected.ask, path, true)) {
     return null;
   }
   if (!ctx.event.interactive) {

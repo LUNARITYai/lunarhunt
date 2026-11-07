@@ -6,6 +6,8 @@
  * (`!*.example`) excludes. Picomatch is not used: it has no shell `[!x]`.
  */
 
+import { foldCase } from "./globs.ts";
+
 type Range = readonly [number, number];
 type Token =
   | { kind: "lit"; code: number }
@@ -148,7 +150,7 @@ function compile(segment: string, shell: boolean): Token[] | null {
   return tokens;
 }
 
-function accepts(token: Token, code: number): boolean {
+function acceptsExact(token: Token, code: number): boolean {
   if (token.kind === "lit") {
     return token.code === code;
   }
@@ -157,6 +159,28 @@ function accepts(token: Token, code: number): boolean {
     return inside !== token.negated;
   }
   return true;
+}
+
+/** The characters a case-insensitive volume treats as `code` (#77): both cases and the ASCII letter a non-ASCII one folds to. */
+function caseVariants(code: number): number[] {
+  if (code > MAX_CODE) {
+    return [code];
+  }
+  const text = String.fromCodePoint(code);
+  return [
+    code,
+    ...[text.toLowerCase(), text.toUpperCase(), foldCase(text)].map(
+      (variant) => variant.codePointAt(0) ?? code,
+    ),
+  ];
+}
+
+/** `fold` is for the deny patterns, which match in any case; a shell glob is matched in the case the directory entry is stored in. */
+function accepts(token: Token, code: number, fold: boolean): boolean {
+  if (!fold || token.kind === "any" || token.kind === "star") {
+    return acceptsExact(token, code);
+  }
+  return caseVariants(code).some((variant) => acceptsExact(token, variant));
 }
 
 /**
@@ -189,11 +213,16 @@ function close(tokens: Token[], from: Iterable<number>): number[] {
   return [...out].sort((a, b) => a - b);
 }
 
-function step(tokens: Token[], set: number[], code: number): number[] {
+function step(
+  tokens: Token[],
+  set: number[],
+  code: number,
+  fold: boolean,
+): number[] {
   const next: number[] = [];
   for (const at of set) {
     const token = tokens[at];
-    if (token && accepts(token, code)) {
+    if (token && accepts(token, code, fold)) {
       next.push(token.kind === "star" ? at : at + 1);
     }
   }
@@ -212,6 +241,17 @@ function alphabet(all: Token[][]): number[] {
         points.add(lo);
         points.add(hi + 1);
       }
+    }
+  }
+  // The deny patterns match in any case, so every interval boundary has a mirror.
+  for (const point of [...points]) {
+    for (const variant of caseVariants(point)) {
+      points.add(variant);
+    }
+    if (point >= 65 && point <= 91) {
+      points.add(point + 32);
+    } else if (point >= 97 && point <= 123) {
+      points.add(point - 32);
     }
   }
   points.delete(SLASH);
@@ -248,7 +288,7 @@ export function segmentsMeet(
     sets: tokenSets.map((tokens, i) =>
       i === 0 && hidden && state.first && code === DOT
         ? []
-        : step(tokens, state.sets[i] ?? [], code),
+        : step(tokens, state.sets[i] ?? [], code, i > 0),
     ),
     first: false,
   });

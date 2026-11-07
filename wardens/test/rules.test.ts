@@ -1991,12 +1991,19 @@ describe("glob intersection with the secret patterns (#78)", () => {
     "rg foo ?secrets",
     "rg foo secret??",
     "cat .envx",
-    "cat .ENV",
     "cat .?nvx",
     "cat .[a-d]nv",
-    "cat .e[!n]v",
-    "cat .[!e]nv",
   ];
+
+  // Another case is the same file on a case-insensitive volume (#77): `.eNv`
+  // is a secret, so a glob that can name it is refused.
+  it.each(["cat .ENV", "cat .e[!n]v", "cat .[!e]nv", "cat .[!E]nv"])(
+    "denies %s: another case names the secret",
+    (command) => {
+      const root = tempRepo();
+      expect(shell(root, command).decision).toBe("deny");
+    },
+  );
 
   it.each(ALLOWED)("allows %s", (command) => {
     const root = tempRepo();
@@ -2016,8 +2023,18 @@ describe("glob intersection with the secret patterns (#78)", () => {
   const SPELLINGS: Array<{ name: string; hits: string[]; misses: string[] }> = [
     {
       name: ".env",
-      hits: [".e*", ".*nv", ".en?", ".e?v", ".[e]nv", ".[!x]nv", ".[^x]nv"],
-      misses: [".e??v", ".[!e]nv", ".[^e]nv", "e*", "*nv"],
+      hits: [
+        ".e*",
+        ".*nv",
+        ".en?",
+        ".e?v",
+        ".[e]nv",
+        ".[!x]nv",
+        ".[^x]nv",
+        ".[!e]nv",
+        ".[^e]nv",
+      ],
+      misses: [".e??v", "e*", "*nv"],
     },
     {
       name: ".env.local",
@@ -2033,8 +2050,9 @@ describe("glob intersection with the secret patterns (#78)", () => {
         ".?nv.local",
         ".env.[l]ocal",
         ".env.*",
+        ".e[!n]v.local",
       ],
-      misses: [".env[!.]local", "*.local", ".envlocal*", ".e[!n]v.local"],
+      misses: [".env[!.]local", "*.local", ".envlocal*"],
     },
     {
       name: "secrets/key",
