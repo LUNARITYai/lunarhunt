@@ -1997,13 +1997,19 @@ describe("glob intersection with the secret patterns (#78)", () => {
 
   // Another case is the same file on a case-insensitive volume (#77): `.eNv`
   // is a secret, so a glob that can name it is refused.
-  it.each(["cat .ENV", "cat .e[!n]v", "cat .[!e]nv", "cat .[!E]nv"])(
-    "denies %s: another case names the secret",
-    (command) => {
-      const root = tempRepo();
-      expect(shell(root, command).decision).toBe("deny");
-    },
-  );
+  // An upper-case glob (`S*`, `[A-Z]*`) can name `Secrets` or `.eNv` too: intended denies.
+  it.each([
+    "cat .ENV",
+    "cat .e[!n]v",
+    "cat .[!e]nv",
+    "cat .[!E]nv",
+    "rg foo S*",
+    "rg foo [A-Z]*",
+    "cat .[A-Z]nv",
+  ])("denies %s: another case names the secret", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
 
   it.each(ALLOWED)("allows %s", (command) => {
     const root = tempRepo();

@@ -248,6 +248,18 @@ describe("paths.external engine", () => {
     );
   });
 
+  it("still allows a directory whose name changes length when folded (#77)", () => {
+    const f = fixture({});
+    writeFileSync(
+      join(f.root, "panopticon.charter.yaml"),
+      charterWith({ read: [`${f.outside}/**`] }),
+    );
+    mkdirSync(join(f.outside, "Straße"));
+    expect(decision(claude(f, "Read", join(f.outside, "Straße/a.txt")))).toBe(
+      "allow",
+    );
+  });
+
   it("does not match a .. escape or a symlink escape", () => {
     const f = fixture({});
     const secret = real("wardens-secret-");
