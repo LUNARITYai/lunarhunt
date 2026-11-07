@@ -76,7 +76,7 @@ Use `pnpm`, never `npm`; Python runs through `uv run`. TypeScript is linted and 
 4. **Implement** inside the allowed paths. Bugs: write the failing reproduction test first.
 5. **Commit.** `feat(api): add offer CRUD (#42)`. Agent commits carry `Agent: <tool> (<model>)`, added by the `agent-trailer` Warden.
 6. **Verify.** `pnpm check` green; the `definition-of-done` Warden re-runs it when you stop.
-7. **PR.** Body contains `Closes #42`, the spec and related ADRs. `risk-classifier` sets `risk:*`; Sentinel reviews. A human merges (autonomy phase 0–2; [ADR-0008](docs/decisions/0008-autonomy-phases-and-risk-based-merge-policy.md)). After merge or close the worktree and its database are removed (`wardens worktree remove`).
+7. **PR.** Body contains `Closes #42`, the spec and related ADRs. `risk-classifier` sets `risk:*`; Sentinel reviews. Write PR, review and handover text with the `github-writing` skill. A human merges (autonomy phase 0–2; [ADR-0008](docs/decisions/0008-autonomy-phases-and-risk-based-merge-policy.md)). After merge or close the worktree and its database are removed (`wardens worktree remove`).
 
 ## Rules Wardens will enforce *(planned)*
 
