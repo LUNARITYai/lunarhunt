@@ -1481,9 +1481,12 @@ export function valueTargets(segment: Segment): ValueTarget[] {
  */
 export function expandingCandidates(
   segment: Segment,
-): Array<{ path: string; redirect: boolean }> {
+): Array<{ path: string; descends: boolean }> {
   const command = segment.argv[0] ?? "";
   const prints = ASSIGNING_BUILTINS.has(command);
+  const readings = [...walkCommands(segment.argv).at];
+  const descends = readings.some((at) => readsDirectories(segment.argv, at));
+  const patterns = new Set(readings.map((at) => patternSlot(segment.argv, at)));
   return collectCandidates(segment)
     .filter(
       (candidate) =>
@@ -1494,12 +1497,81 @@ export function expandingCandidates(
         candidate.data !== true &&
         command !== "cd" &&
         !(prints && candidate.origin === "arg" && !candidate.redirect) &&
+        // The pattern of `rg ^foo src` is no file; a variable or glob there still is.
+        !(
+          patterns.has(candidate.index) &&
+          candidate.origin === "arg" &&
+          !/[$*?[`]/.test(candidate.path)
+        ) &&
         !isDevicePath(candidate.path),
     )
     .map((candidate) => ({
       path: candidate.path,
-      redirect: candidate.redirect === true,
+      // An option value may be a directory the command reads into (`jq -L`,
+      // `--magic-file=`); a positional operand only for readers that descend.
+      descends: !candidate.redirect && (candidate.origin !== "arg" || descends),
     }));
+}
+
+const DIRECTORY_READERS = new Set([
+  "rg",
+  "diff",
+  "tar",
+  "zip",
+  "rsync",
+  "find",
+]);
+
+/**
+ * Whether the command that starts at `argv[at]` reads below a directory it is
+ * given as an operand (#78): `rg`, `diff`, `tar`, `zip`, `rsync` and `find`
+ * always; `grep`, `cp` and `scp` with a recursive flag; `git add`; `jq -L` and
+ * `file -m`. `ls`, `du`, `stat`, `cat`, `wc` and the rest only list or fail.
+ */
+function readsDirectories(argv: readonly string[], at: number): boolean {
+  const name = commandName(argv[at] ?? "");
+  const rest = argv.slice(at + 1);
+  const flag = (short: RegExp, long?: RegExp): boolean =>
+    rest.some((word) =>
+      word.startsWith("--") ? (long?.test(word) ?? false) : short.test(word),
+    );
+  if (DIRECTORY_READERS.has(name)) {
+    return true;
+  }
+  switch (name) {
+    case "grep":
+    case "egrep":
+    case "fgrep":
+      return flag(/^-[A-Za-z]*[rR]/, /^--recursive$/);
+    case "cp":
+      return flag(/^-[A-Za-z]*[rRa]/, /^--(?:recursive|archive)$/);
+    case "scp":
+      return flag(/^-[A-Za-z]*r/);
+    case "git":
+      return rest.includes("add");
+    case "jq":
+      return flag(/^-[A-Za-z]*L/, /^--library-path/);
+    case "file":
+      return flag(/^-[A-Za-z]*m/, /^--magic-file/);
+    default:
+      return false;
+  }
+}
+
+/** The index of the pattern operand of an `rg` or `grep` that starts at `argv[at]`, or -1 (`-e` / `-f` give the pattern otherwise). */
+function patternSlot(argv: readonly string[], at: number): number {
+  const name = commandName(argv[at] ?? "");
+  if (!["rg", "grep", "egrep", "fgrep"].includes(name)) {
+    return -1;
+  }
+  const rest = argv.slice(at + 1);
+  if (
+    rest.some((word) => /^(?:-[A-Za-z]*[ef]|--regexp|--file)(?:=|$)/.test(word))
+  ) {
+    return -1;
+  }
+  const first = rest.findIndex((word) => !word.startsWith("-"));
+  return first < 0 ? -1 : at + 1 + first;
 }
 
 export type ValueTarget = {

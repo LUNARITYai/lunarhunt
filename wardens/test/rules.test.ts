@@ -1893,9 +1893,50 @@ describe("glob intersection with the secret patterns (#78)", () => {
     "rg foo secret?",
     "grep -r x sec*",
     "find sec* -type f",
-    "ls sec*",
     "tar -cf out.tar sec*",
     "cp -r sec*s dest",
+    // Round 2: readers that descend, and option values of any command.
+    "git add *",
+    "git -C . add sec*",
+    "rg foo *",
+    "nice rg foo *",
+    "diff sec* x",
+    "diff -r sec* x",
+    "diff -q sec* x",
+    "jq -n -L sec* x",
+    "jq -Lsec* x",
+    "jq --library-path sec* x",
+    "jq --library-path=sec* x",
+    "file -m sec* x",
+    "file --magic-file=sec* x",
+    "grep -rn x sec*",
+    "grep --recursive x sec*",
+    "egrep -R x sec*",
+    "cp -a sec* dest",
+    "zip -r out.zip sec*",
+    "rsync -a sec* dest",
+    "scp -r sec* host:",
+    "wc --files0-from=sec*",
+    // Round 2: zsh `^` (anything but) and `#` (zero or more).
+    "cat ^x/key",
+    "cat ^x/*",
+    "cat sec^x/key",
+    "rg x ^x",
+    "rg x sec^x",
+    "cat .envx#",
+    "cat .envx#.local",
+    "cat .env^.example",
+    // Round 2: POSIX classes and escapes inside a class; an unparseable class meets.
+    "cat .[[:alpha:]]nv",
+    "cat sec[[:lower:]]ets/key",
+    "cat .env[[:punct:]]local",
+    "cat .env[[:punct:]]*",
+    "rg x s[[:lower:]]crets",
+    "cat .[a\\]e]nv",
+    "cat .[[:unknown:]]nv",
+    "cat .[[=e=]]nv",
+    "cat .[[.e.]]nv",
+    "cat .e[n",
     // Any command: a file inside the directory.
     "cat secr*/key",
     "cat s*/k*",
@@ -1927,6 +1968,21 @@ describe("glob intersection with the secret patterns (#78)", () => {
     "cat *.md",
     "cat *",
     "cat sec*",
+    // Round 2: readers that do not descend, behind a wrapper or not.
+    "ls *",
+    "ls -la *",
+    "ls -d */",
+    "ls sec*",
+    "du -sh *",
+    "stat *",
+    "nice cat *",
+    "wc -l *",
+    "head -1 *",
+    "file *",
+    "rg ^foo src",
+    "rg -n ^foo src",
+    "grep -E ^a f",
+    "git log HEAD^",
     "cat HEAD^",
     "git log HEAD^",
     "git log HEAD~2",
@@ -1945,6 +2001,14 @@ describe("glob intersection with the secret patterns (#78)", () => {
   it.each(ALLOWED)("allows %s", (command) => {
     const root = tempRepo();
     expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("gives up on a state explosion in under a second, denying", () => {
+    const root = tempRepo();
+    const started = Date.now();
+    const verdict = shell(root, `cat .env.*a${"?".repeat(20)}.example`);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(verdict.decision).toBe("deny");
   });
 
   // The class: a glob that matches a secret pattern is denied at every

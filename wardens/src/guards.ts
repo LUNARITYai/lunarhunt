@@ -225,25 +225,6 @@ const GLOB_CHAR = /[*?[^#~]/;
 /** Shell options and variables that make `*` match dotfiles too (`dotglob`, `GLOB_DOTS`, `GLOBIGNORE`). */
 const DOTFILE_GLOBBING =
   /\b(shopt|setopt|unsetopt|GLOBIGNORE|dotglob|glob_?dots)\b/i;
-/** Commands that read the files their arguments name and nothing below a directory. */
-const FILE_READERS = new Set([
-  "cat",
-  "head",
-  "tail",
-  "less",
-  "more",
-  "wc",
-  "file",
-  "stat",
-  "jq",
-  "bat",
-  "sha256sum",
-  "md5sum",
-  "diff",
-  "source",
-  ".",
-]);
-
 /** The shape of the walk below: how a read glob lines up with the secret patterns. */
 type GlobWalk = { dot: boolean; filesOnly: boolean };
 
@@ -251,7 +232,7 @@ type GlobWalk = { dot: boolean; filesOnly: boolean };
  * Segment-wise: can the glob `g` and the secret pattern `p` match the same
  * path? A `**` on either side absorbs segments. A trailing `**` names what is
  * inside a directory; a glob that ends at that directory meets it only for a
- * reader that descends (`rg`, `ls`, `tar`), not for `cat`.
+ * reader that descends into it (`rg`, `tar`, `grep -r`), not for `cat` or `ls`.
  */
 function meets(
   g: readonly string[],
@@ -494,11 +475,8 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       }
     }
     // The read side (#78): positional words, option values and `<` targets.
-    for (const { path, redirect } of expandingCandidates(segment)) {
-      const walk = {
-        dot: dotfiles,
-        filesOnly: redirect || FILE_READERS.has(segment.argv[0] ?? ""),
-      };
+    for (const { path, descends } of expandingCandidates(segment)) {
+      const walk = { dot: dotfiles, filesOnly: !descends };
       if (!readProvablyInside(ctx, path, cwd, home, walk)) {
         return expansionBlock();
       }

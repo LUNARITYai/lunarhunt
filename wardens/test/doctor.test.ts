@@ -498,6 +498,7 @@ describe("shell-glob-options (#78)", () => {
 
   it("warns when extendedglob or extglob is on", () => {
     expect(run("extendedglob\nnomatch\n").status).toBe("warn");
+    expect(run("extendedglob\n").message).toContain("conservatively");
     expect(run("extglob\ton\n").status).toBe("warn");
   });
 

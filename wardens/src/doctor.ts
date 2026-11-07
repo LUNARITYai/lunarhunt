@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
@@ -701,7 +701,7 @@ function checkShellGlobOptions(read: () => string | null): CheckResult {
     return result(
       "shell-glob-options",
       "warn",
-      "extendedglob/extglob is on in your shell. Wardens treat ^, # and ~ in a word as globs.",
+      "extendedglob/extglob is on in your shell. Wardens handle ^, # and ~ in a word conservatively, as wildcards, and may deny harmless commands.",
     );
   }
   return result("shell-glob-options", "ok", "no dotfile globbing");
@@ -709,7 +709,13 @@ function checkShellGlobOptions(read: () => string | null): CheckResult {
 
 /** The enabled options of the login shell with the user's rc, or null when it cannot be run. "" for a shell this does not know. */
 function defaultShellOptions(env: NodeJS.ProcessEnv): string | null {
-  const shell = env.SHELL ?? "";
+  // The account's login shell, not `$SHELL`: the environment can name any script.
+  let shell = "";
+  try {
+    shell = userInfo().shell ?? "";
+  } catch {
+    return null;
+  }
   const name = shell.split("/").pop() ?? "";
   const script =
     name === "zsh"
