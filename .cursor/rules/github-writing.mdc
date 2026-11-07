@@ -1,0 +1,6 @@
+---
+description: Shapes for PR bodies, review comments, handover comments and issue bodies posted to GitHub
+alwaysApply: false
+---
+
+Read and follow `.claude/skills/github-writing/SKILL.md` before writing a PR body, a review comment, a handover comment or an issue body.
