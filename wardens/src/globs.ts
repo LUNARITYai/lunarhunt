@@ -20,6 +20,20 @@ export function foldCase(text: string): string {
 }
 
 /**
+ * The tool a command word runs, as a case-insensitive volume resolves it (#83):
+ * ASCII letters in either case, plus the two non-ASCII letters whose case
+ * folding is ASCII (U+017F is `s`, U+212A is `k`). Unlike `foldCase` it does not
+ * map the Turkish dotless `ı` or `İ` to `i`: a binary with that name is another
+ * file, and calling it `diff` would make it read-only. Classification by name
+ * allows, so it must not over-fold.
+ */
+export function foldName(text: string): string {
+  return text.replace(/[A-ZſK]/g, (ch) =>
+    ch === "ſ" ? "s" : ch === "K" ? "k" : ch.toLowerCase(),
+  );
+}
+
+/**
  * A pattern with no `/` matches the basename. A pattern with `/` matches the repo-relative path.
  * `fold` ignores case: for deny-style lists, where an other-case spelling of a
  * listed file must not slip through (macOS and Windows volumes are case-insensitive).

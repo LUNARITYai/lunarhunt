@@ -9,6 +9,7 @@ mkdirSync(join(root, "secrets"), { recursive: true });
 writeRepoFile(root, "secrets/key.txt", "x");
 writeRepoFile(root, "apps/api/migrations/0001.sql", "x");
 writeRepoFile(root, "docs/notes.md", "x");
+writeRepoFile(root, "stash/panopticon.charter.yaml", "x");
 
 type Outcome = { decision: "allow" | "ask" | "deny"; rule: string };
 
@@ -150,9 +151,26 @@ describe("shell writers are judged by what they write (#83)", () => {
     }
   });
 
+  it("reads the names a glob or a directory source copies", () => {
+    for (const command of [
+      "cp stash/* docs/",
+      "cp stash/panopticon.* docs",
+      "cp -r stash/. docs",
+      "rsync -a stash/ docs/",
+      "rsync -a stash/ docs",
+      "cp -t docs stash/*",
+      "cp -t docs $SRC",
+    ]) {
+      expect(bash(command).decision, command).toBe("deny");
+    }
+  });
+
   it("allows the same commands on an allowed path", () => {
     for (const command of [
       "cp docs/notes.md docs/copy.md",
+      "cp panopticon.charter.yaml docs/charter-copy.yaml",
+      "cp docs/* apps/",
+      "rsync -a docs/ apps/",
       "cp x/y.md docs/",
       "cp -t docs docs/notes.md",
       "mv docs/notes.md docs/old.md",
@@ -251,13 +269,13 @@ describe("scope-guard judges shell writes like the edit tools (#83)", () => {
 describe("command names fold only what the file system aliases (#83)", () => {
   it("does not classify dotless i or capital dotted I as the ASCII tool", () => {
     // `diff` and `file` are read-only: their path arguments are no writes.
-    expect(bash("diff panopticon.charter.yaml docs/x.md").decision).toBe(
+    expect(bash("diff --foo=panopticon.charter.yaml docs/x.md").decision).toBe(
       "allow",
     );
     for (const command of [
-      "dıff panopticon.charter.yaml docs/x.md",
-      "fıle panopticon.charter.yaml",
-      "FİLE panopticon.charter.yaml",
+      "dıff --foo=panopticon.charter.yaml docs/x.md",
+      "fıle --foo=panopticon.charter.yaml",
+      "FİLE --foo=panopticon.charter.yaml",
     ]) {
       expect(bash(command).decision, command).toBe("deny");
     }

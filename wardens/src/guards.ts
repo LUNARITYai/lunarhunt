@@ -1,3 +1,4 @@
+import { type Dirent, readdirSync } from "node:fs";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
@@ -9,7 +10,6 @@ import {
   rewriteCommand,
   type Segment,
   secretCandidates,
-  shellWriteTargets,
   tokenizeAll,
   valueTargets,
 } from "./command.ts";
@@ -22,6 +22,7 @@ import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
 import type { TaskState } from "./task.ts";
+import { shellWriteSet } from "./writers.ts";
 
 function block(
   rule: string,
@@ -61,6 +62,9 @@ function isMutation(action: string): boolean {
 }
 
 export function scopeGuard(ctx: RuleContext): Objection | null {
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, scopeGuard, scopeGlob, false);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
@@ -117,7 +121,7 @@ export function protectedDeny(ctx: RuleContext): Objection | null {
 
 export function generatedFilesGuard(ctx: RuleContext): Objection | null {
   if (ctx.event.action === "shell") {
-    return shellEditVerdict(ctx, generatedFilesGuard);
+    return shellEditVerdict(ctx, generatedFilesGuard, generatedGlob);
   }
   if (!isMutation(ctx.event.action)) {
     return null;
@@ -282,12 +286,11 @@ function meets(
  * path the secret list denies. A pattern without `/` names a basename in any
  * directory; the `!` patterns after it exclude names from it.
  */
-function globMayMatchSecret(
-  ctx: RuleContext,
+function globMayMatch(
+  secrets: readonly string[],
   segments: readonly string[],
   walk: GlobWalk,
 ): boolean {
-  const secrets = ctx.charter.paths.secrets_deny_read;
   return secrets.some((pattern, index) => {
     if (pattern.startsWith("!")) {
       return false;
@@ -308,7 +311,7 @@ function globMayMatchSecret(
  * only when it has no variable, command substitution or `~user` and resolves
  * inside. An unquoted glob is proven when its literal prefix (up to the
  * segment holding the first glob character) is a directory inside the
- * worktree, no segment after it is `..`, and `globMayMatchSecret` finds no
+ * worktree, no segment after it is `..`, and `globMayMatch` finds no
  * secret it can match. `$PWD`, `$HOME` and `$TMPDIR` are variables like any
  * other: never provable.
  */
@@ -344,7 +347,11 @@ function readProvablyInside(
     return false;
   }
   const relative = base.path === "." ? [] : base.path.split("/");
-  return !globMayMatchSecret(ctx, [...relative, ...rest], walk);
+  return !globMayMatch(
+    ctx.charter.paths.secrets_deny_read,
+    [...relative, ...rest],
+    walk,
+  );
 }
 
 type ShellTarget = {
@@ -412,7 +419,7 @@ function shellTargets(ctx: RuleContext, command: string): ShellTarget[] {
     const isExpanding = (path: string) =>
       path.length > 0 &&
       expandingWords.some((word) => word === path || word.endsWith(path));
-    for (const path of shellWriteTargets(segment)) {
+    for (const path of shellWriteSet(segment, cwd).paths) {
       out.push({ path, cwd, expanding: isExpanding(path), kind: "write" });
     }
     if (change?.path) {
@@ -473,6 +480,15 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
     if (expandsDdOperand(segment)) {
       return expansionBlock();
     }
+    // A writer whose destination the command line does not name (#83).
+    if (shellWriteSet(segment, cwd).unknown) {
+      return block(
+        "command-guard",
+        "deny",
+        "a command writes files that the command line does not name",
+        "Name every destination literally, without xargs, find -exec on a writer, archives or scripted editors",
+      );
+    }
     for (const value of valueTargets(segment)) {
       if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
         return expansionBlock();
@@ -489,57 +505,244 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
   return null;
 }
 
+type EditTargets = {
+  /** Repo-relative paths. */
+  paths: string[];
+  /** Globs as repo-relative segments: the files a pattern or an extraction may create. */
+  globs: string[][];
+};
+
+/** Files below a directory a command removes or moves, without `.git` and `node_modules`; null above the cap. */
+function treeFiles(root: string, start: string): string[] | null {
+  const found: string[] = [];
+  const pending = [start];
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    let entries: Dirent[] = [];
+    try {
+      entries = readdirSync(join(root, dir), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = dir === "." ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isDirectory() && !SKIPPED_TREES.has(entry.name)) {
+        pending.push(path);
+      }
+      found.push(path);
+      if (found.length > TREE_LIMIT) {
+        return null;
+      }
+    }
+  }
+  return found;
+}
+
+const SKIPPED_TREES = new Set([".git", "node_modules"]);
+const TREE_LIMIT = 5000;
+const GLOB_PART = /[*?[]/;
+
+/** The segments of a glob word, from the worktree root. `null` when it points outside. */
+function globSegments(
+  ctx: RuleContext,
+  path: string,
+  cwd: string,
+  home: string,
+): string[] | null {
+  const parts = expandHome(path, home).split("/");
+  const first = parts.findIndex((part) => GLOB_PART.test(part));
+  const prefix = parts.slice(0, first).join("/");
+  const base = resolveRepoPath(
+    prefix === "" ? (path.startsWith("/") ? "/" : ".") : prefix,
+    cwd,
+    ctx.root,
+  );
+  if (!base.ok) {
+    return null;
+  }
+  const rest = parts.slice(first).filter((part) => part !== "" && part !== ".");
+  return [
+    ...(base.path === "." ? [] : base.path.split("/")),
+    ...(rest.includes("..") ? ["**"] : rest),
+  ];
+}
+
 /**
- * Every path a shell command writes, as repo-relative paths: its own write
- * targets plus `key=value` and `--opt=value` values. Paths that resolve outside
- * the worktree are left to the escape check in `secretReadGuard`.
+ * Every path a shell command writes: its own write targets (`shellWriteSet`)
+ * and, with `values`, `key=value` and `--opt=value` values. Paths that resolve
+ * outside the worktree are left to the escape check in `secretReadGuard`.
  */
-function shellEditPaths(ctx: RuleContext, command: string): string[] {
+function shellEditTargets(
+  ctx: RuleContext,
+  command: string,
+  values: boolean,
+): EditTargets {
   const home = ctx.home ?? homeOrUnresolved(process.env);
-  const out: string[] = [];
+  const secrets = ctx.charter.paths.secrets_deny_read;
+  const out: EditTargets = { paths: [], globs: [] };
+  const keep = (path: string): void => {
+    // A secret is already denied as a candidate by `secret-read-guard`, which
+    // keeps its own verdict (a `--config=.env` may be a read).
+    if (!denyListMatches(secrets, path)) {
+      out.paths.push(path);
+    }
+  };
   for (const { segment, cwd } of trackedSteps(ctx, command)) {
-    for (const target of [
-      ...shellWriteTargets(segment),
-      ...valueTargets(segment)
-        .filter((value) => !value.pattern)
-        .map((value) => value.path),
-    ]) {
+    const writes = shellWriteSet(segment, cwd);
+    const named = values
+      ? valueTargets(segment)
+          .filter((value) => !value.pattern)
+          .map((value) => value.path)
+      : [];
+    for (const target of [...writes.paths, ...named]) {
+      // A `key=value` word only guesses at a path: its glob stays a literal one.
+      if (GLOB_PART.test(target) && !named.includes(target)) {
+        const glob = globSegments(ctx, target, cwd, home);
+        if (glob) {
+          out.globs.push(glob);
+        }
+        continue;
+      }
       const resolved = resolveRepoPath(expandHome(target, home), cwd, ctx.root);
-      // A secret is already denied as a candidate by `secret-read-guard`, which
-      // keeps its own verdict (a `--config=.env` may be a read).
-      if (
-        resolved.ok &&
-        !denyListMatches(ctx.charter.paths.secrets_deny_read, resolved.path)
-      ) {
-        out.push(resolved.path);
+      if (resolved.ok) {
+        keep(resolved.path);
+      }
+    }
+    for (const tree of writes.trees) {
+      const resolved = resolveRepoPath(expandHome(tree, home), cwd, ctx.root);
+      const files = resolved.ok ? treeFiles(ctx.root, resolved.path) : [];
+      if (resolved.ok && files === null) {
+        out.globs.push([...resolved.path.split("/"), "**"]);
+      }
+      for (const file of files ?? []) {
+        keep(file);
       }
     }
   }
   return out;
 }
 
+type GlobRule = (
+  ctx: RuleContext,
+  segments: readonly string[],
+) => Objection | null;
+
+/** The directory a glob lists before its first pattern segment, as a path inside it. */
+function globProbe(segments: readonly string[]): string {
+  const first = segments.findIndex((part) => GLOB_PART.test(part));
+  return [...segments.slice(0, first < 0 ? undefined : first), "x"].join("/");
+}
+
+function walkOf(ctx: RuleContext): GlobWalk {
+  return {
+    dot: DOTFILE_GLOBBING.test(ctx.event.command ?? ""),
+    filesOnly: false,
+  };
+}
+
+function scopeGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  const probe = globProbe(segments);
+  if (
+    ctx.task.kind === "invalid" ||
+    !pathInScope(probe, ctx.charter, ctx.task)
+  ) {
+    return block(
+      "scope-guard",
+      "deny",
+      `path ${segments.join("/")} not in allowed_paths for this task`,
+      "Ask for needs:human",
+    );
+  }
+  return null;
+}
+
+function generatedGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  return globMayMatch(ctx.charter.paths.generated, segments, walkOf(ctx))
+    ? block(
+        "generated-files-guard",
+        "deny",
+        `${segments.join("/")} may name a generated file`,
+        "Run uv run export-openapi to regenerate it",
+      )
+    : null;
+}
+
+function protectedGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  const { deny, ask } = ctx.charter.paths.protected;
+  const walk = walkOf(ctx);
+  const name = segments.join("/");
+  if (globMayMatch(deny, segments, walk)) {
+    return block(
+      "protected-paths",
+      "deny",
+      `${name} may name a file that is deny for agents`,
+      "A human must change it in a reviewed PR",
+    );
+  }
+  if (
+    !globMayMatch(ask, segments, walk) ||
+    !pathInScope(globProbe(segments), ctx.charter, ctx.task, true)
+  ) {
+    return null;
+  }
+  return block(
+    "protected-paths",
+    ctx.event.interactive ? "ask" : "deny",
+    ctx.event.interactive
+      ? `${name} may name a file that requires approval`
+      : `${name} may name a file that requires ask and this session is non-interactive`,
+    ctx.event.interactive
+      ? "Ask Krzysztof to approve this edit in the session"
+      : "Label the issue needs:human",
+  );
+}
+
 /**
  * Applies an edit-tool rule to each path a shell command writes (#75), as if
- * an Edit tool call had named it. The strongest objection wins; a deny ends
- * the walk.
+ * an Edit tool call had named it, and `onGlob` to each glob it writes (#83).
+ * The strongest objection wins; a deny ends the walk. `values` adds the
+ * `key=value` words, which are only guesses at a path: not for `scope-guard`.
  */
 function shellEditVerdict(
   ctx: RuleContext,
   rule: (edit: RuleContext) => Objection | null,
+  onGlob: GlobRule,
+  values = true,
 ): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
   }
+  const targets = shellEditTargets(ctx, ctx.event.command, values);
   let found: Objection | null = null;
-  for (const path of shellEditPaths(ctx, ctx.event.command)) {
-    const objection = rule({
-      ...ctx,
-      event: { ...ctx.event, action: "write", path, command: null },
-    });
+  const consider = (objection: Objection | null): boolean => {
     if (objection?.decision === "deny") {
-      return objection;
+      found = objection;
+      return true;
     }
     found ??= objection;
+    return false;
+  };
+  for (const path of targets.paths) {
+    const edit = {
+      ...ctx,
+      event: { ...ctx.event, action: "write" as const, path, command: null },
+    };
+    if (consider(rule(edit))) {
+      return found;
+    }
+  }
+  for (const glob of targets.globs) {
+    if (consider(onGlob(ctx, glob))) {
+      return found;
+    }
   }
   return found;
 }
@@ -622,7 +825,7 @@ export function protectedPaths(ctx: RuleContext): Objection | null {
   }
   // `ask` guards edits only: agents must read the Covenant files (#46).
   if (ctx.event.action === "shell") {
-    return shellEditVerdict(ctx, protectedEdit);
+    return shellEditVerdict(ctx, protectedEdit, protectedGlob);
   }
   if (!isMutation(ctx.event.action)) {
     return null;
