@@ -271,7 +271,7 @@ describe("a recorded worktree whose task.json is gone", () => {
 describe("setup reads the issue from the primary's origin", () => {
   it("pins -R to the owner/repo of the primary's remote.origin.url", () => {
     const f = fixture();
-    expect(setupAgain(f).exitCode).toBe(0);
+    expect(setupAgain(f, true).exitCode).toBe(0);
     const issueCalls = f.ghCalls.filter((c) => c[0] === "issue");
     expect(issueCalls.length).toBeGreaterThan(1);
     for (const call of issueCalls) {
@@ -288,7 +288,7 @@ describe("setup reads the issue from the primary's origin", () => {
       const f = fixture();
       sh(f.primary, "config", "remote.origin.url", url);
       sh(f.primary, "config", `url.${f.origin}.insteadOf`, url);
-      expect(setupAgain(f).exitCode).toBe(0);
+      expect(setupAgain(f, true).exitCode).toBe(0);
       expect(f.ghCalls.at(-1)?.slice(-2)).toEqual(["-R", "o/r"]);
     }
   });
@@ -296,7 +296,7 @@ describe("setup reads the issue from the primary's origin", () => {
   it("fails with a next action when the remote is not a GitHub repository", () => {
     const f = fixture();
     sh(f.primary, "config", "remote.origin.url", f.origin);
-    const res = setupAgain(f);
+    const res = setupAgain(f, true);
     expect(res.exitCode).toBe(2);
     expect(res.stderr.trim()).toMatch(MESSAGE_PATTERN);
     expect(res.stderr).toContain("remote");

@@ -61,13 +61,20 @@ function isMutation(action: string): boolean {
   return action === "edit" || action === "write" || action === "delete";
 }
 
-function unverifiedTask(reason: "mismatch" | "unrecorded"): Objection {
+const UNVERIFIED_WHAT = {
+  mismatch:
+    ".panopticon/task.json changed after wardens worktree setup recorded it",
+  unrecorded:
+    ".panopticon/task.json has no hash recorded by wardens worktree setup",
+  deleted:
+    ".panopticon/task.json is missing although wardens worktree setup recorded it",
+};
+
+function unverifiedTask(reason: keyof typeof UNVERIFIED_WHAT): Objection {
   return block(
     "scope-guard",
     "deny",
-    reason === "mismatch"
-      ? ".panopticon/task.json changed after wardens worktree setup recorded it"
-      : ".panopticon/task.json has no hash recorded by wardens worktree setup",
+    UNVERIFIED_WHAT[reason],
     "Ask Krzysztof to run wardens worktree setup",
   );
 }
@@ -1117,6 +1124,19 @@ function gitRewriteDeny(segment: Segment): Objection | null {
     if (!readsOnly) {
       return gitMetadataCommandBlock(
         "git config writes are denied; only --get, --get-all, --get-regexp and --list are allowed",
+      );
+    }
+  }
+  // The remote URL names the repository whose issue sets a task's scope, and
+  // `refs/remotes/origin/main` is what `doctor` compares; both are shared.
+  if (sub === "update-ref") {
+    return gitMetadataCommandBlock("git update-ref is denied");
+  }
+  if (sub === "remote") {
+    const verb = args.find((a) => !a.startsWith("-"));
+    if (verb !== undefined && verb !== "show" && verb !== "get-url") {
+      return gitMetadataCommandBlock(
+        "git remote changes are denied; only git remote, -v, show and get-url are allowed",
       );
     }
   }

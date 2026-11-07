@@ -59,13 +59,47 @@ function baseBranchOf(cfg: WorktreeConfig): string | null {
     : null;
 }
 
+const GITHUB_REMOTE =
+  /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
+
+/**
+ * `owner/repo` of the primary's `remote.origin.url`, or a failure message. The
+ * scope of a task comes from this repository's issue, so `gh` must not pick
+ * the repository from the worktree it runs in.
+ */
+function originRepo(primary: string): string | { error: string } {
+  const url = git(primary, ["config", "--get", "remote.origin.url"]);
+  const match = url.ok ? GITHUB_REMOTE.exec(url.out) : null;
+  return match?.[1] === undefined
+    ? {
+        error: msg(
+          "remote.origin.url of the primary checkout is not a github.com repository, so the issue cannot be read from a known source",
+          "Fix the origin remote of the primary checkout and run it again",
+        ),
+      }
+    : match[1];
+}
+
 function fetchIssue(
   deps: Deps,
   cwd: string,
   issue: number,
+  primary: string,
 ): IssueInfo | string {
+  const repo = originRepo(primary);
+  if (typeof repo !== "string") {
+    return repo.error;
+  }
   const res = deps.gh(
-    ["issue", "view", String(issue), "--json", "title,labels,body,state,url"],
+    [
+      "issue",
+      "view",
+      String(issue),
+      "--json",
+      "title,labels,body,state,url",
+      "-R",
+      repo,
+    ],
     cwd,
   );
   if (res.status !== 0) {
@@ -219,7 +253,7 @@ function newWorktree(
       ),
     );
   }
-  const info = fetchIssue(deps, cwd, issue);
+  const info = fetchIssue(deps, cwd, issue, primary);
   if (typeof info === "string") {
     return fail(info);
   }
@@ -363,7 +397,7 @@ function setupHere(
       ? ok("", grantedNote(existing.allowed_paths))
       : res;
   }
-  const info = fetchIssue(deps, toplevel, parsed.issue);
+  const info = fetchIssue(deps, toplevel, parsed.issue, primary);
   if (typeof info === "string") {
     return fail(info);
   }
@@ -517,10 +551,8 @@ function removeOne(
     };
   }
   const home = trustedHome(deps.env);
-  if (home !== null) {
-    forgetTaskHash(home, id);
-  }
-  let note = `removed ${name}`;
+  const forgotten = home === null || forgetTaskHash(home, id);
+  let note = `removed ${name}${forgotten ? "" : " (its task.json record under ~/.config/panopticon/tasks stays: delete it by hand)"}`;
   const branch = entry.branch;
   if (
     branch !== null &&

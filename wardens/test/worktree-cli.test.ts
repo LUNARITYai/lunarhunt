@@ -118,6 +118,14 @@ function fixture(
   sh(primary, "config", "user.email", "t@example.com");
   sh(primary, "config", "user.name", "t");
   writeFileSync(join(primary, ".env"), "SECRET=hunter2-primary\n");
+  // The GitHub URL on record is what setup parses for `gh -R`; git still fetches the local origin.
+  sh(primary, "config", "remote.origin.url", "https://github.com/o/r.git");
+  sh(
+    primary,
+    "config",
+    `url.${origin}.insteadOf`,
+    "https://github.com/o/r.git",
+  );
 
   const issues = new Map<number, Issue>();
   const prs = new Map<string, string>();

@@ -185,7 +185,8 @@ describe("wardens doctor", () => {
       "ok task-databases",
       "ok charter-drift",
       "ok task-integrity",
-      "ok primary-behind",
+      // The fixture primary has no origin/main, which only warns.
+      "warn primary-behind",
     ]);
   });
 
