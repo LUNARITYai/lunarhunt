@@ -167,6 +167,8 @@ type Arity = {
   operand?: "duration" | "any";
   string?: string;
   stringLong?: RegExp;
+  /** Every short option letter the wrapper has; another letter, or a lone `-`, makes the command unparseable (#83). */
+  letters?: string;
 };
 
 const NONE: Arity = { short: "", long: [] };
@@ -189,8 +191,9 @@ const ARITY: Record<string, Arity> = {
     stringLong: /^--(?:sh|lo)/,
   },
   timeout: { short: "sk", long: ["signal", "kill-after"], operand: "duration" },
-  env: { short: "u", long: ["unset"] },
+  env: { short: "uCP", long: ["unset"], letters: "i0vuCPS" },
   xargs: {
+    letters: "0aEeIiLlnPprsdtTxo",
     short: "ILnPsdaE",
     long: ["arg-file", "delimiter", "max-args", "max-procs", "max-chars"],
   },
@@ -219,7 +222,8 @@ const ARITY: Record<string, Arity> = {
   watch: NONE,
   parallel: NONE,
 };
-const DURATION = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e\d+)?[smhd]?$|^infinity$/;
+/** The one duration shape the walker trusts: another (`1e3`, `.5`, `infinity`) is unparseable (#83). */
+const DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
 /** More words than this behind a wrapper: unparseable (matching is cubic in them). */
 const WRAPPER_WORD_LIMIT = 64;
 
@@ -233,10 +237,13 @@ const WRAPPER_WORD_LIMIT = 64;
 export function walkCommands(argv: readonly string[]): {
   at: Set<number>;
   stringFlag: boolean;
+  /** A wrapper form the walker does not fully parse: the command it runs may be hidden. */
+  unknown: boolean;
 } {
   const at = new Set<number>();
   const seen = new Set<string>();
   let stringFlag = false;
+  let unknown = false;
   const visit = (index: number): void => {
     if (index >= argv.length || at.has(index)) {
       return;
@@ -289,6 +296,7 @@ export function walkCommands(argv: readonly string[]): {
       } else if (word.length > 1 && word.startsWith("-")) {
         let used = 1;
         for (const [pos, letter] of [...word].slice(1).entries()) {
+          unknown ||= spec.letters?.includes(letter) === false;
           if (spec.short.includes(letter)) {
             used = pos + 2 === word.length ? 2 : 1;
             break;
@@ -305,13 +313,17 @@ export function walkCommands(argv: readonly string[]): {
         operands -= 1;
         index += 1;
       } else {
+        // A lone `-` (`env -`), or a duration `timeout` reads but we do not.
+        unknown ||=
+          (word === "-" && spec.letters !== undefined) ||
+          (operands > 0 && spec.operand === "duration");
         visit(index);
         return;
       }
     }
   };
   visit(0);
-  return { at, stringFlag };
+  return { at, stringFlag, unknown };
 }
 
 /** Shell options that take the next word as a value, so it is not the script operand. */
@@ -341,8 +353,8 @@ function shellCommandFlag(args: readonly string[]): boolean {
  * command word counts, so `xargs grep eval` and `find . -name eval` pass.
  */
 function runsCommandString(argv: readonly string[]): boolean {
-  const { at, stringFlag } = walkCommands(argv);
-  if (stringFlag) {
+  const { at, stringFlag, unknown } = walkCommands(argv);
+  if (stringFlag || unknown) {
     return true;
   }
   for (const index of at) {
@@ -1406,7 +1418,14 @@ const READ_ONLY = new Set([
 ]);
 
 /** Commands whose every path argument is written. */
-const WRITE_ALL = new Set(["rm", "rmdir", "mkdir", "touch", "tee", "truncate"]);
+export const WRITE_ALL = new Set([
+  "rm",
+  "rmdir",
+  "mkdir",
+  "touch",
+  "tee",
+  "truncate",
+]);
 
 function isMessageFlag(word: string, command: string): boolean {
   if (MESSAGE_LONG.has(word) || MESSAGE_SHORT[command]?.has(word)) {
@@ -1437,7 +1456,7 @@ export function secretCandidates(segment: Segment): PathCandidate[] {
  * The command word and device paths are never targets.
  */
 export function writeTargets(segment: Segment): string[] {
-  const command = commandName(segment.argv[0] ?? "");
+  const command = foldName(segment.argv[0] ?? "");
   const writer =
     WRITE_ALL.has(command) ||
     command === "cp" ||
@@ -1728,7 +1747,7 @@ function collectCandidates(segment: Segment): Candidate[] {
   const argv = segment.argv;
   // A builtin (`echo`, `cd`) is matched as typed; a tool is matched by its folded name.
   const command = argv[0] ?? "";
-  const tool = commandName(command);
+  const tool = foldName(command);
   const assignmentsEnd = wrappedCommandIndex(argv);
   const keyless = ASSIGNING_BUILTINS.has(command);
   const readOnly = READ_ONLY.has(tool);

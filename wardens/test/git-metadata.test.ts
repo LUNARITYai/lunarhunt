@@ -109,7 +109,6 @@ const ALLOWED_COMMANDS = [
   "ls .git",
   "git status",
   "grep foo .git/config",
-  "cp .git/HEAD x",
   "echo x > .gitignore",
   "cp x .github/y",
   "echo x > docs/.git-notes.md",

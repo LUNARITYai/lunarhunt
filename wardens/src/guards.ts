@@ -1,4 +1,4 @@
-import { type Dirent, readdirSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
@@ -510,10 +510,22 @@ type EditTargets = {
   paths: string[];
   /** Globs as repo-relative segments: the files a pattern or an extraction may create. */
   globs: string[][];
+  /** The command removes or moves more files than can be listed: denied. */
+  tooLarge: string | null;
 };
 
-/** Files below a directory a command removes or moves, without `.git` and `node_modules`; null above the cap. */
-function treeFiles(root: string, start: string): string[] | null {
+/** Entries listed per command, over all trees. A larger tree is denied with a message that says so. */
+const TREE_BUDGET = 100_000;
+const SKIPPED_TREES = new Set([".git", "node_modules"]);
+const GLOB_PART = /[*?[]/;
+
+/** Files below a directory a command removes or moves, without `.git` and `node_modules`; null when `budget` runs out. */
+function treeFiles(
+  root: string,
+  start: string,
+  names: readonly string[] | undefined,
+  budget: { left: number },
+): string[] | null {
   const found: string[] = [];
   const pending = [start];
   for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
@@ -523,23 +535,25 @@ function treeFiles(root: string, start: string): string[] | null {
     } catch {
       continue;
     }
+    budget.left -= entries.length;
+    if (budget.left < 0) {
+      return null;
+    }
     for (const entry of entries) {
       const path = dir === "." ? entry.name : `${dir}/${entry.name}`;
       if (entry.isDirectory() && !SKIPPED_TREES.has(entry.name)) {
         pending.push(path);
       }
-      found.push(path);
-      if (found.length > TREE_LIMIT) {
-        return null;
+      if (
+        !names ||
+        names.some((name) => picomatch.isMatch(entry.name, name, { dot: true }))
+      ) {
+        found.push(path);
       }
     }
   }
   return found;
 }
-
-const SKIPPED_TREES = new Set([".git", "node_modules"]);
-const TREE_LIMIT = 5000;
-const GLOB_PART = /[*?[]/;
 
 /** The segments of a glob word, from the worktree root. `null` when it points outside. */
 function globSegments(
@@ -566,19 +580,31 @@ function globSegments(
   ];
 }
 
+const EDIT_TARGETS = new WeakMap<RuleContext, Map<boolean, EditTargets>>();
+
 /**
  * Every path a shell command writes: its own write targets (`shellWriteSet`)
  * and, with `values`, `key=value` and `--opt=value` values. Paths that resolve
- * outside the worktree are left to the escape check in `secretReadGuard`.
+ * outside the worktree are left to the escape check in `secretReadGuard`. The
+ * three rules that judge them share one walk per command.
  */
 function shellEditTargets(
   ctx: RuleContext,
   command: string,
   values: boolean,
 ): EditTargets {
+  const cached = EDIT_TARGETS.get(ctx)?.get(values);
+  if (cached) {
+    return cached;
+  }
   const home = ctx.home ?? homeOrUnresolved(process.env);
-  const secrets = ctx.charter.paths.secrets_deny_read;
-  const out: EditTargets = { paths: [], globs: [] };
+  const {
+    secrets_deny_read: secrets,
+    protected: guarded,
+    generated,
+  } = ctx.charter.paths;
+  const out: EditTargets = { paths: [], globs: [], tooLarge: null };
+  const budget = { left: TREE_BUDGET };
   const keep = (path: string): void => {
     // A secret is already denied as a candidate by `secret-read-guard`, which
     // keeps its own verdict (a `--config=.env` may be a read).
@@ -607,17 +633,47 @@ function shellEditTargets(
         keep(resolved.path);
       }
     }
-    for (const tree of writes.trees) {
-      const resolved = resolveRepoPath(expandHome(tree, home), cwd, ctx.root);
-      const files = resolved.ok ? treeFiles(ctx.root, resolved.path) : [];
-      if (resolved.ok && files === null) {
-        out.globs.push([...resolved.path.split("/"), "**"]);
+    // The tail of a glued short option (`-rtsecrets`) is a path only when it
+    // exists or names a protected or generated file.
+    for (const tail of writes.weak) {
+      const resolved = resolveRepoPath(expandHome(tail, home), cwd, ctx.root);
+      if (
+        resolved.ok &&
+        (existsSync(join(ctx.root, resolved.path)) ||
+          denyListMatches(guarded.deny, resolved.path) ||
+          anyGlob(guarded.ask, resolved.path, true) ||
+          anyGlob(generated, resolved.path, true))
+      ) {
+        // Nothing else saw this word as a path: a secret is judged here.
+        out.paths.push(resolved.path);
+        for (const file of treeFiles(
+          ctx.root,
+          resolved.path,
+          undefined,
+          budget,
+        ) ?? []) {
+          out.paths.push(file);
+        }
       }
+    }
+    for (const tree of writes.trees) {
+      const resolved = resolveRepoPath(
+        expandHome(tree.path, home),
+        cwd,
+        ctx.root,
+      );
+      const files = resolved.ok
+        ? treeFiles(ctx.root, resolved.path, tree.names, budget)
+        : [];
+      out.tooLarge ??= files === null ? tree.path : null;
       for (const file of files ?? []) {
         keep(file);
       }
     }
   }
+  const byValues = EDIT_TARGETS.get(ctx) ?? new Map<boolean, EditTargets>();
+  byValues.set(values, out);
+  EDIT_TARGETS.set(ctx, byValues);
   return out;
 }
 
@@ -721,6 +777,14 @@ function shellEditVerdict(
     return null;
   }
   const targets = shellEditTargets(ctx, ctx.event.command, values);
+  if (targets.tooLarge !== null) {
+    return block(
+      "command-guard",
+      "deny",
+      `${targets.tooLarge} holds too many files to check before it is removed or moved`,
+      "Remove or move a smaller directory, or ask for needs:human",
+    );
+  }
   let found: Objection | null = null;
   const consider = (objection: Objection | null): boolean => {
     if (objection?.decision === "deny") {

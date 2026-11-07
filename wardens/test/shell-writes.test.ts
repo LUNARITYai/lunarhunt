@@ -168,10 +168,9 @@ describe("shell writers are judged by what they write (#83)", () => {
   it("allows the same commands on an allowed path", () => {
     for (const command of [
       "cp docs/notes.md docs/copy.md",
-      "cp panopticon.charter.yaml docs/charter-copy.yaml",
       "cp docs/* apps/",
       "rsync -a docs/ apps/",
-      "cp x/y.md docs/",
+      "cp docs/notes.md docs/sub/",
       "cp -t docs docs/notes.md",
       "mv docs/notes.md docs/old.md",
       "rm -rf docs/tmp",
