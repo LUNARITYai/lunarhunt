@@ -74,6 +74,18 @@ const EXTENDS_WITH_GT = /^(?:(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?[<>]|&>?)$/;
 /** The bare text of a word whose next `|` makes the clobber operator `>|`. */
 const CLOBBER_BASE = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>$/;
 
+/**
+ * zsh spellings the tokenizer does not parse, so they are unparseable: a `|`
+ * after `>>`, `>&`, `&>`, `&>>` or `>>&` (`>>|`, `>&|`, `&>|`), and a `!` after
+ * a `>` operator (`>!`, `>>!`, `&>!`, `>&!`). They are the zsh clobber override
+ * and append spellings; reading them as a pipe or as part of the target would
+ * hide the file written. `>>&` is unparseable as well.
+ */
+const ZSH_PIPE_BASE =
+  /^(?:(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>>&?|>&)|&>)$/;
+const ZSH_BANG_BASE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?>>?&?$/;
+const APPEND_BASE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?>>$/;
+
 /** A `>&` or `<&` target that duplicates or closes a descriptor: `1`, `2-`, `-`. */
 const FD_TARGET = /^(?:\d+-?|-)$/;
 
@@ -738,6 +750,15 @@ function scan(
     flushWord();
   };
 
+  // The character at `at`, past any backslash-newline pairs the shell deletes.
+  const peekPast = (at: number): string | undefined => {
+    let cursor = at;
+    while (command[cursor] === "\\" && command[cursor + 1] === "\n") {
+      cursor += 2;
+    }
+    return command[cursor];
+  };
+
   // After `|`, the command to the right must follow in the same segment: an
   // empty one (`a | & b`, `a |; b`) would desync the pipe from its right side.
   let afterPipe = false;
@@ -756,7 +777,7 @@ function scan(
 
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index] ?? "";
-    const afterGt = lastGt;
+    const afterGt: boolean = lastGt;
     lastGt = false;
     if (quote === "single") {
       if (ch === "'") {
@@ -777,6 +798,7 @@ function scan(
         if (next === "\n") {
           // Line continuation: the shell deletes both characters.
           continuation = true;
+          lastGt = afterGt;
           index += 1;
           continue;
         }
@@ -818,6 +840,7 @@ function scan(
       if (next === "\n") {
         // Line continuation: the shell deletes both characters and the word stays open.
         continuation = true;
+        lastGt = afterGt;
         index += 1;
         continue;
       }
@@ -898,7 +921,10 @@ function scan(
       continue;
     }
     // `>|` forces the overwrite: the `|` is part of the redirect, not a pipe.
-    if (ch === "|" && afterGt && CLOBBER_BASE.test(bare)) {
+    if (ch === "|" && ZSH_PIPE_BASE.test(bare)) {
+      return null;
+    }
+    if (ch === "|" && CLOBBER_BASE.test(bare)) {
       buf += ch;
       bare += ch;
       wordStarted = true;
@@ -926,7 +952,10 @@ function scan(
     if (ch === "&") {
       // `&>`, `&>>` and `>&` are redirects; any other lone `&` backgrounds the
       // command before it, so what follows is a new segment.
-      if (command[index + 1] === ">" || afterGt) {
+      if (APPEND_BASE.test(bare)) {
+        return null;
+      }
+      if (peekPast(index + 1) === ">" || afterGt) {
         if (!afterGt) {
           splitBeforeRedirect("&");
         }
@@ -971,6 +1000,9 @@ function scan(
     // process substitution (`<(`, `>(`), each able to hide a command from the
     // deny patterns. No legitimate agent command needs one outside quotes.
     if (ch === "(" || ch === ")") {
+      return null;
+    }
+    if (ch === "!" && ZSH_BANG_BASE.test(bare)) {
       return null;
     }
     if (ch === "<" || ch === ">") {

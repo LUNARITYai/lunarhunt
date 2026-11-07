@@ -1469,6 +1469,166 @@ describe("redirects glued to the previous word (#79)", () => {
       }
     }
   });
+
+  // Round 1, B1: the harness shell is zsh. `!` after a `>`-family operator and `|`
+  // after `>>`, `>&`, `&>`, `&>>` or `>>&` are zsh spellings with their own
+  // meaning (clobber override, append of both streams, `>>|`). Bash does not need
+  // them, so the tokenizer calls them unparseable: spaced and glued alike.
+  const UNPARSEABLE_MESSAGE = (() => {
+    const reference = shell(tempRepo(), "echo (x)");
+    return reference.message;
+  })();
+
+  const ZSH_DENIED = [
+    "echo x>!panopticon.charter.yaml",
+    "echo x >! panopticon.charter.yaml",
+    "echo x>>!/abs",
+    "echo x>>&/abs",
+    "echo x>&!.env",
+    "echo x&>!/abs",
+    "echo x&>>!.env",
+    "echo x 2>!/abs",
+    "echo x>>&!/abs",
+    "echo x>>|panopticon.charter.yaml",
+    "echo x>&|panopticon.charter.yaml",
+    "echo x&>|panopticon.charter.yaml",
+    "echo x&>>|panopticon.charter.yaml",
+    "echo x>>&|panopticon.charter.yaml",
+    "echo x >>| panopticon.charter.yaml",
+    "echo x 2>>|/abs",
+    "echo x >>& /abs",
+    "echo x >&! .env",
+    ">!panopticon.charter.yaml",
+    "x>!out.txt",
+  ];
+
+  it.each(ZSH_DENIED)(
+    "denies the zsh spelling %s as unparseable",
+    (command) => {
+      const root = tempRepo();
+      const verdict = shell(root, command);
+      expect(verdict.decision).toBe("deny");
+      expect(verdict.rule).toBe("command-guard");
+      expect(verdict.message).toBe(UNPARSEABLE_MESSAGE);
+    },
+  );
+
+  it.each([
+    "echo 'x>!y'",
+    "rg '>>|'",
+    'git commit -m "a>!b"',
+    'echo "x>>&y"',
+    "echo x\\>!y",
+    "cmd 2>&1",
+    "cmd>/dev/null",
+    "cmd 2>&1|tail",
+    "cmd>&2|tail",
+    "echo x>|out.txt",
+    "echo x 2>|out.txt",
+    "echo x>out.txt|cat",
+    "echo x >>out.txt",
+    "echo x&>out.txt",
+    "git log --format='%h>>|%s'",
+  ])("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Round 1, B2: a backslash-newline between two operator characters joins them.
+  const CONTINUED_DENIED: Array<[string, string]> = [
+    ["echo x>\\\n|panopticon.charter.yaml", "protected-paths"],
+    ["echo x>\\\n&packages/contracts/openapi.json", "generated-files-guard"],
+    ["echo x&>\\\n|.github/x", "command-guard"],
+    ["echo x>>\\\n|panopticon.charter.yaml", "command-guard"],
+    ["echo x>\\\n>panopticon.charter.yaml", "protected-paths"],
+    ["echo x<\\\n>panopticon.charter.yaml", "protected-paths"],
+    ["echo x>\\\n|/abs", "engine"],
+    ["echo x>\\\n&/abs", "engine"],
+    ["echo x>\\\n!panopticon.charter.yaml", "command-guard"],
+    ["echo x>>\\\n&/abs", "command-guard"],
+  ];
+
+  it.each(CONTINUED_DENIED)("denies %j", (command, rule) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe(rule);
+  });
+
+  // The class: every zsh spelling and every continued spelling of an operator is
+  // refused for every target the plain spelling refuses.
+  const ZSH_OPERATORS = [
+    ">!",
+    ">>!",
+    "&>!",
+    "&>>!",
+    ">&!",
+    ">>&!",
+    "2>!",
+    ">>|",
+    ">&|",
+    "&>|",
+    "&>>|",
+    ">>&|",
+    ">>&",
+    "2>>|",
+  ];
+
+  it("refuses every zsh spelling for every target as unparseable", () => {
+    const root = tempRepo();
+    for (const operator of ZSH_OPERATORS) {
+      for (const target of TARGETS) {
+        for (const command of [
+          `cmd x${operator}${target}`,
+          `cmd x ${operator} ${target}`,
+          `cmd x ${operator}${target}`,
+          `x${operator}${target}`,
+        ]) {
+          const verdict = shell(root, command);
+          expect(verdict.decision, command).toBe("deny");
+          // The launcher anchor is matched on the raw text first: also a deny.
+          if (!target.includes(".config/panopticon")) {
+            expect(verdict.message, command).toBe(UNPARSEABLE_MESSAGE);
+          }
+        }
+      }
+    }
+  });
+
+  // [joined spelling, the same with a continuation inside the operator]
+  const CONTINUED_FORMS: Array<[string, string]> = [
+    [">|T", ">\\\n|T"],
+    [">&T", ">\\\n&T"],
+    ["&>T", "&\\\n>T"],
+    ["&>T", "&>\\\nT"],
+    ["&>|T", "&>\\\n|T"],
+    [">>T", ">\\\n>T"],
+    [">>|T", ">>\\\n|T"],
+    [">>&T", ">>\\\n&T"],
+    [">!T", ">\\\n!T"],
+    ["<>T", "<\\\n>T"],
+    ["2>|T", "2>\\\n|T"],
+    ["2>&T", "2>\\\n&T"],
+  ];
+
+  it("treats a continued operator like the joined one for every target", () => {
+    const root = tempRepo();
+    for (const [joined, continued] of CONTINUED_FORMS) {
+      for (const target of TARGETS) {
+        for (const head of ["cmd x", "x", "nice cmd x"]) {
+          const reference = shell(
+            root,
+            `${head}${joined.replaceAll("T", target)}`,
+          );
+          const command = `${head}${continued.replaceAll("T", target)}`;
+          const verdict = shell(root, command);
+          expect(verdict.decision, command).toBe(reference.decision);
+          expect(verdict.rule, command).toBe(reference.rule);
+          expect(verdict.message, command).toBe(reference.message);
+        }
+      }
+    }
+  });
 });
 
 describe("null paths", () => {
