@@ -60,10 +60,15 @@
       "Bash(gh issue edit * --body*)",
       "Bash(gh issue edit * -b *)",
       "Bash(gh issue edit * --body-file*)",
-      "Bash(gh pr merge*)",
-      "Bash(gh pr review*)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr review *)",
       "Bash(gh api *merge*)",
-      "Bash(gh api *reviews*)"
+      "Bash(gh api *Merge*)",
+      "Bash(gh api *reviews*)",
+      "Bash(gh api *PullRequestReview*)",
+      "Bash(gh api *rulesets*)",
+      "Bash(gh alias set *)",
+      "Bash(gh alias import *)"
     ]
   },
   "hooks": {
