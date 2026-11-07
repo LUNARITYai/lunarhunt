@@ -614,7 +614,7 @@ describe("worktree-guard in a linked worktree on a task branch", () => {
   it("is a no-op for edits and commands, whatever the branch name", () => {
     const f = fixture();
     expect(edit(f, f.linked, join(f.linked, "apps/web.ts"))).toBe("");
-    expect(bash(f, f.linked, "touch x")).toBe("");
+    expect(bash(f, f.linked, "touch apps/x")).toBe("");
     git(f.linked, "checkout", "-q", "-b", "fix/99-elsewhere");
     expect(edit(f, f.linked, join(f.linked, "apps/web.ts"))).toBe("");
   });

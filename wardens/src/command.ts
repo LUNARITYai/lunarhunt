@@ -1,4 +1,4 @@
-import { foldCase } from "./globs.ts";
+import { foldName } from "./globs.ts";
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const COMBINED_SHORT = /^-[a-zA-Z]{2,}$/;
@@ -167,6 +167,8 @@ type Arity = {
   operand?: "duration" | "any";
   string?: string;
   stringLong?: RegExp;
+  /** Every short option letter the wrapper has; another letter, or a lone `-`, makes the command unparseable (#83). */
+  letters?: string;
 };
 
 const NONE: Arity = { short: "", long: [] };
@@ -189,8 +191,9 @@ const ARITY: Record<string, Arity> = {
     stringLong: /^--(?:sh|lo)/,
   },
   timeout: { short: "sk", long: ["signal", "kill-after"], operand: "duration" },
-  env: { short: "u", long: ["unset"] },
+  env: { short: "uCP", long: ["unset"], letters: "i0vuCPS" },
   xargs: {
+    letters: "0aEeIiLlnPprsdtTxo",
     short: "ILnPsdaE",
     long: ["arg-file", "delimiter", "max-args", "max-procs", "max-chars"],
   },
@@ -219,7 +222,8 @@ const ARITY: Record<string, Arity> = {
   watch: NONE,
   parallel: NONE,
 };
-const DURATION = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e\d+)?[smhd]?$|^infinity$/;
+/** The one duration shape the walker trusts: another (`1e3`, `.5`, `infinity`) is unparseable (#83). */
+const DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
 /** More words than this behind a wrapper: unparseable (matching is cubic in them). */
 const WRAPPER_WORD_LIMIT = 64;
 
@@ -230,13 +234,16 @@ const WRAPPER_WORD_LIMIT = 64;
  * the next word, so a bypass needs both readings to miss. `stringFlag` is set
  * when a wrapper option turns the rest into one command string.
  */
-function walkCommands(argv: readonly string[]): {
+export function walkCommands(argv: readonly string[]): {
   at: Set<number>;
   stringFlag: boolean;
+  /** A wrapper form the walker does not fully parse: the command it runs may be hidden. */
+  unknown: boolean;
 } {
   const at = new Set<number>();
   const seen = new Set<string>();
   let stringFlag = false;
+  let unknown = false;
   const visit = (index: number): void => {
     if (index >= argv.length || at.has(index)) {
       return;
@@ -289,6 +296,7 @@ function walkCommands(argv: readonly string[]): {
       } else if (word.length > 1 && word.startsWith("-")) {
         let used = 1;
         for (const [pos, letter] of [...word].slice(1).entries()) {
+          unknown ||= spec.letters?.includes(letter) === false;
           if (spec.short.includes(letter)) {
             used = pos + 2 === word.length ? 2 : 1;
             break;
@@ -305,13 +313,17 @@ function walkCommands(argv: readonly string[]): {
         operands -= 1;
         index += 1;
       } else {
+        // A lone `-` (`env -`), or a duration `timeout` reads but we do not.
+        unknown ||=
+          (word === "-" && spec.letters !== undefined) ||
+          (operands > 0 && spec.operand === "duration");
         visit(index);
         return;
       }
     }
   };
   visit(0);
-  return { at, stringFlag };
+  return { at, stringFlag, unknown };
 }
 
 /** Shell options that take the next word as a value, so it is not the script operand. */
@@ -341,8 +353,8 @@ function shellCommandFlag(args: readonly string[]): boolean {
  * command word counts, so `xargs grep eval` and `find . -name eval` pass.
  */
 function runsCommandString(argv: readonly string[]): boolean {
-  const { at, stringFlag } = walkCommands(argv);
-  if (stringFlag) {
+  const { at, stringFlag, unknown } = walkCommands(argv);
+  if (stringFlag || unknown) {
     return true;
   }
   for (const index of at) {
@@ -363,7 +375,7 @@ function runsCommandString(argv: readonly string[]): boolean {
 }
 
 /** The words without redirects and their targets (`2>&1`, `> x`, `{fd}>x`). */
-function withoutRedirects(argv: readonly string[]): string[] {
+export function withoutRedirects(argv: readonly string[]): string[] {
   const out: string[] = [];
   for (let at = 0; at < argv.length; at += 1) {
     const redirect = REDIRECT_WORD.exec(argv[at] ?? "");
@@ -376,7 +388,7 @@ function withoutRedirects(argv: readonly string[]): string[] {
   return out;
 }
 
-function inner(base: Segment, words: string[]): Segment {
+export function inner(base: Segment, words: string[]): Segment {
   const next = prepare(words, [], []);
   return { ...next, env: { ...base.env, ...next.env } };
 }
@@ -534,8 +546,8 @@ const EXECUTORS = new Set([
  * resolves `CP` and `Git` to the real tools (#77), so every table and deny
  * pattern is looked up by this name.
  */
-function commandName(word: string): string {
-  return foldCase(word.slice(word.lastIndexOf("/") + 1));
+export function commandName(word: string): string {
+  return foldName(word.slice(word.lastIndexOf("/") + 1));
 }
 
 function isExecutor(word: string): boolean {
@@ -548,7 +560,7 @@ function heredocSafe(raw: RawSegment[], prepared: Segment[]): boolean {
     return true;
   }
   return prepared.every((segment, index) => {
-    const head = foldCase(segment.argv[0] ?? "");
+    const head = foldName(segment.argv[0] ?? "");
     if (raw[index]?.heredoc && !HEREDOC_CONSUMERS.has(head)) {
       return false;
     }
@@ -1096,7 +1108,7 @@ function consumesValue(flag: string, subcommand: string | null): boolean {
 }
 
 function annotate(argv: string[]): ArgToken[] {
-  if (foldCase(argv[0] ?? "") !== "git") {
+  if (foldName(argv[0] ?? "") !== "git") {
     return argv.map((text) => ({ text, value: false }));
   }
   const valueIndexes = new Set<number>();
@@ -1261,7 +1273,7 @@ export function segmentMatches(pattern: string, segment: Segment): boolean {
   // `/usr/bin/git push --force` is `git push --force`.
   if (
     !first ||
-    !tokenMatches(foldCase(head), { ...first, text: commandName(first.text) })
+    !tokenMatches(foldName(head), { ...first, text: commandName(first.text) })
   ) {
     return false;
   }
@@ -1274,7 +1286,7 @@ function rightSideMatches(pattern: string, segment: Segment): boolean {
     .split(/\s+/)
     .filter((part) => part.length > 0);
   const head = commandName(segment.argv[0] ?? "");
-  const name = foldCase(parts[0] ?? "");
+  const name = foldName(parts[0] ?? "");
   if (parts.length === 1) {
     return head === name;
   }
@@ -1344,7 +1356,7 @@ export function rewriteCommand(
       parts.length === segment.argv.length &&
       parts.every((part, index) =>
         index === 0
-          ? foldCase(part) === foldCase(segment.argv[0] ?? "")
+          ? foldName(part) === foldName(segment.argv[0] ?? "")
           : part === segment.argv[index],
       )
     ) {
@@ -1406,7 +1418,14 @@ const READ_ONLY = new Set([
 ]);
 
 /** Commands whose every path argument is written. */
-const WRITE_ALL = new Set(["rm", "rmdir", "mkdir", "touch", "tee", "truncate"]);
+export const WRITE_ALL = new Set([
+  "rm",
+  "rmdir",
+  "mkdir",
+  "touch",
+  "tee",
+  "truncate",
+]);
 
 function isMessageFlag(word: string, command: string): boolean {
   if (MESSAGE_LONG.has(word) || MESSAGE_SHORT[command]?.has(word)) {
@@ -1437,7 +1456,7 @@ export function secretCandidates(segment: Segment): PathCandidate[] {
  * The command word and device paths are never targets.
  */
 export function writeTargets(segment: Segment): string[] {
-  const command = foldCase(segment.argv[0] ?? "");
+  const command = foldName(segment.argv[0] ?? "");
   const writer =
     WRITE_ALL.has(command) ||
     command === "cp" ||
@@ -1451,6 +1470,18 @@ export function writeTargets(segment: Segment): string[] {
         (candidate.origin === "redirect" ||
           (writer &&
             (candidate.origin === "arg" || candidate.origin === "opt"))),
+    )
+    .map((candidate) => candidate.path);
+}
+
+/** The files a segment's own redirects write (`>f`, `2>>f`, `&>f`), whatever its command. */
+export function redirectTargets(segment: Segment): string[] {
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.write &&
+        candidate.origin === "redirect" &&
+        !isDevicePath(candidate.path),
     )
     .map((candidate) => candidate.path);
 }
@@ -1612,119 +1643,6 @@ export function expandsDdOperand(segment: Segment): boolean {
   );
 }
 
-/** `--opt=value` options whose value is a file the command writes. */
-const OUTPUT_OPTIONS = new Set([
-  "--output",
-  "--out",
-  "--outfile",
-  "--output-file",
-  "--output-document",
-  "--target-directory",
-  "--file",
-  "--log-file",
-  "--destination",
-  "--dest",
-  "--to",
-]);
-const PATH_MUTATORS = new Set(["chmod", "chown", "chgrp", "unlink", "shred"]);
-const IN_PLACE_EDITORS = new Set(["sed", "gsed", "perl"]);
-/** `rsync` options that take the next word as a value, never a path. */
-const RSYNC_VALUE_OPTIONS = new Set([
-  "--exclude",
-  "--include",
-  "--filter",
-  "-f",
-  "-e",
-  "--rsh",
-  "--exclude-from",
-  "--include-from",
-  "--files-from",
-]);
-
-function positionals(
-  argv: readonly string[],
-  skipValueOf: ReadonlySet<string>,
-) {
-  const out: string[] = [];
-  for (let index = 1; index < argv.length; index += 1) {
-    const word = argv[index] ?? "";
-    if (skipValueOf.has(word)) {
-      index += 1;
-    } else if (!word.startsWith("-") && word.length > 0) {
-      out.push(word);
-    }
-  }
-  return out;
-}
-
-const NO_SKIP: ReadonlySet<string> = new Set();
-
-/**
- * Everything `writeTargets` lists, plus the writes that need a command's own
- * grammar: in-place editors (`sed -i`, `perl -i`), `dd of=`, the destination of
- * `install` and `rsync`, owners and modes, `curl -o`, and the value of an
- * `--output=file` style option. Words that merely name a path (`find -name`,
- * `tar --exclude=...`, `git --git-dir=...`) are not targets.
- */
-export function shellWriteTargets(segment: Segment): string[] {
-  const out = [...writeTargets(segment)];
-  const argv = segment.argv;
-  const command = commandName(argv[0] ?? "");
-  const rest = argv.slice(1);
-  if (
-    IN_PLACE_EDITORS.has(command) &&
-    rest.some(
-      (word) => word.startsWith("--in-place") || /^-[a-zA-Z0-9]*i/.test(word),
-    )
-  ) {
-    out.push(...positionals(argv, NO_SKIP));
-  }
-  if (command === "dd") {
-    out.push(
-      ...rest.filter((word) => word.startsWith("of=")).map((w) => w.slice(3)),
-    );
-  }
-  if (command === "install" || command === "rsync") {
-    const last = positionals(
-      argv,
-      command === "rsync" ? RSYNC_VALUE_OPTIONS : NO_SKIP,
-    ).at(-1);
-    if (last !== undefined) {
-      out.push(last);
-    }
-    for (let index = 1; index < argv.length - 1; index += 1) {
-      if (argv[index] === "-t") {
-        out.push(argv[index + 1] ?? "");
-      }
-    }
-  }
-  if (PATH_MUTATORS.has(command)) {
-    out.push(...positionals(argv, NO_SKIP));
-  }
-  if (command === "curl" || command === "wget") {
-    for (let index = 1; index < argv.length - 1; index += 1) {
-      if (
-        ["-o", "-O", "--output", "--output-document"].includes(
-          argv[index] ?? "",
-        )
-      ) {
-        out.push(argv[index + 1] ?? "");
-      }
-    }
-  }
-  for (const word of rest) {
-    const eq = word.indexOf("=");
-    if (
-      word.startsWith("--") &&
-      eq > 0 &&
-      OUTPUT_OPTIONS.has(word.slice(0, eq))
-    ) {
-      out.push(word.slice(eq + 1));
-    }
-  }
-  return out.filter((path) => path.length > 0 && !isDevicePath(path));
-}
-
 /**
  * The directory change a segment makes, or null when it makes none. The path
  * is null when the tracker cannot follow the change: `cd` without an
@@ -1829,7 +1747,7 @@ function collectCandidates(segment: Segment): Candidate[] {
   const argv = segment.argv;
   // A builtin (`echo`, `cd`) is matched as typed; a tool is matched by its folded name.
   const command = argv[0] ?? "";
-  const tool = foldCase(command);
+  const tool = foldName(command);
   const assignmentsEnd = wrappedCommandIndex(argv);
   const keyless = ASSIGNING_BUILTINS.has(command);
   const readOnly = READ_ONLY.has(tool);
