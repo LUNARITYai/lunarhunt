@@ -924,7 +924,7 @@ function scan(
     if (ch === "|" && ZSH_PIPE_BASE.test(bare)) {
       return null;
     }
-    if (ch === "|" && CLOBBER_BASE.test(bare)) {
+    if (ch === "|" && afterGt && CLOBBER_BASE.test(bare)) {
       buf += ch;
       bare += ch;
       wordStarted = true;

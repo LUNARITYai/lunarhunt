@@ -1534,6 +1534,25 @@ describe("redirects glued to the previous word (#79)", () => {
     expect(shell(root, command).decision).toBe("allow");
   });
 
+  // Round 2: an empty quoted target adds nothing to the word text, but the `|`
+  // after it is a real pipe, not a clobber `>|`: the command behind it is judged.
+  const EMPTY_QUOTE_PIPE: Array<[string, string]> = [
+    ['echo x >""|touch panopticon.charter.yaml', "protected-paths"],
+    ["echo x >''|git push --force", "command-guard"],
+    ['echo x >""|tee panopticon.charter.yaml', "protected-paths"],
+    ['echo x 2>""|touch panopticon.charter.yaml', "protected-paths"],
+    ['echo x >""""|touch panopticon.charter.yaml', "protected-paths"],
+    ['echo x >\\\n""|touch panopticon.charter.yaml', "protected-paths"],
+    ["echo x >''\\\n\\\n|touch panopticon.charter.yaml", "protected-paths"],
+  ];
+
+  it.each(EMPTY_QUOTE_PIPE)("denies the pipe after %j", (command, rule) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe(rule);
+  });
+
   // Round 1, B2: a backslash-newline between two operator characters joins them.
   const CONTINUED_DENIED: Array<[string, string]> = [
     ["echo x>\\\n|panopticon.charter.yaml", "protected-paths"],
