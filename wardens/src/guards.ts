@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
@@ -16,6 +15,7 @@ import {
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -242,7 +242,7 @@ type Step = {
  */
 function trackedSteps(ctx: RuleContext, command: string): Step[] {
   const out: Step[] = [];
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const pipeline of tokenizeAll(command)) {
     if (!pipeline.ok) {
       continue;
@@ -313,7 +313,7 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
   if (tokenizeAll(ctx.event.command).some((pipeline) => !pipeline.ok)) {
     return unparseableBlock();
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const step of trackedSteps(ctx, ctx.event.command)) {
     const path = step.change?.path;
     if (
@@ -358,7 +358,7 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
  * the worktree are left to the escape check in `secretReadGuard`.
  */
 function shellEditPaths(ctx: RuleContext, command: string): string[] {
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   const out: string[] = [];
   for (const { segment, cwd } of trackedSteps(ctx, command)) {
     for (const target of [
@@ -442,7 +442,7 @@ export function gitMetadataDeny(ctx: RuleContext): Objection | null {
   if (unexpandable) {
     return unexpandable;
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const target of shellTargets(ctx, command)) {
     if (target.kind !== "write") {
       continue;
@@ -886,7 +886,7 @@ export function secretReadGuard(ctx: RuleContext): Objection | null {
   if (expansion) {
     return expansion;
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   // Each word resolves from the directory the shell is in when it runs.
   for (const { segment, cwd } of trackedSteps(ctx, ctx.event.command)) {
     for (const candidate of secretCandidates(segment)) {

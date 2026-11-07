@@ -1,4 +1,4 @@
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { type Charter, loadCharterAt } from "./charter.ts";
 import { type DodDeps, stopEngineFailure } from "./dod.ts";
 import {
@@ -9,11 +9,13 @@ import {
 } from "./event.ts";
 import { EngineFailure } from "./failures.ts";
 import { gitToplevel, siblingToplevel } from "./git.ts";
+import { homeOrUnresolved } from "./home.ts";
 import { evaluateStop, postEditAudit } from "./lifecycle.ts";
 import { appendFallback, appendVerdict, type LogLine, logLine } from "./log.ts";
 import {
   CHARTER_INVALID_MESSAGE,
   engineMessage,
+  NO_PRIMARY_MESSAGE,
   TOPLEVEL_UNRESOLVED,
 } from "./messages.ts";
 import { finalizeVerdict, knownTool, renderHook } from "./render.ts";
@@ -49,6 +51,14 @@ export type EngineDeps = {
   home?: string;
   /** Base dir of the fallback log used without a git toplevel; tests inject it. */
   tmpDir?: string;
+  /**
+   * Where the Charter comes from (#73). A path: the trusted primary checkout,
+   * resolved by the CLI from the running bundle and the launcher anchor.
+   * `null`: a hook run with no resolvable primary, which fails closed.
+   * Absent: not a hook run (tests, direct engine calls), which reads the
+   * Charter of the session's own toplevel. Only `runHook` reads this.
+   */
+  primary?: string | null;
 };
 
 const defaultDeps: EngineDeps = {
@@ -62,11 +72,14 @@ function depsOf(partial?: Partial<EngineDeps>): EngineDeps {
   return { ...defaultDeps, ...partial };
 }
 
+/** The only messages that already carry their own next action. */
+const PRE_RENDERED = new Set([CHARTER_INVALID_MESSAGE, NO_PRIMARY_MESSAGE]);
+
 export function engineDeny(what: string): Verdict {
   return {
     rule: "engine",
     decision: "deny",
-    message: what === CHARTER_INVALID_MESSAGE ? what : engineMessage(what),
+    message: PRE_RENDERED.has(what) ? what : engineMessage(what),
     replacement: null,
     rendered: "deny",
   };
@@ -246,12 +259,14 @@ function readJson(stdin: string): { ok: true; value: unknown } | { ok: false } {
   }
 }
 
+/** The Charter comes from `charterRoot` (the trusted primary); the task file stays the session worktree's own. */
 function loadPolicy(
   toplevel: string,
+  charterRoot: string,
 ):
   | { ok: true; charter: Charter; task: TaskState }
   | { ok: false; verdict: Verdict } {
-  const loaded = loadCharterAt(toplevel);
+  const loaded = loadCharterAt(charterRoot);
   if (!loaded.ok) {
     return { ok: false, verdict: engineDeny(CHARTER_INVALID_MESSAGE) };
   }
@@ -337,7 +352,8 @@ export function runCheck(
     return checkBody(verdict);
   }
 
-  const policy = loadPolicy(toplevel);
+  // `wardens check` is not a hook run: it judges the checkout it runs in.
+  const policy = loadPolicy(toplevel, toplevel);
   const event = normalized.event;
   const verdict = commit({
     toplevel,
@@ -475,7 +491,12 @@ export function runHook(
     return fail("the hook event is not mapped", toplevel, null);
   }
 
-  const policy = loadPolicy(toplevel);
+  // A real hook run reads the Charter from the trusted primary only; without
+  // one, nothing the session's own worktree says can be believed.
+  if (deps.primary === null) {
+    return fail(NO_PRIMARY_MESSAGE, toplevel, null);
+  }
+  const policy = loadPolicy(toplevel, deps.primary ?? toplevel);
   if (!policy.ok) {
     return fail(CHARTER_INVALID_MESSAGE, toplevel, null);
   }
@@ -487,7 +508,10 @@ export function runHook(
     fallbackCwd,
     toplevel,
     env: deps.env,
-    external: { charter: policy.charter, home: deps.home ?? homedir() },
+    external: {
+      charter: policy.charter,
+      home: deps.home ?? homeOrUnresolved(deps.env),
+    },
   });
   if (!normalized.ok) {
     if (
@@ -522,7 +546,7 @@ export function runHook(
       charter: policy.charter,
       task: policy.task,
       root: toplevel,
-      home: deps.home ?? homedir(),
+      home: deps.home ?? homeOrUnresolved(deps.env),
       ...(deps.dod ? { dod: deps.dod } : {}),
       ...(deps.bundle ? { bundle: deps.bundle } : {}),
     }),

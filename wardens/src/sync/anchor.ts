@@ -7,23 +7,17 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { ANCHOR_REL } from "./render.ts";
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
-/** `$HOME` the way the launcher reads it; the OS home when `HOME` is unset or relative. */
-export function homeOf(env: NodeJS.ProcessEnv): string {
-  const home = env.HOME;
-  return home !== undefined && home.length > 0 && isAbsolute(home)
-    ? home
-    : homedir();
-}
-
-/** The trusted-primaries file the hook launcher reads. No environment override. */
+/** The trusted-primaries file the hook launcher reads. No environment override. Only for an absolute home (see `trustedHome`). */
 export function anchorPath(home: string): string {
+  if (!isAbsolute(home)) {
+    throw new Error("the home directory is not an absolute path");
+  }
   return join(home, ANCHOR_REL);
 }
 

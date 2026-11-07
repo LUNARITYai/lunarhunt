@@ -96,6 +96,10 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     recursive: true,
   });
   mkdirSync(join(primary, ".git"));
+  cpSync(
+    join(root, "panopticon.charter.yaml"),
+    join(primary, "panopticon.charter.yaml"),
+  );
   const home = realpathSync(scratchDir());
   writeAnchor(home, primary);
   const deps: DoctorDeps = {
@@ -177,6 +181,7 @@ describe("wardens doctor", () => {
       "ok claude-version",
       "ok worktrees",
       "ok task-databases",
+      "ok charter-drift",
     ]);
   });
 
@@ -349,6 +354,21 @@ describe("break-hook", () => {
     );
     expect(res.message).toContain("cursor hook does not deny malformed stdin");
   });
+
+  it("fails when the real bundle denies an invalid Charter for another reason", () => {
+    const stub = join(scratchDir(), "other.mjs");
+    writeFileSync(
+      stub,
+      'process.stdout.write(JSON.stringify({ permission: "deny", hookSpecificOutput: { permissionDecision: "deny" } }));\n',
+    );
+    const { deps } = fixture({ bundlePath: stub });
+    const res = byId(runChecks(true, deps), "break-hook");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain(
+      "claude hook does not deny an invalid Charter",
+    );
+    expect(res.message).not.toContain("malformed stdin");
+  });
 });
 
 describe("bundle", () => {
@@ -492,6 +512,15 @@ describe("launcher-anchor", () => {
     expect(runChecks(true, deps).map((r) => r.id)).not.toContain(
       "launcher-anchor",
     );
+  });
+
+  it("fails for a home that is not absolute, without reading a relative anchor (#73)", () => {
+    for (const home of ["", "relative/home"]) {
+      const { deps } = fixture();
+      const res = check({ ...deps, home });
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("cannot resolve HOME");
+    }
   });
 
   it("fails when the anchor is missing", () => {
