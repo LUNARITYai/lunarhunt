@@ -58,7 +58,7 @@ The decision:
   - **reads:** `denyRead` for the Charter's secret paths at any depth under the primary checkout (sibling task worktrees included) and for credential locations in the home directory;
   - **network:** an allowlist owned by The Charter, with no Anthropic API hosts.
 - **The hook launcher keeps the shipped trust anchor.** It runs only the bundle of a primary listed in `~/.config/panopticon/primaries`, a file written by a human step, and never consults git (GHSA-6phq-wv5j-xq2f). Hook runs take their policy from that anchored primary (#74). No agent-writable input decides which bundle runs, because hooks run outside the sandbox with the user's privileges. This ADR adds no second anchor and no bundle hash: the sandbox closes what the sync spec left to it, shell writes to the anchor and to the primary's bundle.
-- **A canary pass is bound to the effective sandbox settings.** The issued canary command is let through by an explicit hook `allow`, because it is not in `permissions.allow` and `autoAllowBashIfSandboxed` is false.
+- **A canary pass is bound to the effective sandbox settings.** A command byte-equal to the issued canary is judged by `sandbox-guard` alone. The argv-parsing rules would otherwise deny its absolute bundle path from a linked worktree. `sandbox-guard` lets it through with an explicit hook `allow`, because it is not in `permissions.allow` and `autoAllowBashIfSandboxed` is false.
 - **Sandboxed toolchains get non-secret task config** from `.panopticon/task.env`, exported into the session environment, because the worktree's `.env` stays unreadable to the shell. How `gh` and git authenticate inside the sandbox is an open decision in the spec (Decision 8).
 - **An OVERSEER profile,** a separate generated settings file passed at launch, also denies writes to the repository working tree.
 - **A ring-0 rule, `sandbox-guard`:**
@@ -86,6 +86,7 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
 - Bad, because the generated settings live in the project and can be loosened by user or local settings unless the precedence retest shows otherwise. Without managed settings in a one-person project, this is the kind of local-config bypass ADR-0004 already accepts for ring 0.
 - Bad, because hooks run outside the sandbox. The `definition-of-done` hook runs `pnpm check`, and so executes agent-written worktree code unsandboxed, unless the spec's Task 4c moves it under the sandbox profile (Decision 7).
 - Bad, because every session pays a denied Bash call and a canary call, and so may each subagent. Under a hard gate this works in `-p`, headless and subagent runs only if a hook `allow` skips the prompt there (spec R4). Otherwise those runs lose Bash. The spec's Decision 2 weighs a soft gate and a hook-run canary as alternatives.
+- Bad, because for shell writes to `.panopticon/**` and `.claude/**` the sandbox is the only control: ring 0 has no rule for them. Where the sandbox does not hold (a soft gate, Cursor, `required: false`), nothing stops such writes until The Charter protects those paths. The spec recommends that human change.
 - Bad, because the minimum credential deny removes the default `gh` and git HTTPS credentials from Bash. The spec's Decision 8 chooses a narrower token, an exemption, or no pushes and PRs from inside the sandbox.
 - Bad, because sandboxed toolchains need explicit cache, network and task-config entries. That is a new source of "works outside, fails inside" errors.
 - Neutral: Cursor sessions get no OS floor yet; for them ring 0 alone applies, as today.
@@ -97,7 +98,7 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
   - no `excludedCommands`;
   - the `denyWrite` and `denyRead` sets;
   - the shipped hook launcher, unchanged.
-- `sandbox-guard` has DENIED/ALLOWED tables, including forged canary forms (alias, PATH shadowing, echoed output, stale nonce, resumed session) and parallel canaries with their own fixtures.
+- `sandbox-guard` has DENIED/ALLOWED tables, including forged canary forms (alias, PATH shadowing, echoed output, stale nonce, resumed session) and parallel canaries with their own fixtures. A test runs the real bundle on the issued canary from a linked worktree and expects the allow.
 - `doctor` fails on a missing or weakened sandbox block in the generated, local or user settings, and on a moved local protected branch.
 - The spike #66 probe kit, extended by the spec's retests, is kept as the manual regression suite. It is re-run after Claude Code upgrades that touch the sandbox.
 
