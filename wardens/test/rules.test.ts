@@ -1694,3 +1694,143 @@ describe("verdict log for a deny", () => {
     });
   });
 });
+
+// #78: a read candidate the shell rewrites must be proven inside the worktree
+// (or in `paths.external`), exactly as a write target is (#76).
+describe("expanding read candidates (#78)", () => {
+  const UNPROVABLE = [
+    "cat $HOME/.ssh/id_rsa",
+    "cat ${HOME}/.ssh/id_rsa",
+    'cat "$HOME/.ssh/id_rsa"',
+    "cat ~root/.ssh/id_rsa",
+    "cat ~+/x",
+    "cat ~-/x",
+    "X=/etc/passwd; cat $X",
+    "K=.env; cat $K",
+    'K=.env; cat "$K"',
+    "cat .e*",
+    "cat .en?",
+    "cat .[e]nv",
+    "cat .env.l*",
+    "cat secr*/x",
+    "cat */../.env",
+    "cat ../*",
+    "cat /etc/pass*",
+    "rg foo $HOME/.config/gh",
+    "wc -l <$HOME/.ssh/id_rsa",
+    "wc -l < $HOME/.ssh/id_rsa",
+    "head -1 < ~root/x",
+    "xargs cat < $X",
+    "tool --input=$HOME/x",
+    "tool in=$X",
+    "cat --input=$HOME/x",
+    "cat --input=.e*",
+    "cat in=$X",
+    "sed -n 1p $HOME/x",
+    "git show $HOME/x",
+    "nice cat $HOME/.ssh/id_rsa",
+    "env cat $X",
+    "env A=1 cat ~root/x",
+    "gh issue comment 1 -F$HOME/x",
+    "shopt -s dotglob; cat *",
+    "cat $PWD/README.md",
+    'cat "$PWD/README.md"',
+    // Accepted false positives: a variable in a pattern, a glob outside the worktree.
+    'rg "$PATTERN" src',
+    "git log --since=$X",
+    "cat ~/.claude/projects/x-lunarhunt/memory/*.md",
+  ];
+
+  it.each(UNPROVABLE)("denies %s as unprovable", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.message).toContain("Retry with literal paths");
+  });
+
+  // The class: a read target denied as a literal path is denied in every
+  // spelling the shell rewrites, and the single-quoted twin stays literal.
+  const TARGETS: Array<[string, string]> = [
+    ["/etc/passwd", "/etc/pass*"],
+    ["/abs/outside/file", "/abs/out*/file"],
+    ["../x", "../*"],
+    [".env", ".e*"],
+    [".env.local", ".env.l*"],
+    ["secrets/key", "secr*/key"],
+  ];
+
+  it.each(TARGETS)("denies %s in every expanding spelling", (path, glob) => {
+    const root = tempRepo();
+    expect(shell(root, `cat ${path}`).decision).toBe("deny");
+    const bare = path.replace(/^\/+/, "");
+    for (const command of [
+      `cat $HOME/${bare}`,
+      `cat \${HOME}/${bare}`,
+      `cat ~someone/${bare}`,
+      `X=${path}; cat $X`,
+      `X=${path}; cat "$X"`,
+      `X=${path}; cat < $X`,
+      `X=${path}; cat <$X`,
+      `X=${path}; rg foo $X`,
+      `X=${path}; tool --in=$X`,
+      `X=${path}; tool in=$X`,
+      `X=${path}; nice cat $X`,
+      `cat ${glob}`,
+      `cat < ${glob}`,
+      `rg foo ${glob}`,
+      `tool --in=${glob}`,
+    ]) {
+      expect(shell(root, command).decision, command).toBe("deny");
+    }
+  });
+
+  it.each([
+    "cat '$HOME/x'",
+    "cat '$X'",
+    "cat '~root/x'",
+    "cat '*.ts'",
+    "cat '.e*'",
+    "cat < '$X'",
+    "tool --in='$HOME/x'",
+    "tool in='$X'",
+    "git log --grep='$x'",
+  ])("allows %s: the quoting makes it literal", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  const ALLOWED = [
+    "cat ~/.claude/projects/x-lunarhunt/memory/a.md",
+    "cat ./src/*.ts",
+    "cat src/*.ts",
+    "rg foo src/*.ts",
+    "ls wardens/src/*.ts",
+    "ls *.md",
+    "cat *",
+    "git log @{u}",
+    "ls src/*/",
+    "cat docs/**/*.md",
+    "cat < src/*.ts",
+    "cat --input=src/*.ts",
+    "echo $HOME",
+    'echo "$X"',
+    "printf '%s' $X",
+    "export FOO=$BAR",
+    "git log --grep='$x'",
+    "cat '$HOME'",
+    "ls",
+    "rg -n foo wardens/src",
+    "pnpm check",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("still denies a read behind an echo-only line", () => {
+    const root = tempRepo();
+    expect(shell(root, "echo $HOME; cat $HOME/x").decision).toBe("deny");
+    expect(shell(root, "echo $X < $HOME/x").decision).toBe("deny");
+  });
+});

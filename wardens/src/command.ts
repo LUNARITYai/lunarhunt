@@ -1462,6 +1462,32 @@ export function valueTargets(segment: Segment): ValueTarget[] {
     }));
 }
 
+/**
+ * Candidate paths whose word the shell rewrites (#78): positional arguments,
+ * `key=value` and `--opt=value` values, glued short-option values and the
+ * target of a `<` redirect, of read-only and other commands alike. Decided by
+ * the tokenizer's `expand` flags only. Not listed: the command word, write
+ * redirects and `cd` (checked as write targets and directory changes), and the
+ * positional words of `echo`, `printf`, `export` and the like, which read no
+ * file (their `<` redirects still count).
+ */
+export function expandingCandidates(segment: Segment): string[] {
+  const command = segment.argv[0] ?? "";
+  const prints = ASSIGNING_BUILTINS.has(command);
+  return collectCandidates(segment)
+    .filter(
+      (candidate) =>
+        candidate.index !== undefined &&
+        segment.expand.includes(candidate.index) &&
+        candidate.origin !== "head" &&
+        candidate.origin !== "redirect" &&
+        command !== "cd" &&
+        !(prints && candidate.origin === "arg" && !candidate.redirect) &&
+        !isDevicePath(candidate.path),
+    )
+    .map((candidate) => candidate.path);
+}
+
 export type ValueTarget = {
   path: string;
   /** The shell may rewrite the value (a variable, a glob, `~user`): it must be proven inside the worktree. */
@@ -1642,6 +1668,8 @@ type Candidate = PathCandidate & {
   index?: number;
   pattern?: boolean;
   gitGlobal?: boolean;
+  /** A file a `<` redirect reads. */
+  redirect?: boolean;
 };
 
 /** A word `key=value`: a `dd` operand, `make VAR=x`, `-c a.b=c`. The key is a plain name, so URLs and paths are not matched. */
@@ -1752,6 +1780,7 @@ function collectCandidates(segment: Segment): Candidate[] {
       const target = spaced ? next : attached;
       // `<<<` and `<&` do not name a file: a spaced target stays an ordinary word.
       const takesNext = spaced && operator !== "<<<" && operator !== "<&";
+      const targetIndex = takesNext ? index + 1 : index;
       if (takesNext) {
         index += 1;
       }
@@ -1765,7 +1794,13 @@ function collectCandidates(segment: Segment): Candidate[] {
       const reads = operator === "<" || operator === "<<<" || operator === "<&";
       found.push(
         reads
-          ? { path: target, write: false, origin: "arg" }
+          ? {
+              path: target,
+              write: false,
+              origin: "arg",
+              index: targetIndex,
+              redirect: true,
+            }
           : { path: target, write: true, origin: "redirect" },
       );
       continue;
@@ -1776,7 +1811,12 @@ function collectCandidates(segment: Segment): Candidate[] {
     // patterns, so it is never a write target and never an escape.
     const glued = index > 0 ? /^-[A-Za-z](.+)$/.exec(word) : null;
     if (glued && !/^[A-Za-z]+$/.test(glued[1] ?? "")) {
-      found.push({ path: glued[1] ?? "", write: false, origin: "glued" });
+      found.push({
+        path: glued[1] ?? "",
+        write: false,
+        origin: "glued",
+        index,
+      });
     }
     if (!word.startsWith("-")) {
       const eq = index > 0 && !keyless ? word.indexOf("=") : -1;
@@ -1805,7 +1845,12 @@ function collectCandidates(segment: Segment): Candidate[] {
         index === 0 ||
         writeAll ||
         (!readOnly && (!copyLike || hasTarget || index === lastPositional));
-      found.push({ path: word, write, origin: index === 0 ? "head" : "arg" });
+      found.push({
+        path: word,
+        write,
+        origin: index === 0 ? "head" : "arg",
+        index,
+      });
     }
   }
   return found;
