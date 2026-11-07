@@ -6,7 +6,7 @@ description: Terse shapes for text an agent posts to GitHub in this repo. Use be
 # GitHub writing
 
 Krzysztof reads GitHub text on his phone, and the next agent reads it too. Write it **terse**:
-- each line carries a fact, a decision or an action, in 160 characters or fewer;
+- each line carries a fact, a decision or an action: a prose line in 160 characters or fewer, a table cell in at most two sentences;
 - the link carries the detail (diff, spec, ADR, earlier comment);
 - numbers (tests, lines, probes, commits) stand where adjectives would.
 
@@ -17,7 +17,7 @@ The structure comes from the repo: `.github/pull_request_template.md` for PRs an
 The repository is public. A **reproduction** is a working input, command or payload that triggers a weakness.
 - A security finding in GitHub text gives the **class** and the **impact**, plus whether it is pre-existing or new. It never gives a reproduction.
 - Send the reproduction to the OVERSEER in your hand-back report. If the finding is critical, it goes to a private security advisory instead.
-- After the fix is merged, the reproduction may go into tests and into the PR.
+- The one exception before the merge is the C-15 regression test in the fix PR itself. After the fix is merged, the reproduction may also go into the PR text.
 - Secrets, CV content and personal data never appear in GitHub text (C-18, C-19).
 
 ## PR body
@@ -33,7 +33,7 @@ Fill every section of the PR template, each in one to three lines. Write "none" 
 
 ```markdown
 **<Role> round <n>: <k> blocking, <m> non-blocking** at <short sha>
-Scope: <what was reviewed, e.g. full diff | delta a..b>; Checked: <what held, one line>
+Scope: <what was reviewed, e.g. full diff | delta a..b>; Checked: <what held>; Not checked: <what was out of reach>
 
 | ID | Severity | Where | Finding | Fix |
 |----|----------|-------|---------|-----|
