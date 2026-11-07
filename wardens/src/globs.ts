@@ -15,7 +15,8 @@ export function basename(path: string): string {
  * fold more than a volume does, which only denies more.
  */
 export function foldCase(text: string): string {
-  return text.toUpperCase().toLowerCase();
+  // U+1E9E (capital sharp s) folds to `ss` on APFS, but to `ß` in JavaScript.
+  return text.replaceAll("ẞ", "ss").toUpperCase().toLowerCase();
 }
 
 /**

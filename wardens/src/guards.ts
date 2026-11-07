@@ -16,7 +16,7 @@ import {
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { segmentsMeet } from "./glob-meet.ts";
-import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { anyGlob, basename, denyListMatches, foldCase } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
@@ -214,7 +214,10 @@ function provablyInside(
   }
   const expanded = expandHome(path, home);
   for (const part of expanded.split("/")) {
-    if (/[*?[]/.test(part) && picomatch.isMatch(".git", part, { dot: false })) {
+    if (
+      /[*?[]/.test(part) &&
+      picomatch.isMatch(".git", part, { dot: false, nocase: true })
+    ) {
       return false;
     }
   }
@@ -769,7 +772,7 @@ function gitMetadataCommandBlock(what: string): Objection {
  */
 function gitRewriteDeny(segment: Segment): Objection | null {
   const argv = segment.argv;
-  if ((argv[0] ?? "").split("/").pop() !== "git") {
+  if (foldCase((argv[0] ?? "").split("/").pop() ?? "") !== "git") {
     return null;
   }
   const configs: string[] = [];
@@ -909,8 +912,8 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      (word.split("/").pop() ?? "") === "env" &&
-      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
+      foldCase(word.split("/").pop() ?? "") === "env" &&
+      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(foldCase(w))),
   );
   if (envAt >= 0) {
     const words = segment.argv.slice(envAt + 1);

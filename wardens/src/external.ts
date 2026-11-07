@@ -67,7 +67,11 @@ export function externalAllows(
     const expanded = expandGlob(glob, home);
     if (
       expanded !== null &&
-      picomatch.isMatch(subject, expanded, { dot: true, nocase: fold })
+      // The glob folds like the subject: a fold can change the length (`ß` is `ss`).
+      picomatch.isMatch(subject, fold ? foldCase(expanded) : expanded, {
+        dot: true,
+        nocase: fold,
+      })
     ) {
       return target;
     }

@@ -71,33 +71,40 @@ function swapCase(text: string): string {
 }
 
 /**
- * True when the file system holding `path` reads another case as the same
- * name (APFS, NTFS), or when that cannot be told (#77). Probes the nearest
- * existing ancestor whose name has a letter: its case-swapped sibling is the
- * same inode on a case-insensitive volume and missing on a case-sensitive one.
+ * True only when the file system holding `path` reads another case as the
+ * same name (APFS, NTFS) (#77). Probes the nearest existing ancestor whose name
+ * has a letter: its case-swapped sibling is the same inode on a case-insensitive
+ * volume and another file or missing on a case-sensitive one. When it cannot be
+ * told (no such ancestor, an error other than ENOENT) the answer is false.
  * Used only where folding widens what is allowed; deny lists always fold.
  */
-export function caseInsensitiveAt(path: string): boolean {
+export function caseInsensitiveAt(
+  path: string,
+  stat: typeof statSync = statSync,
+): boolean {
   let current = resolve(path);
   for (;;) {
     const parent = dirname(current);
     if (parent === current) {
-      return true;
+      return false;
     }
     const name = basename(current);
     const swapped = swapCase(name);
     if (swapped !== name) {
+      let original: ReturnType<typeof statSync> | null = null;
       try {
-        const original = statSync(current);
-        try {
-          const other = statSync(join(parent, swapped));
-          return other.ino === original.ino && other.dev === original.dev;
-        } catch (err) {
-          return errorCode(err) !== "ENOENT";
-        }
+        original = stat(current);
       } catch (err) {
         if (errorCode(err) !== "ENOENT") {
-          return true;
+          return false;
+        }
+      }
+      if (original) {
+        try {
+          const other = stat(join(parent, swapped));
+          return other.ino === original.ino && other.dev === original.dev;
+        } catch {
+          return false;
         }
       }
     }

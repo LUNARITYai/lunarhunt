@@ -231,7 +231,8 @@ function step(
 
 /** One character per interval the tokens tell apart. */
 function alphabet(all: Token[][]): number[] {
-  const points = new Set([1, DOT, 97]);
+  // 0x17F and 0x212A fold to `s` and `k` but are in neither ASCII case of them.
+  const points = new Set([1, DOT, 97, 0x17f, 0x180, 0x212a, 0x212b]);
   for (const token of all.flat()) {
     if (token.kind === "lit") {
       points.add(token.code);
