@@ -435,10 +435,11 @@ describe("doctor with the worktree checks", () => {
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     const results = runChecks(false, doctorDeps(f));
     const ids = results.map((r) => r.id);
-    expect(ids.slice(-6)).toEqual([
+    expect(ids.slice(-7)).toEqual([
       "duplicates",
       "disable-all-hooks",
       "claude-version",
+      "shell-glob-options",
       "worktrees",
       "task-databases",
       "charter-drift",

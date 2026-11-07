@@ -108,6 +108,7 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     home,
     now: () => NOW,
     claudeVersion: () => "2.1.295 (Claude Code)",
+    shellOptions: () => "",
     primary,
     bundlePath: bundle,
     ...overrides,
@@ -179,6 +180,7 @@ describe("wardens doctor", () => {
       "ok duplicates",
       "ok disable-all-hooks",
       "ok claude-version",
+      "ok shell-glob-options",
       "ok worktrees",
       "ok task-databases",
       "ok charter-drift",
@@ -478,6 +480,49 @@ describe("disable-all-hooks", () => {
     );
     expect(byId(runChecks(false, deps), "disable-all-hooks").status).toBe(
       "warn",
+    );
+  });
+});
+
+describe("shell-glob-options (#78)", () => {
+  const run = (options: string | null) =>
+    byId(
+      runChecks(false, fixture({ shellOptions: () => options }).deps),
+      "shell-glob-options",
+    );
+
+  it("fails when globdots (zsh) or dotglob (bash) is on", () => {
+    expect(run("autocd\nglobdots\nnomatch\n").status).toBe("fail");
+    expect(run("dotglob\ton\nnullglob\toff\n").status).toBe("fail");
+  });
+
+  it("warns when extendedglob or extglob is on", () => {
+    expect(run("extendedglob\nnomatch\n").status).toBe("warn");
+    expect(run("extendedglob\n").message).toContain("conservatively");
+    expect(run("extglob\ton\n").status).toBe("warn");
+  });
+
+  it("is ok without those options and warns when the shell cannot be run", () => {
+    expect(run("nomatch\nnotify\n").status).toBe("ok");
+    expect(run("").status).toBe("ok");
+    expect(run(null).status).toBe("warn");
+  });
+
+  it("does not throw when the probe does", () => {
+    const deps = fixture({
+      shellOptions: () => {
+        throw new Error("boom");
+      },
+    }).deps;
+    expect(byId(runChecks(false, deps), "shell-glob-options").status).toBe(
+      "warn",
+    );
+  });
+
+  it("is machine-only", () => {
+    const { deps } = fixture({ shellOptions: () => "globdots\n" });
+    expect(runChecks(true, deps).map((r) => r.id)).not.toContain(
+      "shell-glob-options",
     );
   });
 });

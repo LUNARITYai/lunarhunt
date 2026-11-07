@@ -1694,3 +1694,373 @@ describe("verdict log for a deny", () => {
     });
   });
 });
+
+// #78: a read candidate the shell rewrites must be proven inside the worktree
+// (or in `paths.external`), exactly as a write target is (#76).
+describe("expanding read candidates (#78)", () => {
+  const UNPROVABLE = [
+    "cat $HOME/.ssh/id_rsa",
+    "cat ${HOME}/.ssh/id_rsa",
+    'cat "$HOME/.ssh/id_rsa"',
+    "cat ~root/.ssh/id_rsa",
+    "cat ~+/x",
+    "cat ~-/x",
+    "X=/etc/passwd; cat $X",
+    "K=.env; cat $K",
+    'K=.env; cat "$K"',
+    "cat .e*",
+    "cat .en?",
+    "cat .[e]nv",
+    "cat .env.l*",
+    "cat secr*/x",
+    "cat */../.env",
+    "cat ../*",
+    "cat /etc/pass*",
+    "rg foo $HOME/.config/gh",
+    "wc -l <$HOME/.ssh/id_rsa",
+    "wc -l < $HOME/.ssh/id_rsa",
+    "head -1 < ~root/x",
+    "xargs cat < $X",
+    "tool --input=$HOME/x",
+    "tool in=$X",
+    "cat --input=$HOME/x",
+    "cat --input=.e*",
+    "cat in=$X",
+    "sed -n 1p $HOME/x",
+    "git show $HOME/x",
+    "nice cat $HOME/.ssh/id_rsa",
+    "env cat $X",
+    "env A=1 cat ~root/x",
+    "gh issue comment 1 -F$HOME/x",
+    "shopt -s dotglob; cat *",
+    "cat $PWD/README.md",
+    'cat "$PWD/README.md"',
+    // Accepted false positives: a variable in a pattern, a glob outside the worktree.
+    'rg "$PATTERN" src',
+    "git log --since=$X",
+    "cat ~/.claude/projects/x-lunarhunt/memory/*.md",
+  ];
+
+  it.each(UNPROVABLE)("denies %s as unprovable", (command) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.message).toContain("Retry with literal paths");
+  });
+
+  // The class: a read target denied as a literal path is denied in every
+  // spelling the shell rewrites, and the single-quoted twin stays literal.
+  const TARGETS: Array<[string, string]> = [
+    ["/etc/passwd", "/etc/pass*"],
+    ["/abs/outside/file", "/abs/out*/file"],
+    ["../x", "../*"],
+    [".env", ".e*"],
+    [".env.local", ".env.l*"],
+    ["secrets/key", "secr*/key"],
+  ];
+
+  it.each(TARGETS)("denies %s in every expanding spelling", (path, glob) => {
+    const root = tempRepo();
+    expect(shell(root, `cat ${path}`).decision).toBe("deny");
+    const bare = path.replace(/^\/+/, "");
+    for (const command of [
+      `cat $HOME/${bare}`,
+      `cat \${HOME}/${bare}`,
+      `cat ~someone/${bare}`,
+      `X=${path}; cat $X`,
+      `X=${path}; cat "$X"`,
+      `X=${path}; cat < $X`,
+      `X=${path}; cat <$X`,
+      `X=${path}; rg foo $X`,
+      `X=${path}; tool --in=$X`,
+      `X=${path}; tool in=$X`,
+      `X=${path}; nice cat $X`,
+      `cat ${glob}`,
+      `cat < ${glob}`,
+      `rg foo ${glob}`,
+      `tool --in=${glob}`,
+    ]) {
+      expect(shell(root, command).decision, command).toBe("deny");
+    }
+  });
+
+  it.each([
+    "cat '$HOME/x'",
+    "cat '$X'",
+    "cat '~root/x'",
+    "cat '*.ts'",
+    "cat '.e*'",
+    "cat < '$X'",
+    "tool --in='$HOME/x'",
+    "tool in='$X'",
+    "git log --grep='$x'",
+  ])("allows %s: the quoting makes it literal", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  const ALLOWED = [
+    "cat ~/.claude/projects/x-lunarhunt/memory/a.md",
+    "cat ./src/*.ts",
+    "cat src/*.ts",
+    "rg foo src/*.ts",
+    "ls wardens/src/*.ts",
+    "ls *.md",
+    "cat *",
+    "git log @{u}",
+    "ls src/*/",
+    "cat docs/**/*.md",
+    "cat < src/*.ts",
+    "cat --input=src/*.ts",
+    "echo $HOME",
+    'echo "$X"',
+    "printf '%s' $X",
+    "export FOO=$BAR",
+    "git log --grep='$x'",
+    "cat '$HOME'",
+    "ls",
+    "rg -n foo wardens/src",
+    "pnpm check",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("still denies a read behind an echo-only line", () => {
+    const root = tempRepo();
+    expect(shell(root, "echo $HOME; cat $HOME/x").decision).toBe("deny");
+    expect(shell(root, "echo $X < $HOME/x").decision).toBe("deny");
+  });
+
+  // A here-string supplies data: it names no file.
+  it.each(['cat <<< "$X"', 'grep foo <<< "$X"', "read X <<< $Y", "cat <<<$X"])(
+    "allows %s",
+    (command) => {
+      const root = tempRepo();
+      expect(shell(root, command).decision).toBe("allow");
+    },
+  );
+});
+
+// #78 round 1: a glob is proven by a real intersection test with the
+// secret patterns, not by sample strings.
+describe("glob intersection with the secret patterns (#78)", () => {
+  const DENIED = [
+    // `.env.*`: a wildcard, class or `?` at every position of the name.
+    "cat .env[.]local",
+    "cat .env?local",
+    "cat .env*local",
+    "cat .e*local",
+    "cat .env*ocal",
+    "cat .env[!x]local",
+    "cat .env[a-z.]local",
+    "cat .env*production",
+    "cat .e*v.production",
+    "cat .?nv.local",
+    "cat .*.local",
+    "cat .*local",
+    "cat .[e]*local",
+    "cat .e[n]v.local",
+    "cat apps/*/.env*local",
+    "cat .e*.l*",
+    "cat .e?v.l*",
+    "cat .e*l*",
+    "cat .en*.local",
+    // Not every match is `*.example`: `.env.xample` is a secret.
+    "cat .e*xample",
+    // `.env`.
+    "cat .[!a]nv",
+    "cat .e[!x]v",
+    "cat .e[^x]v",
+    "cat .[!.]*",
+    "cat .*",
+    "cat .e*",
+    "cat .?nv",
+    // zsh `extendedglob` forms are wildcards.
+    "cat .^x",
+    "cat .e#nv",
+    "cat .env~x",
+    // `secrets/**`: a directory reader meets the directory itself.
+    "rg foo secret*",
+    "rg foo sec*s",
+    "rg foo s*ts",
+    "rg foo ?ecrets",
+    "rg foo sec*",
+    "rg foo s*",
+    "rg foo secre?s",
+    "rg foo secret?",
+    "grep -r x sec*",
+    "find sec* -type f",
+    "tar -cf out.tar sec*",
+    "cp -r sec*s dest",
+    // Round 2: readers that descend, and option values of any command.
+    "git add *",
+    "git -C . add sec*",
+    "rg foo *",
+    "nice rg foo *",
+    "diff sec* x",
+    "diff -r sec* x",
+    "diff -q sec* x",
+    "jq -n -L sec* x",
+    "jq -Lsec* x",
+    "jq --library-path sec* x",
+    "jq --library-path=sec* x",
+    "file -m sec* x",
+    "file --magic-file=sec* x",
+    "grep -rn x sec*",
+    "grep --recursive x sec*",
+    "egrep -R x sec*",
+    "cp -a sec* dest",
+    "zip -r out.zip sec*",
+    "rsync -a sec* dest",
+    "scp -r sec* host:",
+    "wc --files0-from=sec*",
+    // Round 2: zsh `^` (anything but) and `#` (zero or more).
+    "cat ^x/key",
+    "cat ^x/*",
+    "cat sec^x/key",
+    "rg x ^x",
+    "rg x sec^x",
+    "cat .envx#",
+    "cat .envx#.local",
+    "cat .env^.example",
+    // Round 2: POSIX classes and escapes inside a class; an unparseable class meets.
+    "cat .[[:alpha:]]nv",
+    "cat sec[[:lower:]]ets/key",
+    "cat .env[[:punct:]]local",
+    "cat .env[[:punct:]]*",
+    "rg x s[[:lower:]]crets",
+    "cat .[a\\]e]nv",
+    "cat .[[:unknown:]]nv",
+    "cat .[[=e=]]nv",
+    "cat .[[.e.]]nv",
+    "cat .e[n",
+    // Any command: a file inside the directory.
+    "cat secr*/key",
+    "cat s*/k*",
+    "cat secrets/[!x]ey",
+    "cat sec*s/*",
+    "cat */key",
+    "cat **/key",
+  ];
+
+  it.each(DENIED)("denies %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
+
+  const ALLOWED = [
+    // A leading wildcard does not match a leading dot.
+    "find . -name *.env",
+    "cat src/*.env",
+    "rg foo -g *.env",
+    "cat *.env",
+    "cat .env.example",
+    "cat .e*.example",
+    "cat .env*.example",
+    "cat .env.*.example",
+    "ls wardens/src/*.ts",
+    "cat docs/specs/*.md",
+    "cat docs/**/*.md",
+    "cat docs/*/AGENTS.md",
+    "cat *.md",
+    "cat *",
+    "cat sec*",
+    // Round 2: readers that do not descend, behind a wrapper or not.
+    "ls *",
+    "ls -la *",
+    "ls -d */",
+    "ls sec*",
+    "du -sh *",
+    "stat *",
+    "nice cat *",
+    "wc -l *",
+    "head -1 *",
+    "file *",
+    "rg ^foo src",
+    "rg -n ^foo src",
+    "grep -E ^a f",
+    "git log HEAD^",
+    "cat HEAD^",
+    "git log HEAD^",
+    "git log HEAD~2",
+    // Cannot match `secrets`, `.env` or `.env.*`.
+    "rg foo secrets?",
+    "rg foo ?secrets",
+    "rg foo secret??",
+    "cat .envx",
+    "cat .ENV",
+    "cat .?nvx",
+    "cat .[a-d]nv",
+    "cat .e[!n]v",
+    "cat .[!e]nv",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  it("gives up on a state explosion in under a second, denying", () => {
+    const root = tempRepo();
+    const started = Date.now();
+    const verdict = shell(root, `cat .env.*a${"?".repeat(20)}.example`);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(verdict.decision).toBe("deny");
+  });
+
+  // The class: a glob that matches a secret pattern is denied at every
+  // position of the name, and its disjoint twin is allowed.
+  const SPELLINGS: Array<{ name: string; hits: string[]; misses: string[] }> = [
+    {
+      name: ".env",
+      hits: [".e*", ".*nv", ".en?", ".e?v", ".[e]nv", ".[!x]nv", ".[^x]nv"],
+      misses: [".e??v", ".[!e]nv", ".[^e]nv", "e*", "*nv"],
+    },
+    {
+      name: ".env.local",
+      hits: [
+        ".env.l*",
+        ".env*local",
+        ".env?local",
+        ".env[.]local",
+        ".env[!x]local",
+        ".e*local",
+        ".e*v.l*",
+        ".*.local",
+        ".?nv.local",
+        ".env.[l]ocal",
+        ".env.*",
+      ],
+      misses: [".env[!.]local", "*.local", ".envlocal*", ".e[!n]v.local"],
+    },
+    {
+      name: "secrets/key",
+      hits: [
+        "secr*/key",
+        "s*/key",
+        "secre?s/key",
+        "sec*s/k*",
+        "?ecrets/key",
+        "secrets/[!x]ey",
+        "secrets/k?y",
+        "*/key",
+      ],
+      misses: ["secrets?/key", "sec/*", "secrx*/key", "?ecret/key"],
+    },
+  ];
+
+  it.each(SPELLINGS)("class: $name", ({ hits, misses }) => {
+    const root = tempRepo();
+    for (const glob of hits) {
+      expect(shell(root, `cat ${glob}`).decision, glob).toBe("deny");
+      expect(shell(root, `cat < ${glob}`).decision, glob).toBe("deny");
+      expect(shell(root, `tool --in=${glob}`).decision, glob).toBe("deny");
+    }
+    for (const glob of misses) {
+      expect(shell(root, `cat ${glob}`).decision, glob).toBe("allow");
+    }
+  });
+});

@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
@@ -58,6 +58,8 @@ export type DoctorDeps = {
   now: () => number;
   /** Output of `claude --version`, or null when `claude` is not on PATH. */
   claudeVersion: () => string | null;
+  /** Enabled glob-related shell options (`setopt` / `shopt -s` output), "" if unknown, null when the shell cannot be run. */
+  shellOptions?: () => string | null;
   /** Override of the primary checkout; defaults to the one derived from the file system, never from git. */
   primary?: string;
   /** Owner the anchor file and its directory must have; defaults to the current user. */
@@ -669,8 +671,73 @@ function defaultClaudeVersion(): string | null {
   }
 }
 
+/**
+ * `globdots` (zsh) and `dotglob` (bash) make `*` match dotfiles, so the glob
+ * proof for read candidates (#78) would be wrong; the extended-glob options
+ * add operators (`^`, `#`, `~`) the tokenizer only treats conservatively.
+ */
+function checkShellGlobOptions(read: () => string | null): CheckResult {
+  let options: string | null;
+  try {
+    options = read();
+  } catch {
+    options = null;
+  }
+  if (options === null) {
+    return result(
+      "shell-glob-options",
+      "warn",
+      "could not read the shell's glob options",
+    );
+  }
+  if (/^(globdots|dotglob)\b/m.test(options)) {
+    return result(
+      "shell-glob-options",
+      "fail",
+      "globdots/dotglob is on in your shell, so * matches dotfiles. Turn it off for the shell that runs agent commands.",
+    );
+  }
+  if (/^(extendedglob|extglob)\b/m.test(options)) {
+    return result(
+      "shell-glob-options",
+      "warn",
+      "extendedglob/extglob is on in your shell. Wardens handle ^, # and ~ in a word conservatively, as wildcards, and may deny harmless commands.",
+    );
+  }
+  return result("shell-glob-options", "ok", "no dotfile globbing");
+}
+
+/** The enabled options of the login shell with the user's rc, or null when it cannot be run. "" for a shell this does not know. */
+function defaultShellOptions(env: NodeJS.ProcessEnv): string | null {
+  // The account's login shell, not `$SHELL`: the environment can name any script.
+  let shell = "";
+  try {
+    shell = userInfo().shell ?? "";
+  } catch {
+    return null;
+  }
+  const name = shell.split("/").pop() ?? "";
+  const script =
+    name === "zsh"
+      ? "source ~/.zshrc >/dev/null 2>&1; setopt"
+      : name === "bash"
+        ? "source ~/.bashrc >/dev/null 2>&1; shopt -s"
+        : null;
+  if (script === null) {
+    return "";
+  }
+  const res = spawnSync(shell, ["-l", "-c", script], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5000,
+    env,
+  });
+  return res.status === 0 ? res.stdout : null;
+}
+
 export function defaultDoctorDeps(): DoctorDeps {
   return {
+    shellOptions: () => defaultShellOptions(process.env),
     cwd: process.cwd(),
     env: process.env,
     home: trustedHome(process.env) ?? "",
@@ -720,6 +787,7 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),
+      checkShellGlobOptions(deps.shellOptions ?? (() => "")),
       checkWorktrees(primary, worktreeDeps),
       checkTaskDatabases(primary, worktreeDeps),
       checkCharterDrift(toplevel, primary),

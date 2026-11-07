@@ -3,6 +3,7 @@ import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import {
   directoryChange,
+  expandingCandidates,
   expandsDdOperand,
   firstDeny,
   rewriteCommand,
@@ -14,6 +15,7 @@ import {
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
+import { segmentsMeet } from "./glob-meet.ts";
 import { anyGlob, basename, denyListMatches } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
@@ -218,6 +220,129 @@ function provablyInside(
   return resolveRepoPath(expanded, cwd, ctx.root).ok;
 }
 
+/** `^`, `#` and a `~` inside a word are zsh `extendedglob` operators. */
+const GLOB_CHAR = /[*?[^#~]/;
+/** Shell options and variables that make `*` match dotfiles too (`dotglob`, `GLOB_DOTS`, `GLOBIGNORE`). */
+const DOTFILE_GLOBBING =
+  /\b(shopt|setopt|unsetopt|GLOBIGNORE|dotglob|glob_?dots)\b/i;
+/** The shape of the walk below: how a read glob lines up with the secret patterns. */
+type GlobWalk = { dot: boolean; filesOnly: boolean };
+
+/**
+ * Segment-wise: can the glob `g` and the secret pattern `p` match the same
+ * path? A `**` on either side absorbs segments. A trailing `**` names what is
+ * inside a directory; a glob that ends at that directory meets it only for a
+ * reader that descends into it (`rg`, `tar`, `grep -r`), not for `cat` or `ls`.
+ */
+function meets(
+  g: readonly string[],
+  gi: number,
+  p: readonly string[],
+  pi: number,
+  walk: GlobWalk,
+): boolean {
+  if (pi === p.length) {
+    return gi === g.length;
+  }
+  const ps = p[pi] ?? "";
+  if (ps === "**") {
+    if (pi === p.length - 1) {
+      return gi < g.length || !walk.filesOnly;
+    }
+    for (let at = gi; at <= g.length; at += 1) {
+      if (meets(g, at, p, pi + 1, walk)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  const gs = g[gi];
+  if (gs === undefined) {
+    return false;
+  }
+  if (gs === "**") {
+    for (let take = pi; take <= p.length; take += 1) {
+      if (meets(g, gi + 1, p, take, walk)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return (
+    segmentsMeet(gs, ps, [], walk.dot) && meets(g, gi + 1, p, pi + 1, walk)
+  );
+}
+
+/**
+ * True when the glob `segments` (relative to the worktree root) can match a
+ * path the secret list denies. A pattern without `/` names a basename in any
+ * directory; the `!` patterns after it exclude names from it.
+ */
+function globMayMatchSecret(
+  ctx: RuleContext,
+  segments: readonly string[],
+  walk: GlobWalk,
+): boolean {
+  const secrets = ctx.charter.paths.secrets_deny_read;
+  return secrets.some((pattern, index) => {
+    if (pattern.startsWith("!")) {
+      return false;
+    }
+    if (pattern.includes("/")) {
+      return meets(segments, 0, pattern.split("/"), 0, walk);
+    }
+    const excluded = secrets
+      .slice(index + 1)
+      .filter((later) => later.startsWith("!"))
+      .map((later) => later.slice(1));
+    return segmentsMeet(segments.at(-1) ?? "", pattern, excluded, walk.dot);
+  });
+}
+
+/**
+ * A read candidate the shell rewrites (#78) is provably inside the worktree
+ * only when it has no variable, command substitution or `~user` and resolves
+ * inside. An unquoted glob is proven when its literal prefix (up to the
+ * segment holding the first glob character) is a directory inside the
+ * worktree, no segment after it is `..`, and `globMayMatchSecret` finds no
+ * secret it can match. `$PWD`, `$HOME` and `$TMPDIR` are variables like any
+ * other: never provable.
+ */
+function readProvablyInside(
+  ctx: RuleContext,
+  path: string,
+  cwd: string,
+  home: string,
+  walk: GlobWalk,
+): boolean {
+  if (
+    // A brace without `$` is literal (`git log @{u}`): the tokenizer rejects brace expansion.
+    /[$`]/.test(path) ||
+    path === "~" ||
+    /^~/.test(path.replace(/^~\//, "x/"))
+  ) {
+    return false;
+  }
+  const expanded = expandHome(path, home);
+  const parts = expanded.split("/");
+  const firstGlob = parts.findIndex((part) => GLOB_CHAR.test(part));
+  if (firstGlob === -1) {
+    return resolveRepoPath(expanded, cwd, ctx.root).ok;
+  }
+  const prefix = parts.slice(0, firstGlob).join("/");
+  const base = resolveRepoPath(
+    prefix === "" ? (expanded.startsWith("/") ? "/" : ".") : prefix,
+    cwd,
+    ctx.root,
+  );
+  const rest = parts.slice(firstGlob).filter((p) => p !== "" && p !== ".");
+  if (!base.ok || rest.includes("..")) {
+    return false;
+  }
+  const relative = base.path === "." ? [] : base.path.split("/");
+  return !globMayMatchSecret(ctx, [...relative, ...rest], walk);
+}
+
 type ShellTarget = {
   path: string;
   cwd: string;
@@ -336,6 +461,7 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
       return expansionBlock();
     }
   }
+  const dotfiles = DOTFILE_GLOBBING.test(ctx.event.command);
   // `out=$HOME/x`, `--sink=x$X`, `of=~root/x` (#75): a key=value value the
   // shell may rewrite must be provably inside, whatever the key. So must any
   // operand of `dd` that the shell fills in: it may be `of=`.
@@ -345,6 +471,13 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
     }
     for (const value of valueTargets(segment)) {
       if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
+        return expansionBlock();
+      }
+    }
+    // The read side (#78): positional words, option values and `<` targets.
+    for (const { path, descends } of expandingCandidates(segment)) {
+      const walk = { dot: dotfiles, filesOnly: !descends };
+      if (!readProvablyInside(ctx, path, cwd, home, walk)) {
         return expansionBlock();
       }
     }
