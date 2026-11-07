@@ -1250,6 +1250,227 @@ describe("key=path and --opt=path arguments (#75)", () => {
   });
 });
 
+// #79: the tokenizer splits an unquoted redirect out of the middle of a word, so
+// a glued redirect is judged exactly like a spaced one.
+describe("redirects glued to the previous word (#79)", () => {
+  const ESCAPE =
+    "Blocked by Warden engine: path escapes the worktree. Label the issue needs:human.";
+
+  const DENIED: Array<[string, string]> = [
+    ["echo x>/abs/y", "engine"],
+    ["ls>/abs", "engine"],
+    ["echo x>>/abs/y", "engine"],
+    ["echo x 2>/abs/y", "engine"],
+    ["x>/abs", "engine"],
+    ["echo x2>/abs/y", "engine"],
+    ["echo x>panopticon.charter.yaml", "protected-paths"],
+    ["echo x>packages/contracts/openapi.json", "generated-files-guard"],
+    ["echo x>.env", "secret-read-guard"],
+    ["cat<.env", "secret-read-guard"],
+    ["cat x<.env", "secret-read-guard"],
+    ["wc -l<.env", "secret-read-guard"],
+    ["dd of=a>/abs", "engine"],
+    ["echo x>|/abs", "engine"],
+    ["echo x>|panopticon.charter.yaml", "protected-paths"],
+    ["echo x&>/abs", "engine"],
+    ["echo x&>>/abs", "engine"],
+    ["cmd<>/abs", "engine"],
+    ["cmd<>.env", "secret-read-guard"],
+    ["echo x>&/abs", "engine"],
+    ["echo x>&.env", "secret-read-guard"],
+    ["cat 0</abs", "engine"],
+    ["cat 0<.env", "secret-read-guard"],
+    ["echo x {fd}>/abs", "command-guard"],
+    ["cat {fd}<.env", "secret-read-guard"],
+    ["echo x>.git/hooks/pre-commit", "protected-paths"],
+    ["echo x>~root/y", "command-guard"],
+    ["echo x>$X", "command-guard"],
+    ["nice echo x>/abs", "engine"],
+    ["env A=1 cat<.env", "secret-read-guard"],
+    ["a=b>/abs", "engine"],
+    ['echo "a">/abs', "engine"],
+    ["echo x>out.txt>/abs", "engine"],
+    ["cat<<<.env", "secret-read-guard"],
+  ];
+
+  it.each(DENIED)("denies %s", (command, rule) => {
+    const root = tempRepo();
+    const verdict = shell(root, command);
+    expect(verdict.decision).toBe("deny");
+    expect(verdict.rule).toBe(rule);
+    if (rule === "engine") {
+      expect(verdict.message).toBe(ESCAPE);
+    }
+  });
+
+  const ALLOWED = [
+    "rg 'a>b'",
+    'echo "x<y"',
+    "echo 'x>y'",
+    "echo x\\>y",
+    "git log --format='%h > %s'",
+    'git commit -m "a>b"',
+    "cmd 2>&1",
+    "cmd 2>/dev/null",
+    "cmd>/dev/null",
+    "cmd &>/dev/null",
+    "cmd&>/dev/null",
+    "cmd>/dev/null 2>&1",
+    "cmd 2>&1>/dev/null",
+    "cmd>&2",
+    "cmd 2>&-",
+    "cat <&-",
+    "cat 0<&-",
+    "echo x>out.txt",
+    "echo x>>out.txt",
+    "echo x>|out.txt",
+    "echo x&>out.txt",
+    "pnpm check 2>&1",
+    "pnpm check>out.txt 2>&1",
+    "cat <<<'x'",
+    "cat<<<'x'",
+    "git log HEAD~1..HEAD>out.txt",
+    // As in bash, `a=b>c` is the assignment `a=b` and the redirect `>c`.
+    "a=b>c",
+    "a=b >c",
+    "a>b>c",
+  ];
+
+  it.each(ALLOWED)("allows %s", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("allow");
+  });
+
+  // Digits are a descriptor only when they are the whole word before the
+  // operator: `x2>f` is the word `x2` and `>f`, `x 2>f` redirects fd 2.
+  it("reads digits as a descriptor only when they are the whole word", () => {
+    const root = tempRepo();
+    for (const command of [
+      "echo x2>/abs/y",
+      "echo x 2>/abs/y",
+      "echo x2 >/abs/y",
+      'echo "2">/abs/y',
+      "echo 2>/abs/y",
+      "echo 2 >/abs/y",
+    ]) {
+      const verdict = shell(root, command);
+      expect(verdict.decision, command).toBe("deny");
+      expect(verdict.message, command).toBe(ESCAPE);
+    }
+    for (const command of ["echo x2>out.txt", "echo x 2>out.txt"]) {
+      expect(shell(root, command).decision, command).toBe("allow");
+    }
+  });
+
+  // A quoted or escaped operator is a literal character, not a redirect.
+  it("keeps a quoted or escaped operator literal", () => {
+    const root = tempRepo();
+    for (const command of [
+      "echo 'x>/abs/y'",
+      'echo "x>/abs/y"',
+      "echo x\\>/abs/y",
+      'echo "x"\'>\'"/abs/y"',
+      'rg "a<.env"',
+    ]) {
+      expect(shell(root, command).decision, command).toBe("allow");
+    }
+  });
+
+  // The class: every target the spaced form refuses is refused, with the same
+  // rule and message, when the redirect is glued to the word before it.
+  const TARGETS = [
+    // path escapes
+    "/abs/outside/file",
+    "/etc/passwd",
+    "../outside",
+    "../../outside/x",
+    "~/x",
+    "~",
+    "sub/../../outside",
+    // forms the shell rewrites
+    "x$X",
+    "$HOME/x",
+    "~root/y",
+    "~-/x",
+    "a`id`b",
+    // protected, generated, secret, git metadata, the launcher anchor
+    "panopticon.charter.yaml",
+    "packages/contracts/openapi.json",
+    "packages/api-client/src/client.ts",
+    "docs/specs/AGENTS.md",
+    "secrets/key",
+    ".env",
+    ".env.local",
+    ".git/hooks/pre-commit",
+    ".git",
+    ".config/panopticon/primaries",
+    "~/.config/panopticon/primaries",
+  ];
+
+  // [spaced form, glued form] for a target T.
+  const FORMS: Array<[string, string]> = [
+    ["cmd x > T", "cmd x>T"],
+    ["cmd x >> T", "cmd x>>T"],
+    ["cmd x 2> T", "cmd x 2>T"],
+    ["cmd x < T", "cmd x<T"],
+    ["cmd x 0< T", "cmd x 0<T"],
+    ["cmd x >| T", "cmd x>|T"],
+    ["cmd x &> T", "cmd x&>T"],
+    ["cmd x &>> T", "cmd x&>>T"],
+    ["cmd x <> T", "cmd x<>T"],
+    ["cmd x >& T", "cmd x>&T"],
+    ["x > T", "x>T"],
+    ["ls > T", "ls>T"],
+    ["cat < T", "cat<T"],
+    ["cat x < T", "cat x<T"],
+    ["wc -l < T", "wc -l<T"],
+    ["cmd x2 > T", "cmd x2>T"],
+    ["dd of=a > T", "dd of=a>T"],
+    ["nice cmd x > T", "nice cmd x>T"],
+    ["env A=1 cat < T", "env A=1 cat<T"],
+    ["cmd x > out.txt > T", "cmd x>out.txt>T"],
+  ];
+
+  const CASES = TARGETS.flatMap((target) =>
+    FORMS.map(([spaced, glued]): [string, string, string] => [
+      target,
+      spaced.replaceAll("T", target),
+      glued.replaceAll("T", target),
+    ]),
+  );
+
+  it.each(CASES)("treats %s alike in %s and %s", (_target, spaced, glued) => {
+    const root = tempRepo();
+    const reference = shell(root, spaced);
+    const verdict = shell(root, glued);
+    expect(verdict.decision, glued).toBe(reference.decision);
+    expect(verdict.rule, glued).toBe(reference.rule);
+    expect(verdict.message, glued).toBe(reference.message);
+  });
+
+  it("denies or asks for every write redirect to a refused target", () => {
+    const root = tempRepo();
+    for (const target of TARGETS) {
+      for (const glued of [
+        `cmd x>${target}`,
+        `cmd x>>${target}`,
+        `cmd x 2>${target}`,
+        `cmd x>|${target}`,
+        `cmd x&>${target}`,
+        `x>${target}`,
+      ]) {
+        expect(shell(root, glued).decision, glued).not.toBe("allow");
+      }
+    }
+    // A read of a secret is refused; a read of a protected path is not a write.
+    for (const target of ["secrets/key", ".env", ".env.local"]) {
+      for (const glued of [`cmd x<${target}`, `cat<${target}`]) {
+        expect(shell(root, glued).decision, glued).toBe("deny");
+      }
+    }
+  });
+});
+
 describe("null paths", () => {
   it("denies a missing edit path, a missing read path and a missing command", () => {
     const root = tempRepo();

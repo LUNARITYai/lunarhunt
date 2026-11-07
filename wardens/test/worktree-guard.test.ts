@@ -533,6 +533,41 @@ describe("worktree-guard in the primary checkout", () => {
     expect(bash(f, f.primary, "ls > /etc/hosts")).not.toBe("");
   });
 
+  // #79: a redirect glued to the word before it is judged like a spaced one.
+  it("gives a glued redirect the verdict of its spaced twin", () => {
+    const f = fixture();
+    const out = join(f.external, "out.txt");
+    const pairs: Array<[string, string]> = [
+      ["ls > out", "ls>out"],
+      ["ls >> out", "ls>>out"],
+      ["cat README.md 2> out", "cat README.md 2>out"],
+      ["ls >| out", "ls>|out"],
+      ["ls &> out", "ls&>out"],
+      ["ls &>> out", "ls&>>out"],
+      ["ls <> out", "ls<>out"],
+      ["ls >& out", "ls>&out"],
+      ["ls {fd}> out", "ls {fd}>out"],
+      ["ls > /etc/hosts", "ls>/etc/hosts"],
+      [`ls > ${out}`, `ls>${out}`],
+      [`ls 2> ${out}`, `ls 2>${out}`],
+      [`ls &> ${out}`, `ls&>${out}`],
+      ["ls > /dev/null 2>&1", "ls>/dev/null 2>&1"],
+      ["cat README.md < README.md", "cat README.md<README.md"],
+      ["cat < README.md", "cat<README.md"],
+      ["cat - <<< hello", "cat -<<<hello"],
+      ["ls 2>&1", "ls 2>&1"],
+    ];
+    for (const [spaced, glued] of pairs) {
+      const reference = bash(f, f.primary, spaced);
+      expect(bash(f, f.primary, glued), glued).toBe(reference);
+    }
+    expect(bash(f, f.primary, `ls>${out}`)).toBe("");
+    expect(bash(f, f.primary, "ls>out")).toContain("worktree-guard");
+    expect(bash(f, f.primary, "ls>>out")).toContain("worktree-guard");
+    expect(bash(f, f.primary, "ls&>out")).toContain("worktree-guard");
+    expect(bash(f, f.primary, "ls>|out")).toContain("worktree-guard");
+  });
+
   it("denies the same on Cursor beforeShellExecution", () => {
     const f = fixture();
     const run = (command: string) =>

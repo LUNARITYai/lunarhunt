@@ -47,9 +47,35 @@ const RESERVED_WORDS = new Set([
   "noglob",
 ]);
 
-/** `>x`, `2>x`, `&>x`, `>>`, `<`, `<<<`, `>&2`, `>|`: the part after the operator is the target, possibly the next word. */
+/**
+ * A redirect word as `scan` leaves it: `>x`, `2>x`, `&>x`, `>>`, `<`, `<<<`,
+ * `>&2`, `>|`, `<>x`, `{fd}>x`. Group 1 is the operator, group 2 the target;
+ * an empty target is the next word. `scan` splits a redirect out of the middle
+ * of a word (`echo x>f` is `echo x >f`), so a redirect always starts its word.
+ */
 const REDIRECT_WORD =
-  /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>>|>\||>&|>|<<<|<&|<>|<)(.*)$/;
+  /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(>>|>\||>&|>|<<<|<&|<>|<)(.*)$/;
+
+/**
+ * A word, as `scan` has read it so far (quoted characters are NUL), that can
+ * still be the file-descriptor prefix of a redirect: `2>f`, `{fd}>f`. As in
+ * bash, the digits (or the `{name}`) must be the whole word before the
+ * operator; `x2>f` is the word `x2` and then `>f`.
+ */
+const FD_PREFIX = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
+
+/** A redirect operator with nothing after it yet: the target (`~root/x`) starts here. */
+const OPERATOR_ONLY =
+  /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>>|>\||>&|>|<<<|<&|<>|<)$/;
+
+/** The bare text of a word whose next `>` extends its operator: `>` to `>>`, `<` to `<>`, `&>` to `&>>`. */
+const EXTENDS_WITH_GT = /^(?:(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?[<>]|&>?)$/;
+
+/** The bare text of a word whose next `|` makes the clobber operator `>|`. */
+const CLOBBER_BASE = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>$/;
+
+/** A `>&` or `<&` target that duplicates or closes a descriptor: `1`, `2-`, `-`. */
+const FD_TARGET = /^(?:\d+-?|-)$/;
 
 /**
  * Index of the command word: the first word that is not an environment
@@ -67,7 +93,7 @@ function commandWordIndex(words: readonly string[]): number {
     if (!redirect) {
       break;
     }
-    index += redirect[1] === "" ? 2 : 1;
+    index += redirect[2] === "" ? 2 : 1;
   }
   return index;
 }
@@ -328,7 +354,7 @@ function withoutRedirects(argv: readonly string[]): string[] {
   for (let at = 0; at < argv.length; at += 1) {
     const redirect = REDIRECT_WORD.exec(argv[at] ?? "");
     if (redirect) {
-      at += redirect[1] === "" ? 1 : 0;
+      at += redirect[2] === "" ? 1 : 0;
     } else {
       out.push(argv[at] ?? "");
     }
@@ -693,6 +719,25 @@ function scan(
     wordExpand = false;
   };
 
+  // An unquoted redirect operator (`>`, `<`, `<<<`, `&>`) ends the word before
+  // it, as in the shell: `echo x>f` is `echo x >f`. Two things keep it in the
+  // word: a file-descriptor prefix made of the WHOLE word so far (`2>f`,
+  // `{fd}>f`; `x2>f` is the word `x2`), and an operator already being formed
+  // (`>` then `>`: `>>`). Splitting here, once, lets every redirect consumer
+  // see a glued redirect exactly as it sees a spaced one (#79).
+  const splitBeforeRedirect = (ch: string): void => {
+    if (!wordStarted) {
+      return;
+    }
+    if (ch !== "&" && FD_PREFIX.test(bare)) {
+      return;
+    }
+    if (ch === ">" && EXTENDS_WITH_GT.test(bare)) {
+      return;
+    }
+    flushWord();
+  };
+
   // After `|`, the command to the right must follow in the same segment: an
   // empty one (`a | & b`, `a |; b`) would desync the pipe from its right side.
   let afterPipe = false;
@@ -810,6 +855,7 @@ function scan(
     }
     if (ch === "<" && command[index + 1] === "<") {
       if (command[index + 2] === "<") {
+        splitBeforeRedirect("<");
         buf += "<<<";
         bare += "<<<";
         wordStarted = true;
@@ -851,6 +897,14 @@ function scan(
       endSegment(false);
       continue;
     }
+    // `>|` forces the overwrite: the `|` is part of the redirect, not a pipe.
+    if (ch === "|" && afterGt && CLOBBER_BASE.test(bare)) {
+      buf += ch;
+      bare += ch;
+      wordStarted = true;
+      wordMeta = true;
+      continue;
+    }
     if (ch === "|" && command[index + 1] === "|") {
       endSegment(false);
       index += 1;
@@ -873,6 +927,9 @@ function scan(
       // `&>`, `&>>` and `>&` are redirects; any other lone `&` backgrounds the
       // command before it, so what follows is a new segment.
       if (command[index + 1] === ">" || afterGt) {
+        if (!afterGt) {
+          splitBeforeRedirect("&");
+        }
         buf += ch;
         bare += ch;
         wordStarted = true;
@@ -897,6 +954,7 @@ function scan(
       // safe: `~user`, `~+` and `~-` name other directories.
       (ch === "~" &&
         (!wordStarted ||
+          OPERATOR_ONLY.test(bare) ||
           (bare.endsWith("=") && bare.indexOf("=") === bare.length - 1)) &&
         !/^[\s/;|&<>]?$/.test(command[index + 1] ?? ""))
     ) {
@@ -914,6 +972,9 @@ function scan(
     // deny patterns. No legitimate agent command needs one outside quotes.
     if (ch === "(" || ch === ")") {
       return null;
+    }
+    if (ch === "<" || ch === ">") {
+      splitBeforeRedirect(ch);
     }
     buf += ch;
     bare += ch;
@@ -1294,7 +1355,6 @@ const READ_ONLY = new Set([
 
 /** Commands whose every path argument is written. */
 const WRITE_ALL = new Set(["rm", "rmdir", "mkdir", "touch", "tee", "truncate"]);
-const REDIRECT = /^(?:\d*|&)(>>|>\||>)(.*)$/;
 
 function isMessageFlag(word: string, command: string): boolean {
   if (MESSAGE_LONG.has(word) || MESSAGE_SHORT[command]?.has(word)) {
@@ -1650,29 +1710,32 @@ function collectCandidates(segment: Segment): Candidate[] {
         });
       }
     }
-    const redirect = REDIRECT.exec(word);
+    const redirect = REDIRECT_WORD.exec(word);
     if (redirect) {
-      const target = redirect[2] ?? "";
-      if (target === "") {
-        const next = argv[index + 1];
-        if (next && next.length > 0) {
-          found.push({ path: next, write: true, origin: "redirect" });
-          index += 1;
-        }
-      } else if (!target.startsWith("&")) {
-        found.push({ path: target, write: true, origin: "redirect" });
+      // The same candidates for a glued target (`>f`) and a spaced one (`> f`).
+      const operator = redirect[1] ?? "";
+      const attached = redirect[2] ?? "";
+      const next = argv[index + 1] ?? "";
+      const spaced = attached === "";
+      const target = spaced ? next : attached;
+      // `<<<` and `<&` do not name a file: a spaced target stays an ordinary word.
+      const takesNext = spaced && operator !== "<<<" && operator !== "<&";
+      if (takesNext) {
+        index += 1;
       }
-      continue;
-    }
-    if (word === "<") {
-      const next = argv[index + 1];
-      if (next && next.length > 0) {
-        found.push({ path: next, write: false, origin: "arg" });
+      if (target === "" || (spaced && !takesNext)) {
+        continue;
       }
-      continue;
-    }
-    if (word.startsWith("<") && word.length > 1) {
-      found.push({ path: word.slice(1), write: false, origin: "arg" });
+      if ((operator === ">&" || operator === "<&") && FD_TARGET.test(target)) {
+        continue;
+      }
+      // `>&file` writes both streams to the file. A read ends in `arg`, as a positional would.
+      const reads = operator === "<" || operator === "<<<" || operator === "<&";
+      found.push(
+        reads
+          ? { path: target, write: false, origin: "arg" }
+          : { path: target, write: true, origin: "redirect" },
+      );
       continue;
     }
     // A short option with its value glued on (`gh issue comment 1 -F.env`,
