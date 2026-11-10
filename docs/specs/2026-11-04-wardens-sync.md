@@ -311,7 +311,7 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
 
 The `Bash(...)` permission rules are a second line (Decisions, item 3); unlike hooks, they still apply under `disableAllHooks`. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
 
-`onFailure` needs Claude Code v2.1.295 or later (docs, 2026-11-04). `doctor` warns on an older `claude`.
+`onFailure` needs Claude Code v2.1.295 or later (docs, 2026-11-04). `doctor` warns below 2.1.321, the floor for Claude Fable 5.2 (#102), which also covers `onFailure`.
 
 #### `.cursor/hooks.json`
 
@@ -567,7 +567,7 @@ Ring 2 for C-27 (checking trailers on PR commits in CI) belongs to `pr-check` an
 | `launcher-anchor` | `$HOME/.config/panopticon/primaries` exists and lists this primary checkout; the file and its directory are owned by the user and not writable by group or other; no line holds a carriage return; every entry passes the structural check (`.git` is a directory, not under a `.claude/worktrees` or `.cursor/worktrees` directory, not under another entry's `.claude/worktrees`). The primary is derived from the file system, not from git | fail (not part of `--ci`) |
 | `duplicates` | JSONL log: any `foreign: true` line in the last 7 days, or lines from both tools with the same `session_id`, `event` class and target within 2 s | warn |
 | `disable-all-hooks` | `.claude/settings.local.json` or `~/.claude/settings.json` sets `disableAllHooks: true` | warn |
-| `claude-version` | `claude --version` ≥ 2.1.295 when `claude` is on `PATH` | warn |
+| `claude-version` | `claude --version` ≥ 2.1.321 when `claude` is on `PATH` | warn |
 
 `--ci` skips `launcher-anchor`, `duplicates`, `disable-all-hooks` and `claude-version`, which depend on the developer's machine. Output: one line per check, `ok|warn|fail <id>: <message>`. With `--json`, one JSON array.
 

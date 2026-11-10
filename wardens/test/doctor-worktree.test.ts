@@ -415,7 +415,7 @@ describe("doctor with the worktree checks", () => {
       env: { PATH: process.env.PATH ?? "" },
       home: f.primary,
       now: () => Date.now(),
-      claudeVersion: () => "2.1.295 (Claude Code)",
+      claudeVersion: () => "2.1.321 (Claude Code)",
       primary: f.primary,
       bundlePath: join(f.primary, "missing-bundle.mjs"),
       worktree: f.deps(),
