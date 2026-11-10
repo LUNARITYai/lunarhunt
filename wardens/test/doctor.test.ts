@@ -108,7 +108,7 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     env: { PATH: process.env.PATH ?? "", HOME: home },
     home,
     now: () => NOW,
-    claudeVersion: () => "2.1.295 (Claude Code)",
+    claudeVersion: () => "2.1.321 (Claude Code)",
     shellOptions: () => "",
     primary,
     bundlePath: bundle,
@@ -533,14 +533,14 @@ describe("shell-glob-options (#78)", () => {
 });
 
 describe("claude-version", () => {
-  it("warns below 2.1.295, is ok at or above it and ok without claude", () => {
+  it("warns below 2.1.321, is ok at or above it and ok without claude", () => {
     const status = (v: string | null) =>
       byId(
         runChecks(false, fixture({ claudeVersion: () => v }).deps),
         "claude-version",
       ).status;
-    expect(status("2.1.294 (Claude Code)")).toBe("warn");
-    expect(status("2.1.295 (Claude Code)")).toBe("ok");
+    expect(status("2.1.320 (Claude Code)")).toBe("warn");
+    expect(status("2.1.321 (Claude Code)")).toBe("ok");
     expect(status("2.2.0")).toBe("ok");
     expect(status("3.0.0")).toBe("ok");
     expect(status("garbage")).toBe("warn");
