@@ -23,7 +23,7 @@ import {
 } from "../src/doctor.ts";
 import { MAPPING_ROWS } from "../src/mapping.ts";
 import { embeddedHash, hashSources } from "../src/source-hash.ts";
-import { anchorPath, writeAnchor } from "../src/sync/anchor.ts";
+import { anchorPath, writeAnchor, writeRepo } from "../src/sync/anchor.ts";
 import { render } from "../src/sync/index.ts";
 import {
   cliPath,
@@ -102,6 +102,7 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
   );
   const home = realpathSync(scratchDir());
   writeAnchor(home, primary);
+  writeRepo(home, primary, "o/r");
   const deps: DoctorDeps = {
     cwd: root,
     env: { PATH: process.env.PATH ?? "", HOME: home },
@@ -184,6 +185,10 @@ describe("wardens doctor", () => {
       "ok worktrees",
       "ok task-databases",
       "ok charter-drift",
+      "ok task-integrity",
+      "ok issue-repo",
+      // The fixture primary has no origin/main, which only warns.
+      "warn primary-behind",
     ]);
   });
 
