@@ -86,4 +86,4 @@ Chosen option: **MADR 4.0 with a mandatory Confirmation section, plus the decisi
 - MADR: <https://adr.github.io/madr/>
 - Research report `docs/research/0001-fundament-best-practices.md`, section 5.3.
 - Related: ADR-0004 (Wardens), ADR-0006 (Covenant, English-only), ADR-0011 (spec process).
-- Amended by ADR-0020: an ADR pull request carries the status the ADR will have on `main`, and Krzysztof's merge is the acceptance; agents never change the status of an ADR already on `main`.
+- Amended by ADR-0020 (takes effect for agents when C-32 is edited; until then agents write `proposed`): an ADR pull request carries the status the ADR will have on `main`, normally `accepted`, and Krzysztof's merge is the acceptance; `proposed` on `main` is used only when Krzysztof merges a draft for further discussion; agents never change the status of an ADR already on `main`.
