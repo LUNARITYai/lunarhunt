@@ -242,3 +242,4 @@ Verified against official documentation on 2026-11-04:
 - To verify in the skeleton task, by recording real payloads: the exact `WorktreeCreate` input fields beyond `name` and `cwd` (whether a subagent creation can be told apart from `--worktree`); whether Cursor's cleanup skips worktrees with uncommitted changes.
 - Research report, section 9 (Cells) and the proposed ADR "Cells model".
 - Related: ADR-0001 (branch convention), ADR-0003 (The Charter; schema extended here), ADR-0004 (rings), ADR-0005 (engine, `wardens sync`, fail-closed), ADR-0007 (Dev Container, nightly Cells), ADR-0008 (autonomy phases), ADR-0010 (Ledger `run` fields extended here), ADR-0013 (`.env.example` read exception, `--force` denied for agents in `commands.deny`).
+- Amended by ADR-0017 (proposed): agent task worktrees are created through Claude Code or `wardens worktree new` only; the Cursor path (`agent -w`, `.cursor/worktrees.json`, #68) is frozen.
