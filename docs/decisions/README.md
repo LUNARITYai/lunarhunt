@@ -18,3 +18,4 @@ ADRs for PANOPTICON (LUNARITY), written in [MADR 4.0](https://adr.github.io/madr
 | [0012](0012-task-isolation-with-git-worktrees.md) | Task isolation with git worktrees | accepted |
 | [0013](0013-charter-policy-refinements.md) | Charter policy refinements | accepted |
 | [0014](0014-dependency-updates-with-renovate.md) | Dependency updates with Renovate | accepted |
+| [0018](0018-lunarhunt-data-model-and-api-contract-baseline.md) | LunarHunt data model and API contract baseline | proposed |
