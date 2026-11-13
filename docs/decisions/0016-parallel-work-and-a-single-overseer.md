@@ -95,7 +95,7 @@ Thresholds are set in that ADR.
 **D6. The review gate is never traded for speed.** An independent Reviewer runs on every PR. Sentinel runs on every PR except a `risk:low` PR (per `risk-classifier`) that changes no code, policy, decisions or security specs. Both are fresh read-only sessions, run in parallel with other work, and are never skipped, shortened or merged with the implementer's session to raise throughput. Reviewers and Sentinels do not count against D4.
 - The exception conflicts with texts that say Sentinel reviews every PR: the constitution's C-20 enforcer line, ADR-0004, ADR-0008 phase 1 and `AGENTS.md` (glossary and workflow step 7). The constitution overrides the rest, so the exception takes effect only when Krzysztof has edited C-20 (C-32); the edits are listed under "Proposed normative changes". Until then Sentinel runs on every PR. C-19's "Sentinel review" enforcer is unchanged.
 - The exception replaces the practice of 2026-11-05 (#60), Sentinel only on `risk:high` and security PRs.
-- Scope of the exception, proposed wording for Krzysztof to confirm:
+- Scope of the exception (confirmed by Krzysztof on 2026-11-13):
   - "code" includes tests, fixtures, scripts and tool or build configuration;
   - "security specs" are specs that touch auth, secrets, personal data, untrusted content or Wardens; the LunarHunt data model spec (D8) is one;
   - any doubt means Sentinel runs;
@@ -257,7 +257,7 @@ Recorded in the [PR #88 comment](https://github.com/LUNARITYai/lunarhunt/pull/88
 
 - **Limit value:** 3 until `wardens doctor` counts implementers, then 4 (D4).
 - **Count source:** worktree list by exclusion with `issueOf` attribution now; Ledger sessions once The Ledger exists (D4).
-- **Sentinel scope:** every PR except `risk:low` PRs (per `risk-classifier`) that change no code, policy, decisions or security specs (D6). Amends ADR-0004 and ADR-0008; needs the C-20 edit before it applies.
+- **Sentinel scope:** every PR except `risk:low` PRs (per `risk-classifier`) that change no code, policy, decisions or security specs (D6). Amends ADR-0004 and ADR-0008; needs the C-20 edit before it applies. Also confirmed the same day: the scope definitions in D6, the limit to phases 0–2, and that the C-20 edit comes first.
 - **Lockfiles:** `pnpm-lock.yaml` and `uv.lock` join `serialize_on` (D3).
 - **Contract baseline (D8):** a dedicated LunarHunt data model spec plus `packages/contracts/openapi.json`, with an ADR of their own. Parallel `apps/**` feature work starts only after the spec is `status: ready` and the contract is merged.
 
