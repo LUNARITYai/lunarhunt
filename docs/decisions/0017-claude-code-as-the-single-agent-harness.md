@@ -45,7 +45,7 @@ Enforcement status per C-01: **enforced**, **planned** (enforcer named, not buil
 
 **D1. Single harness.** In autonomy phases 0–2, agent roles (`overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel`, `debugger`) run only in Claude Code.
 - Krzysztof may use Cursor as his editor; that is a human session.
-- Cursor's agent mode on this repository is an agent run and is given no agent-role work. It should stay under the frozen ring-0 hooks and the worktree and trailer rules, but that is not verified for the IDE's agent mode: Cursor hooks fail open by default and trailer detection depends on an environment marker. Until it is verified, Cursor's agent mode is not used on this repository; allowing it is an open decision below.
+- Cursor's agent mode on this repository is an agent run and is given no agent-role work. It should stay under the frozen ring-0 hooks and the worktree and trailer rules, but that is not verified for the IDE's agent mode: Cursor hooks fail open by default and trailer detection depends on an environment marker. Cursor's agent mode is therefore not used on this repository while the freeze lasts (decision of 2026-11-13 below).
 - Enforcement: **not yet enforced**. The Charter has `engine: claude` on every role, by inspection only; the schema also accepts `cursor`. Planned: a `charter-validate` rule and a Ledger flag (Confirmation).
 
 **D2. Cursor-specific work is frozen.**
@@ -63,7 +63,7 @@ Enforcement status per C-01: **enforced**, **planned** (enforcer named, not buil
 
 **D5. Time-boxed OVERSEER model: a one-off deviation from C-26.** Krzysztof started the OVERSEER session on Claude Fable 5.2 on 2026-11-10, for Anthropic's promotion that ends on 2026-11-16 23:59 PT (2026-11-17 08:59 Europe/Warsaw). The Charter still says `opus` for `overseer`.
 - This is a deviation from C-26 ("an agent MUST run on the model of its Charter role") and from D4. It was started by the human, not by an agent, and this ADR records it after the fact; it does not make it a rule.
-- The regular route is a Charter PR that sets the model and a second one that reverts it. Krzysztof chooses between that route and accepting this exception as recorded (open decision below).
+- The regular route is a Charter PR that sets the model and a second one that reverts it. For the days that remain Krzysztof acknowledged the deviation instead (decision of 2026-11-13 below).
 - Nothing detects the deviation or its expiry: `model-guard` (ADR-0009) is not built, and once built it would block such a session. **Not yet enforced.**
 - Every commit trailer must name the model that actually ran (C-27). **Not yet enforced:** `agent-trailer` does not check the model text, which the agent reports itself; The Ledger (#98) is the planned record of the model per run.
 - After 2026-11-17 08:59 Europe/Warsaw OVERSEER runs on the Charter value again. Usage credits or any other model change go through a Charter PR.
@@ -135,10 +135,10 @@ Nothing below is enforced today; D1 holds by inspection of The Charter.
 - #39 stays open with `blocked`; #68 stays `blocked`.
 - OVERSEER runs on Fable during the promotion; afterwards the Charter default applies. Usage credits or another model need a Charter PR (D5).
 
-## Open decisions
+## Decisions on the open points (Krzysztof, 2026-11-13)
 
-- **D5 route:** acknowledge the deviation as a one-off that ends on 2026-11-17, or make it a Charter PR. Accepting this ADR does not waive C-26, which is unchanged, and sets no precedent for running a role on a non-Charter model. OVERSEER recommends the acknowledgement for the days that remain, and a Charter PR for any later model change.
-- **Cursor agent mode on this repository:** not used while the freeze lasts (D1 as written), or allowed once the hooks and trailer are verified for the IDE's agent mode.
+- **D5 route:** the deviation is acknowledged as a one-off that ends on 2026-11-17 08:59 Europe/Warsaw. C-26 is unchanged and not waived; this sets no precedent for running a role on a non-Charter model. Any later model change is a Charter PR.
+- **Cursor agent mode on this repository:** not used while the freeze lasts (D1). Allowing it needs a new decision after the hooks and trailer are verified for the IDE's agent mode.
 
 ## More Information
 
