@@ -112,4 +112,4 @@ The Ledger records model, effort level, role, escalations, cost, Warden blocks a
 - Related: ADR-0003 (The Charter `roles:` and `budgets:`), ADR-0004 (Definition of Done, Warden blocks), ADR-0008 (phases; routing starts in phase 1), ADR-0010 (Ledger metrics).
 - Labels `complexity:high` and `needs:human` are managed in `.github/labels.yml` (ADR-0001).
 - Amended by ADR-0013: `debugger` role on Sonnet with effort `high`, read-only, no escalation.
-- Amended by ADR-0017 (proposed): every role runs in Claude Code; the Cursor effort-slug mapping is frozen; `roles.*.engine` stays as the seam; the `overseer` model is time-boxed during the 2026-11 promotion (D5).
+- Amended by ADR-0017 (proposed): every role runs in Claude Code; the Cursor effort-slug mapping is frozen; `roles.*.engine` stays as the seam; D5 records a human-started, time-boxed exception to the `overseer` model until 2026-11-17, which `model-guard` would block once built.

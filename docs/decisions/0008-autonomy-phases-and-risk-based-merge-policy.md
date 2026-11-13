@@ -114,4 +114,5 @@ Sentinel findings block auto-merge for any class.
 - Research report, sections 7.4, 11.3.
 - Related: ADR-0001 (identities, ruleset), ADR-0003 (The Charter), ADR-0004 (risk classifier, Sentinel), ADR-0009 (routing, budgets), ADR-0010 (Ledger metrics).
 - Amended by ADR-0013: risk classes encoded in the Charter `risk:` schema; high-risk paths extended with `wardens/**`, `docs/decisions/**` and `docs/decision-log.md` (A1).
+- Amended by ADR-0017 (proposed): in phases 0–2 local agent roles run in Claude Code only; "local agents (Claude Code, Cursor)" is read as Claude Code.
 - See also ADR-0014: Renovate PRs follow these risk and auto-merge rules.
