@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-10
 decision-makers: Krzysztof Oszczapiński
 consulted: Architect (AI), OVERSEER (AI)
@@ -129,7 +129,7 @@ Nothing below is enforced today; D1 holds by inspection of The Charter.
 - Good, because it leaves the least code.
 - Bad, because adding a harness later means touching the schema, the engine and `wardens sync` again.
 
-## Direction agreed by Krzysztof (2026-11-10); this ADR is not yet accepted
+## Direction agreed by Krzysztof (2026-11-10)
 
 - `.cursor/hooks.json` generation and the Cursor fixtures are kept frozen, not removed, until phase 1 at least.
 - #39 stays open with `blocked`; #68 stays `blocked`.
