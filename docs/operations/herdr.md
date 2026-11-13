@@ -26,7 +26,7 @@ Herdr has two parts. Both CLIs were checked with `--help` on 2026-11-13.
 - Each implementer has its own pane, started inside its own task worktree.
 - Reviewer and Sentinel are fresh read-only sessions on `review-*` / `sentinel-*` branches. Today they run as OVERSEER subagents. They are excluded from the implementer count ([ADR-0016](../decisions/0016-parallel-work-and-a-single-overseer.md) D4).
 - Read-only is not yet enforced by a Warden. It rests on the role prompt and on OVERSEER posting their report. Follow-up: #112.
-- Name terminals `impl-<issue>`, `spec-<issue>`, `review-<pr>`, `sentinel-<pr>`.
+- Name terminals after the Charter role: `overseer`, `implementer-<issue>`, `spec-writer-<issue>`, `reviewer-<pr>`, `sentinel-<pr>`.
 
 ## One implementer per issue and worktree
 
@@ -44,7 +44,7 @@ Herdr has two parts. Both CLIs were checked with `--help` on 2026-11-13.
 Launch command, from OVERSEER's own worktree:
 
 ```sh
-hc run --bg --name impl-<issue> --cwd <primary checkout> --outlive-parent claude --worktree <issue>-<slug> --model <Charter model> --effort <effort> "<pointer to the brief>"
+hc run --bg --name implementer-<issue> --cwd <primary checkout> --outlive-parent claude --worktree <issue>-<slug> --model <Charter model> --effort <effort> "<pointer to the brief>"
 ```
 
 - `--bg` returns at once.
