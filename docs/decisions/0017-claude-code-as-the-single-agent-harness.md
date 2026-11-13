@@ -11,14 +11,14 @@ consulted: Architect (AI), OVERSEER (AI)
 
 PANOPTICON was designed for two agent harnesses, Claude Code and Cursor (ADR-0004, ADR-0005, ADR-0009, ADR-0012). A **harness** is the tool an agent session runs in; it is the Charter's `roles.*.engine`, the CLI's `--tool` and The Ledger's `tool`.
 
-Cursor produced the first three agent PRs (#3, #8, #9). Every agent PR since then came from Claude Code: The Charter sets `engine: claude` on every role, OVERSEER runs Claude Code in Herdr, and the Reviewer and Sentinel are Claude Code sessions.
+Cursor produced the first four agent PRs (#1, #3, #8, #9). Every agent PR since then came from Claude Code: The Charter sets `engine: claude` on every role, OVERSEER runs Claude Code in Herdr, and the Reviewer and Sentinel are Claude Code sessions.
 
 Keeping Cursor at parity still costs work:
 
 - `.cursor/hooks.json` generation, the recorded Cursor fixtures and a golden test;
 - the Cursor effort-in-model-slug mapping (ADR-0009, `wardens/src/engines.ts`);
 - spike #39 (Cursor permission file), #68 (`.cursor/worktrees.json`) and the Cursor parts of #51 and #66;
-- Cursor hooks fail open by default (ADR-0004), and the proposed ADR-0015 (PR #70) gives Cursor no OS sandbox, so a Cursor agent session has ring 0 only.
+- Cursor hooks fail open by default (ADR-0004), and the proposed ADR-0015 (PR #70) configures no OS sandbox for Cursor, so a Cursor agent session has ring 0 only.
 
 PANOPTICON has one maintainer. Two harnesses double the Wardens test matrix and the sandbox work, and the second one is the weaker security surface.
 
@@ -45,7 +45,7 @@ Enforcement status per C-01: **enforced**, **planned** (enforcer named, not buil
 
 **D1. Single harness.** In autonomy phases 0–2, agent roles (`overseer`, `spec-writer`, `implementer`, `reviewer`, `sentinel`, `debugger`) run only in Claude Code.
 - Krzysztof may use Cursor as his editor; that is a human session.
-- Cursor's agent mode on this repository is an agent run: it stays under the frozen ring-0 hooks and the worktree and trailer rules, and it is given no agent-role work. Whether to forbid it outright is an open decision below.
+- Cursor's agent mode on this repository is an agent run and is given no agent-role work. It should stay under the frozen ring-0 hooks and the worktree and trailer rules, but that is not verified for the IDE's agent mode: Cursor hooks fail open by default and trailer detection depends on an environment marker. Until it is verified, Cursor's agent mode is not used on this repository; allowing it is an open decision below.
 - Enforcement: **not yet enforced**. The Charter has `engine: claude` on every role, by inspection only; the schema also accepts `cursor`. Planned: a `charter-validate` rule and a Ledger flag (Confirmation).
 
 **D2. Cursor-specific work is frozen.**
@@ -54,22 +54,22 @@ Enforcement status per C-01: **enforced**, **planned** (enforcer named, not buil
 - #66 and the proposed ADR-0015: the Cursor and Dev Container sandbox items stay deferred.
 - No new Cursor fixtures, adapter features or tests.
 
-**D3. The seam stays.** The Charter keeps `roles.*.engine`, the schema keeps the enum, and `wardens/src/engines.ts` keeps the adapter registry. The existing `.cursor/hooks.json` generation and its tests stay in the repository through phases 0–2; removing them is a later decision by Krzysztof, not taken before phase 1 starts.
+**D3. The seam stays.** The Charter keeps `roles.*.engine`, the schema keeps the enum, and `wardens/src/engines.ts` keeps the adapter registry. The existing `.cursor/hooks.json` generation and its tests stay in the repository until phase 1 at least (Krzysztof's direction of 2026-11-10); removing them is a later decision by Krzysztof.
 - Frozen means no new Cursor features. Security fixes to the shared engine and launcher still reach the Cursor adapter, because it runs the same bundle.
 - Cursor coverage is best-effort and is not a control anyone relies on. `charter-drift` and the golden test prove only that the generated file equals the generator's output, not that Cursor keeps up with new Wardens.
 - Krzysztof owns the freeze and its end.
 
 **D4. Role-to-model mapping stays in The Charter.** Models are chosen per role in `roles:` (ADR-0009), never hard-coded in prompts, hooks or docs. Changing a model is a one-line Charter PR by Krzysztof.
 
-**D5. Time-boxed OVERSEER model: an exception to C-26.** Krzysztof started the OVERSEER session on Claude Fable 5.2 on 2026-11-10, for Anthropic's promotion that ends on 2026-11-16 23:59 PT (2026-11-17 08:59 Europe/Warsaw). The Charter still says `opus` for `overseer`.
+**D5. Time-boxed OVERSEER model: a one-off deviation from C-26.** Krzysztof started the OVERSEER session on Claude Fable 5.2 on 2026-11-10, for Anthropic's promotion that ends on 2026-11-16 23:59 PT (2026-11-17 08:59 Europe/Warsaw). The Charter still says `opus` for `overseer`.
 - This is a deviation from C-26 ("an agent MUST run on the model of its Charter role") and from D4. It was started by the human, not by an agent, and this ADR records it after the fact; it does not make it a rule.
 - The regular route is a Charter PR that sets the model and a second one that reverts it. Krzysztof chooses between that route and accepting this exception as recorded (open decision below).
 - Nothing detects the deviation or its expiry: `model-guard` (ADR-0009) is not built, and once built it would block such a session. **Not yet enforced.**
-- Every commit trailer names the model that actually ran (C-27).
+- Every commit trailer must name the model that actually ran (C-27). **Not yet enforced:** `agent-trailer` does not check the model text, which the agent reports itself; The Ledger (#98) is the planned record of the model per run.
 - After 2026-11-17 08:59 Europe/Warsaw OVERSEER runs on the Charter value again. Usage credits or any other model change go through a Charter PR.
 - The agent host runs Claude Code 2.1.321 or later (`wardens doctor` minimum, #102). All other roles keep their Charter values.
 
-**D6. Quota is a planning input.** Every Herdr session (OVERSEER, implementers, reviewers) draws from the same Claude subscription. All of D6 is **not yet enforced**: quota is read by hand from the Claude Code usage display until the session status files (#99) and The Ledger (#98) record it. The references to ADR-0016 hold once it is accepted.
+**D6. Quota is a planning input.** Every Herdr session (OVERSEER, implementers, reviewers) draws from the same Claude subscription. All of D6 is **not yet enforced**: remaining quota is read by hand from the Claude Code usage display and has no planned enforcer; the session status files (#99) and The Ledger (#98) are planned to record limit hits only. The references to ADR-0016 hold once it is accepted.
 - The expensive model is used only where planning quality pays off (D4).
 - Parallel implementers are capped by the proposed ADR-0016 and by remaining quota: OVERSEER starts an implementer only if the current 5-hour window and the weekly limit leave room for its review rounds.
 - Round-2 reviews are delta-only (proposed ADR-0016 D9).
@@ -90,7 +90,7 @@ A second harness is reconsidered only through a new ADR, when one of these holds
 - Good, because one harness halves the hook, fixture and sandbox matrix.
 - Good, because frozen Cursor issues stop competing for OVERSEER and review time.
 - Good, because the `engine` seam keeps a later harness a contained change.
-- Good, because agent work leaves the harness that has no sandbox and fails open by default.
+- Good, because agent work leaves the harness where PANOPTICON configures no OS sandbox (proposed ADR-0015) and whose hooks fail open by default.
 - Bad, because all agent work depends on one vendor's availability, pricing and limits.
 - Bad, because the frozen `.cursor/**` generation can rot, and a Cursor agent session stays possible with weaker protection until the follow-ups below land.
 - Neutral, because ADR-0004, ADR-0005, ADR-0008, ADR-0009 and ADR-0012 still describe Cursor; this ADR amends them where they require Cursor parity.
@@ -131,14 +131,14 @@ Nothing below is enforced today; D1 holds by inspection of The Charter.
 
 ## Direction agreed by Krzysztof (2026-11-10); this ADR is not yet accepted
 
-- `.cursor/hooks.json` generation and the Cursor fixtures are kept frozen, not removed.
+- `.cursor/hooks.json` generation and the Cursor fixtures are kept frozen, not removed, until phase 1 at least.
 - #39 stays open with `blocked`; #68 stays `blocked`.
-- OVERSEER runs on Fable during the promotion; afterwards the Charter default applies unless Krzysztof enables usage credits.
+- OVERSEER runs on Fable during the promotion; afterwards the Charter default applies. Usage credits or another model need a Charter PR (D5).
 
 ## Open decisions
 
-- **D5 route:** accept the recorded exception to C-26 until 2026-11-17, or make it a Charter PR. OVERSEER recommends the recorded exception for the days that remain, and a Charter PR for any later model change.
-- **Cursor agent mode on this repository:** allowed under the frozen hooks (D1 as written), or not used at all while the freeze lasts.
+- **D5 route:** acknowledge the deviation as a one-off that ends on 2026-11-17, or make it a Charter PR. Accepting this ADR does not waive C-26, which is unchanged, and sets no precedent for running a role on a non-Charter model. OVERSEER recommends the acknowledgement for the days that remain, and a Charter PR for any later model change.
+- **Cursor agent mode on this repository:** not used while the freeze lasts (D1 as written), or allowed once the hooks and trailer are verified for the IDE's agent mode.
 
 ## More Information
 
