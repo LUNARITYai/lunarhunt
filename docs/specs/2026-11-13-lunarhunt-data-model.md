@@ -35,7 +35,8 @@ It is the source of intent for the generated contract (C-13). Feature specs refe
 - IF an update changes any immutable column of a `source_record` (listed under "Entities"), THEN THE SYSTEM SHALL reject it at the database level.
 - IF a captured record has the same `owner_id`, `channel`, `source_id`, `external_id` and `content_sha256` as an existing record, THEN THE SYSTEM SHALL create no new record, SHALL set the existing record's `last_seen_at` to the capture time, and SHALL return the existing offer with outcome `duplicate`.
 - WHEN an ATS or Notion record has the same `channel`, `source_id` and `external_id` as an existing record but a different `content_sha256`, THE SYSTEM SHALL store a new `source_record` and link it to the existing offer.
-- WHEN a captured record carries a user-supplied or ATS-supplied URL whose normalized form equals the `canonical_url` of an existing non-merged offer, THE SYSTEM SHALL link the record to that offer, unless the record is from `ats` and the offer has an `ats` record from another `source_id`.
+- WHEN rule 2 links a record, THE SYSTEM SHALL re-derive the offer's fields only if the record named in `derived_from_record_id` has the same `channel`, `source_id` and `external_id`.
+- WHEN a captured record carries a user-supplied or ATS-supplied URL whose normalized form equals the `canonical_url` of an existing non-merged offer, THE SYSTEM SHALL link the record to that offer, unless the record is from `ats` and the offer has any record that is not an `ats` record of the same `source_id`.
 - WHEN rule 3 links a record, THE SYSTEM SHALL leave the offer's fields unchanged.
 - THE SYSTEM SHALL NOT link or merge offers automatically on `fingerprint`, on `suggested_url`, or on any value produced by a model.
 - WHEN the user merges offer A into offer B, THE SYSTEM SHALL relink A's records to B, set A to `merged` with `merged_into_id` = B, repoint offers merged into A to B, and keep A's derived records.
@@ -47,6 +48,8 @@ It is the source of intent for the generated contract (C-13). Feature specs refe
 
 - THE SYSTEM SHALL fill offer fields for `manual`, `ats` and `notion` captures by deterministic mapping, with no model call and `derived_by_ai_run_id` null.
 - THE SYSTEM SHALL fill offer fields for `paste` captures only through a succeeded `extract` `ai_run`, and SHALL set `derived_by_ai_run_id` to that run.
+- IF an `extract` request names a `source_record_id` that is not a `paste` record of its `offer_id`, THEN THE SYSTEM SHALL reject it with `422`.
+- IF an insert or update sets `offers.derived_by_ai_run_id` to a run that is not a succeeded `extract` run for that offer, THEN THE SYSTEM SHALL reject it at the database level.
 - THE SYSTEM SHALL create classifications, match scores, parsed CVs and tailored CVs only through a succeeded `ai_run`, except classifications with `method` = `user` and CV versions with `origin` = `user_edit`.
 - THE SYSTEM SHALL record `model`, `prompt_version` and `input_sha256` on every `ai_run` that calls a model.
 - IF an `ai_run` fails, THEN THE SYSTEM SHALL keep the previous derived record as current and store only an `error_code`, never content.
@@ -55,9 +58,12 @@ It is the source of intent for the generated contract (C-13). Feature specs refe
 
 ### Deletion
 
-- WHEN the user deletes an offer, a source record, a CV upload or a CV version, THE SYSTEM SHALL hard-delete the row and apply the `ON DELETE` action of every relation as listed under "Relations".
+- WHEN the user deletes an offer, a source record, a CV upload or a CV version, THE SYSTEM SHALL hard-delete the row, apply the `ON DELETE` action of every relation as listed under "Relations", and return the number of deleted rows per table.
+- WHEN a delete request has `dry_run=true`, THE SYSTEM SHALL return the same counts and delete nothing.
+- IF a delete request names an id that does not exist for the current owner, THEN THE SYSTEM SHALL answer `404` with code `not_found`.
 - THE SYSTEM SHALL allow `DELETE` on immutable tables; immutability triggers SHALL reject only `UPDATE`.
-- IF the user deletes the last source record of an offer, THEN THE SYSTEM SHALL reject it with `409` and code `last_source_record`.
+- IF the user deletes the last source record of a non-merged offer, THEN THE SYSTEM SHALL reject it with `409` and code `last_source_record`.
+- IF a `notion_import` run is `queued` or `running` for the owner, THEN THE SYSTEM SHALL reject a new import with `409` and code `conflict`.
 - WHEN a row that a `queued` or `running` `ai_run` reads is deleted, THE SYSTEM SHALL finish that run as `failed` with `error_code` `input_deleted` and write no derived row.
 - WHEN a Notion import runs, THE SYSTEM SHALL store only pages that map to an offer, and SHALL store no other page of the export.
 - WHEN an `ingest_run` reaches `succeeded`, `partial` or `failed`, THE SYSTEM SHALL delete its `ingest_uploads` row in the same transaction.
@@ -74,6 +80,7 @@ It is the source of intent for the generated contract (C-13). Feature specs refe
 - IF a URL in a request has a scheme other than `http` or `https`, THEN THE SYSTEM SHALL reject it with `422`.
 - THE SYSTEM SHALL return `external_url` and `suggested_url` in responses only when their scheme is `http` or `https`, and `null` otherwise.
 - IF a request field exceeds its bound in "Request bounds", THEN THE SYSTEM SHALL reject it with `422`, or `413` for a body over its size cap.
+- IF a request with a method other than `GET`, `HEAD` or `OPTIONS` lacks the header `X-LunarHunt-Client`, or carries an `Origin` other than the web app's, THEN THE SYSTEM SHALL reject it with `403` and code `forbidden_origin`.
 - THE SYSTEM SHALL use only synthetic personal data and synthetic offer text in tests, fixtures and OpenAPI `examples`.
 - WHILE no auth is implemented, THE SYSTEM SHALL be reachable only from localhost or the private Dev Container network.
 
@@ -85,8 +92,8 @@ It is the source of intent for the generated contract (C-13). Feature specs refe
 - WHILE `nightwatch_enabled` is true, WHEN the owner's local time reaches `nightwatch_local_time`, THE SYSTEM SHALL start one Nightwatch run for that local date.
 - IF a Nightwatch run for the same `run_date` exists and is not `failed`, THEN THE SYSTEM SHALL start no second run.
 - WHEN a Nightwatch run starts, THE SYSTEM SHALL start one `ats_scan` per source with `enabled` and `nightwatch` both true.
-- WHEN a Nightwatch scan creates an offer, THE SYSTEM SHALL queue `classify` and, if an active base CV exists, `score` with trigger `nightwatch`, up to `nightwatch_max_ai_runs` runs per Nightwatch run (Q13).
-- WHEN the scans and their queued `ai_runs` have finished, or 60 minutes after the run started, THE SYSTEM SHALL write one morning summary listing the offers created by that run's scans.
+- WHEN a Nightwatch scan creates an offer, THE SYSTEM SHALL queue `classify` and, if an active base CV exists, `score` with trigger `nightwatch` and that run's `nightwatch_run_id`, up to `nightwatch_max_ai_runs` runs per Nightwatch run (Q13).
+- WHEN the scans and the `ai_runs` with that `nightwatch_run_id` have finished, or 60 minutes after the run started, THE SYSTEM SHALL write one morning summary listing the offers created by that run's scans.
 
 ### API
 
@@ -207,11 +214,11 @@ Unique `(owner_id, provider, board_token)`. Sources are never deleted while reco
 | `location_text` | text | yes | | `UX` |
 | `description_text` | text | yes | Plain text | `PD` `UX` |
 | `canonical_url` | text | yes | Normalized; only from a user-supplied or ATS-supplied URL (Deduplication) | `UX` |
-| `suggested_url` | text | yes | Normalized; from `extract`, or a URL that rule 3 did not link; a suggestion only | `UX` |
+| `suggested_url` | text | yes | Normalized; from `extract`, the Notion URL property, or a URL that rule 3 did not link; a suggestion only | `UX` |
 | `fingerprint` | char(64) | yes | Normalized below | |
 | `posted_at` | timestamptz | yes | As stated by the source | `UX` |
 | `derived_from_record_id` | uuid | yes | FK `source_records`; the record the fields were last derived from | |
-| `derived_by_ai_run_id` | uuid | yes | FK `ai_runs`; the `extract` run that derived the fields; null for deterministic mapping | |
+| `derived_by_ai_run_id` | uuid | yes | FK `ai_runs`; the `extract` run that derived the fields; null for deterministic mapping. A `BEFORE INSERT OR UPDATE` trigger requires a succeeded `extract` run with the same `offer_id` | |
 | `user_edited_fields` | text[] | no | Fields the user changed; re-derivation leaves them alone (Q3) | |
 | `created_at`, `updated_at` | timestamptz | no | | |
 
@@ -246,13 +253,17 @@ Unique `(owner_id, provider, board_token)`. Sources are never deleted while reco
 | `created_at` | timestamptz | no | |
 | `started_at`, `finished_at` | timestamptz | yes | |
 
-`manual` and `paste` captures are synchronous and have no ingest run.
+- `manual` and `paste` captures are synchronous and have no ingest run.
+- Unique `(owner_id, id, kind)`, the target of the `ingest_uploads` foreign key.
+- Unique `(owner_id) WHERE kind = 'notion_import' AND status IN ('queued', 'running')`: at most one Notion import in flight per owner, so at most one staged export.
+- `offers_linked` is reported per run, so the user sees how many records joined existing offers.
 
 #### `ingest_uploads` (staging for a Notion export)
 
 | Field | Type | Null | Notes | Class |
 |---|---|---|---|---|
-| `ingest_run_id` | uuid | no | PK; FK `ingest_runs`, `kind = notion_import` | |
+| `ingest_run_id` | uuid | no | PK | |
+| `kind` | text | no | CHECK `= 'notion_import'`; with `owner_id` and `ingest_run_id` a composite FK to `ingest_runs (owner_id, id, kind)`, so only a Notion import run can have a staged file | |
 | `media_type` | text | no | | |
 | `size_bytes` | integer | no | | |
 | `content_sha256` | char(64) | no | | |
@@ -275,7 +286,7 @@ Unique `(owner_id, provider, board_token)`. Sources are never deleted while reco
 | `started_at`, `finished_at` | timestamptz | yes | |
 
 - Unique `(owner_id, run_date) WHERE status <> 'failed'`, so a failed night can be run again.
-- Pipeline: (1) start one `ats_scan` per source with `enabled` and `nightwatch`; (2) for each offer those scans create, queue `classify` and, if `active_base_cv_version_id` is set, `score`, both with trigger `nightwatch`, in creation order until `nightwatch_max_ai_runs` is reached (Q13); (3) when the scans and those runs are finished, or 60 minutes after `started_at`, write the morning summary; (4) set the status. `partial` means at least one scan or `ai_run` failed or was not queued because of the cap.
+- Pipeline: (1) start one `ats_scan` per source with `enabled` and `nightwatch`; (2) for each offer those scans create, queue `classify` and, if `active_base_cv_version_id` is set, `score`, both with trigger `nightwatch` and this run's id in `ai_runs.nightwatch_run_id`, in creation order until `nightwatch_max_ai_runs` is reached (Q13); (3) when the scans and the `ai_runs` with this `nightwatch_run_id` are finished, or 60 minutes after `started_at`, write the morning summary; (4) set the status. `partial` means at least one scan or `ai_run` failed or was not queued because of the cap.
 
 #### `ai_runs` (provenance and job record for derived data)
 
@@ -289,6 +300,7 @@ Unique `(owner_id, provider, board_token)`. Sources are never deleted while reco
 | `source_record_id` | uuid | yes | FK `source_records`; input for `extract` |
 | `cv_version_id` | uuid | yes | FK `cv_versions`; input CV for `score` and `tailor` |
 | `cv_upload_id` | uuid | yes | FK `cv_uploads`; input for `parse_cv` |
+| `nightwatch_run_id` | uuid | yes | FK `nightwatch_runs`; CHECK not null exactly when `trigger = nightwatch` |
 | `model` | text | yes | Model id, set when a model is called |
 | `prompt_version` | text | yes | Version label of the prompt, not the prompt |
 | `input_sha256` | char(64) | yes | Hash of all inputs, for idempotency and audit |
@@ -297,7 +309,8 @@ Unique `(owner_id, provider, board_token)`. Sources are never deleted while reco
 | `created_at` | timestamptz | no | |
 | `started_at`, `finished_at` | timestamptz | yes | |
 
-- A `CHECK` requires every reference that the `purpose` does not use to be null. A `BEFORE INSERT` trigger requires the references the `purpose` uses to be set. The references are `ON DELETE SET NULL`, so a run row survives the deletion of its inputs without content.
+- A `CHECK` requires every reference that the `purpose` does not use to be null. A `BEFORE INSERT` trigger requires the references the `purpose` uses to be set. The input references are `ON DELETE SET NULL`, so a run row survives the deletion of its inputs without content. A `BEFORE UPDATE` trigger clears `input_sha256` when an input reference becomes null, so the hash cannot confirm deleted content (Q10).
+- For an `extract` run, `source_record_id` is a `paste` record of `offer_id` (checked by the `BEFORE INSERT` trigger).
 - Unique `(owner_id, purpose, offer_id, cv_version_id, cv_upload_id, input_sha256) NULLS NOT DISTINCT WHERE status IN ('queued', 'running')`.
 - No prompt, input or output text is stored here.
 - A derived row is written only when its run succeeds, in the same transaction as `status = succeeded`. If an input was deleted, the derived row's foreign key fails and the run ends `failed` with `input_deleted`.
@@ -392,7 +405,7 @@ sources 1─* source_records *─1 offers (offer_id) ; offers *─0..1 offers (m
 offers *─0..1 source_records (derived_from_record_id) ; offers *─0..1 ai_runs (derived_by_ai_run_id, extract)
 offers 1─* classifications ; offers 1─* match_scores *─1 cv_versions (base)
 offers 1─* cv_versions (tailored) ; cv_versions *─0..1 cv_versions (parent_id) ; cv_uploads 1─* cv_versions
-ai_runs 1─0..1 classifications, match_scores, cv_versions (each derived row)
+ai_runs 1─0..1 classifications, match_scores, cv_versions (each derived row) ; ai_runs *─0..1 nightwatch_runs
 ```
 
 `ON DELETE` action per foreign key (every `owner_id` → `owners` is `RESTRICT`):
@@ -403,12 +416,13 @@ ai_runs 1─0..1 classifications, match_scores, cv_versions (each derived row)
 | `source_records.source_id` | `sources` | `RESTRICT` | Sources are disabled, not deleted |
 | `source_records.ingest_run_id` | `ingest_runs` | `RESTRICT` | Runs are never deleted |
 | `source_records.offer_id` | `offers` | `CASCADE` | Deleting an offer deletes its raw records |
-| `offers.merged_into_id` | `offers` | `CASCADE` | Deleting an offer deletes the empty offers merged into it |
+| `offers.merged_into_id` | `offers` | `CASCADE` | Deleting an offer deletes the offers merged into it. They have no records, but they keep derived rows (classifications, scores, tailored CVs), and the cascade deletes those too |
 | `offers.derived_from_record_id` | `source_records` | `SET NULL` | |
 | `offers.derived_by_ai_run_id` | `ai_runs` | `RESTRICT` | Runs are never deleted |
 | `ingest_runs.source_id`, `ingest_runs.nightwatch_run_id` | `sources`, `nightwatch_runs` | `RESTRICT` | |
-| `ingest_uploads.ingest_run_id` | `ingest_runs` | `CASCADE` | |
-| `ai_runs.offer_id`, `source_record_id`, `cv_version_id`, `cv_upload_id` | inputs | `SET NULL` | Run row survives without content |
+| `ingest_uploads (ingest_run_id, kind)` | `ingest_runs (id, kind)` | `CASCADE` | |
+| `ai_runs.offer_id`, `source_record_id`, `cv_version_id`, `cv_upload_id` | inputs | `SET NULL` | Run row survives without content; `input_sha256` is cleared |
+| `ai_runs.nightwatch_run_id` | `nightwatch_runs` | `RESTRICT` | |
 | `classifications.offer_id`, `match_scores.offer_id` | `offers` | `CASCADE` | |
 | `match_scores.cv_version_id` | `cv_versions` | `CASCADE` | |
 | `classifications.ai_run_id`, `match_scores.ai_run_id`, `cv_versions.ai_run_id` | `ai_runs` | `RESTRICT` | |
@@ -418,25 +432,28 @@ ai_runs 1─0..1 classifications, match_scores, cv_versions (each derived row)
 | `morning_summaries.nightwatch_run_id` | `nightwatch_runs` | `RESTRICT` | |
 | `morning_summary_items.summary_id`, `offer_id` | `morning_summaries`, `offers` | `CASCADE` | A deleted offer leaves the summary |
 
-`ingest_runs`, `nightwatch_runs` and `ai_runs` hold no content and have no delete route. Deleting an ATS offer that is still posted brings it back on the next scan as a new offer; archiving hides it instead (Q10).
+- `ingest_runs`, `nightwatch_runs` and `ai_runs` hold no content and have no delete route.
+- **CV lineage:** deleting a CV version deletes every later version built on it, base and tailored, and their scores. If the active base CV is among them, `active_base_cv_version_id` becomes null. Deleting an upload deletes the whole lineage parsed from it.
+- **Last source record:** a deferred constraint trigger (`AFTER DELETE` on `source_records`, `DEFERRABLE INITIALLY DEFERRED`) raises at commit if the record's offer still exists, is not `merged`, and has no records left. An offer delete that cascades to its records passes, because the offer is gone at commit. The `deleteSourceRecord` service also checks it first, under a row lock on the offer, to answer `409 last_source_record`.
+- Deleting an ATS offer that is still posted brings it back on the next scan as a new offer; archiving hides it instead (Q10).
+- Every delete route answers `200 DeleteResult` (`deleted`: a map from table name to row count). With `dry_run=true` it returns the counts and deletes nothing, so the web app can show them before the user confirms.
 
 ### Deduplication
 
 Applied in order at capture, inside one transaction that first takes `pg_advisory_xact_lock` on a hash of `(owner_id, channel, source_id, external_id)` when `external_id` is set. The first rule that matches wins.
 
 1. **Same record:** unique key `(owner_id, channel, source_id, external_id, content_sha256)`. No new record; `last_seen_at` is set. Outcome `duplicate`.
-2. **Same posting, new content:** same `(channel, source_id, external_id)` for `ats`, or same `(channel, external_id)` for `notion`. New record, linked to the existing offer. Fields are re-derived by the channel's deterministic mapping, except `user_edited_fields`. Outcome `linked`.
-3. **Same canonical URL:** the record carries a trusted URL (below), and its normalized form equals an existing non-merged offer's `canonical_url`. New record, linked. Fields are never re-derived. For `ats`, the link happens only if the offer has no `ats` record from another `source_id`; otherwise rule 4 applies and the URL goes to the new offer's `suggested_url`. Outcome `linked`.
+2. **Same posting, new content:** same `(channel, source_id, external_id)` for `ats`, or same `(channel, external_id)` for `notion`. New record, linked to the existing offer. Fields are re-derived by the channel's deterministic mapping, except `user_edited_fields`, and only if the record named in `derived_from_record_id` is the same posting (same `channel`, `source_id`, `external_id`). Otherwise the fields stay, so a posting never overwrites fields that came from another channel or source. Outcome `linked`.
+3. **Same canonical URL:** the record carries a trusted URL (below), and its normalized form equals an existing non-merged offer's `canonical_url`. New record, linked. Fields are never re-derived. For `ats`, the link happens only if every record of the offer is an `ats` record from the same `source_id`; otherwise rule 4 applies and the URL goes to the new offer's `suggested_url`. Outcome `linked`.
 4. **Otherwise:** new offer. A trusted URL becomes its `canonical_url`. Outcome `created`.
 
 Trusted URLs, the only input to rule 3 and to `canonical_url`:
 
 - `manual` and `paste`: the `url` the user typed in the request;
 - `ats`: the posting URL field of the provider's response, mapped by the adapter;
-- `notion`: the property named in `NotionMapping.url_property` (Q17);
 - the user's `PATCH` of `canonical_url`.
 
-A URL that `extract` finds in pasted text is stored only in `suggested_url`. A pasted offer with a trusted URL runs rule 3 at capture, before extraction; if it links, no `extract` run starts.
+A URL that `extract` finds in pasted text, and the Notion `url_property` (Q17), are stored only in `suggested_url`. A pasted offer with a trusted URL runs rule 3 at capture, before extraction; if it links, no `extract` run starts.
 
 Rule 1 and rule 3 are backed by unique indexes; rule 2 by the advisory lock. A concurrent capture that loses on the `canonical_url` index retries and lands in rule 3. `fingerprint` and `suggested_url` matches are only listed for the user (`listOfferDuplicateCandidates`); merging is a user action (Q2).
 
@@ -447,7 +464,7 @@ Rule 1 and rule 3 are backed by unique indexes; rule 2 by the advisory lock. A c
 | `manual` | The `ManualOfferCreate` fields, as typed | None |
 | `paste` | `extract` over the pasted text: `title`, `company_name`, `location_text`, `description_text`, `posted_at`, `suggested_url` | `extract` |
 | `ats` | The adapter's fixed field map for the provider's posting JSON; HTML description converted to plain text | None |
-| `notion` | `NotionMapping`: the named page properties give `title`, `company_name`, and optional `location_text` and URL; the page body, converted to plain text, gives `description_text` | None |
+| `notion` | `NotionMapping`: the named page properties give `title`, `company_name`, optional `location_text`, and `suggested_url`; the page body, converted to plain text, gives `description_text` | None |
 
 - A Notion page maps to an offer only when its title and company properties are non-empty. Other pages and files of the export are skipped, counted in `records_skipped`, and never stored.
 - A Notion record's `raw_content` holds only the mapped page: its properties and its body as text, not attachments.
@@ -482,11 +499,11 @@ Contract rules:
 - **Contract:** `apps/api` routes and Pydantic models generate `packages/contracts/openapi.json` through `uv run export-openapi`. The file is never hand-written (C-13).
 - **Versioning:** path prefix `/v1`. Breaking changes inside `v1` fail CI `oasdiff` (`fail-on: ERR`). A `v2` needs an ADR. Task 3 sets `info.version` from the `apps/api` package metadata instead of the literal `"0.0.0"`.
 - **Pre-release window:** every route starts with `x-stability-level: alpha`, which `oasdiff` excludes from breaking-change errors. A feature task sets its routes to `stable` when Krzysztof merges it; from then on the route is frozen. Task 3 verifies this with the pinned `oasdiff` action; if it does not hold, Task 3 stops and asks Krzysztof.
-- **Error shape `Problem`** (RFC 9457, `application/problem+json`): `type` (URI), `title`, `status`, `detail`, `code` (stable snake_case), `errors` (for `422` only: a list of `{loc, code}`, with no message and no input value), `conflict_id` (for `409` `conflict` only). `detail` is a fixed text per `code` and never contains a `PD` or `UX` value. FastAPI's default validation error is replaced with this shape. A `500` detail is generic.
+- **Error shape `Problem`** (RFC 9457, `application/problem+json`): `type` (URI), `title`, `status`, `detail`, `code` (stable snake_case), `errors` (for `422` only: a list of `{loc, code}`, with no message and no input value; `loc` holds schema field names and list indexes only, and a key from free JSON becomes `*`), `conflict_id` (for `409` `conflict` only). `detail` is a fixed text per `code` and never contains a `PD` or `UX` value. FastAPI's default validation error is replaced with this shape. A `500` detail is generic.
 - **Pagination `Page[T]`:** `{items: T[], next_cursor: string | null}`. Query `limit` (1–200, default 50) and `cursor` (opaque). Order `created_at desc, id desc`. No total count.
 - **IDs and times:** UUID strings; ISO 8601 UTC times.
 - **Data class marks:** `PD` fields carry `x-lunarhunt-data: ["personal"]`, `UX` fields `["untrusted"]`, fields with both carry both.
-- **Request bounds:** every string in a request model or query has `maxLength`, every array `maxItems`, every free JSON object a serialized size and depth cap (table below). A new request field needs a bound in this table.
+- **Request bounds:** every string in a request model or query has `maxLength`, every number a minimum and maximum, every array `maxItems`, every free JSON object a serialized size and depth cap (table below). OpenAPI cannot express size and depth, so a validator in `api/` enforces them and Task 3 tests them. A new request field needs a bound in this table.
 - **Async work:** routes that start a model call or a scan answer `202` with the `AiRun`, `IngestRun` or `NightwatchRun`. Clients poll the run.
 - **Stubs:** until a feature task implements a route, it answers `501` with code `not_implemented`.
 
@@ -503,8 +520,12 @@ Request bounds:
 | `role_family` | ≤ 100 characters |
 | `tags` | ≤ 30 items, each ≤ 50 characters |
 | `timezone` | ≤ 64 characters, a valid IANA name |
-| `NotionMapping` property names | ≤ 100 characters each |
+| `taxonomy_version`, `schema_version` | ≤ 32 characters |
+| `NotionMapping.title_property`, `company_property`, `location_property`, `url_property` | ≤ 100 characters each |
+| multipart `filename` | ≤ 255 characters |
+| `nightwatch_max_ai_runs` | 0–500 |
 | `CvVersionCreate.content` | ≤ 256 KiB serialized, depth ≤ 8, valid against the CV schema of its `schema_version` |
+| query `min_score` | integer 0–100 |
 | query `q` | ≤ 200 characters |
 | query `cursor` | ≤ 200 characters |
 | JSON body | ≤ 1 MiB; multipart as in "Size caps" |
@@ -518,12 +539,12 @@ Resources:
 | `POST /v1/offers/paste` | `pasteOffer` | `PasteOfferCreate` | `202 IngestResult` (`200` when `duplicate` or `linked`) |
 | `GET /v1/offers/{id}` | `getOffer` | | `200 OfferDetail` |
 | `PATCH /v1/offers/{id}` | `updateOffer` | `OfferPatch` | `200 OfferDetail` |
-| `DELETE /v1/offers/{id}` | `deleteOffer` | | `204` |
+| `DELETE /v1/offers/{id}` | `deleteOffer` | query `dry_run` | `200 DeleteResult` |
 | `POST /v1/offers/{id}/merge` | `mergeOffer` | `{into_offer_id}` | `200 OfferDetail` (the target) |
 | `GET /v1/offers/{id}/duplicate-candidates` | `listOfferDuplicateCandidates` | `limit`, `cursor` | `200 Page[DuplicateCandidate]` |
 | `GET /v1/offers/{id}/source-records` | `listOfferSourceRecords` | `limit`, `cursor` | `200 Page[SourceRecordSummary]` |
 | `GET /v1/source-records/{id}` | `getSourceRecord` | | `200 SourceRecord` |
-| `DELETE /v1/source-records/{id}` | `deleteSourceRecord` | | `204` |
+| `DELETE /v1/source-records/{id}` | `deleteSourceRecord` | query `dry_run` | `200 DeleteResult` |
 | `GET /v1/offers/{id}/classifications` | `listOfferClassifications` | `limit`, `cursor` | `200 Page[Classification]` |
 | `POST /v1/offers/{id}/classifications` | `createClassification` | `ClassificationCreate` (`method = user`) | `201 Classification` |
 | `GET /v1/offers/{id}/match-scores` | `listOfferMatchScores` | `limit`, `cursor` | `200 Page[MatchScore]` |
@@ -535,17 +556,17 @@ Resources:
 | `GET /v1/sources/{id}` | `getSource` | | `200 Source` |
 | `PATCH /v1/sources/{id}` | `updateSource` | `SourcePatch` | `200 Source` |
 | `POST /v1/sources/{id}/scans` | `scanSource` | | `202 IngestRun` |
-| `POST /v1/imports/notion` | `importNotion` | multipart: export file and `mapping` (`NotionMapping`) | `202 IngestRun` |
+| `POST /v1/imports/notion` | `importNotion` | multipart: export file and `mapping` (`NotionMapping`) | `202 IngestRun` (`409 conflict` while another import is in flight) |
 | `GET /v1/ingest-runs` | `listIngestRuns` | `kind`, `status`, `source_id`, `limit`, `cursor` | `200 Page[IngestRun]` |
 | `GET /v1/ingest-runs/{id}` | `getIngestRun` | | `200 IngestRun` |
 | `GET /v1/cv-uploads` | `listCvUploads` | `limit`, `cursor` | `200 Page[CvUpload]` |
 | `POST /v1/cv-uploads` | `uploadCv` | multipart: file | `202 AiRun` (`parse_cv`) |
 | `GET /v1/cv-uploads/{id}` | `getCvUpload` | | `200 CvUpload` (metadata, no file bytes) |
-| `DELETE /v1/cv-uploads/{id}` | `deleteCvUpload` | | `204` |
+| `DELETE /v1/cv-uploads/{id}` | `deleteCvUpload` | query `dry_run` | `200 DeleteResult` |
 | `GET /v1/cv-versions` | `listCvVersions` | `kind`, `offer_id`, `limit`, `cursor` | `200 Page[CvVersionSummary]` |
 | `POST /v1/cv-versions` | `createCvVersion` | `CvVersionCreate` | `201 CvVersion` |
 | `GET /v1/cv-versions/{id}` | `getCvVersion` | | `200 CvVersion` |
-| `DELETE /v1/cv-versions/{id}` | `deleteCvVersion` | | `204` |
+| `DELETE /v1/cv-versions/{id}` | `deleteCvVersion` | query `dry_run` | `200 DeleteResult` |
 | `GET /v1/settings` | `getSettings` | | `200 Settings` |
 | `PATCH /v1/settings` | `updateSettings` | `SettingsPatch` | `200 Settings` |
 | `GET /v1/nightwatch-runs` | `listNightwatchRuns` | `limit`, `cursor` | `200 Page[NightwatchRun]` |
@@ -565,7 +586,8 @@ Shapes at entity level (fields as in the entity tables unless listed):
 - `DuplicateCandidate`: `offer` (`OfferSummary`), `reasons` (`fingerprint`, `url`).
 - `SourceRecordSummary`: every column except `raw_content`, plus `content_length`. `SourceRecord` adds `raw_content`.
 - `ClassificationCreate`: `taxonomy_version`, `seniority`, `work_mode`, `employment_type`, `role_family`, `tags`.
-- `AiRunCreate`, one of: `{purpose: extract, offer_id, source_record_id?}` (default: the offer's newest `paste` record); `{purpose: classify, offer_id}`; `{purpose: score, offer_id, cv_version_id?}` (a `base` version, default the active one); `{purpose: tailor, offer_id, cv_version_id?}` (a `base` version or a tailored version of the same offer, default the active base); `{purpose: parse_cv, cv_upload_id}` (re-parse).
+- `DeleteResult`: `dry_run`, `deleted` (map from table name to row count).
+- `AiRunCreate`, one of: `{purpose: extract, offer_id, source_record_id?}` (a `paste` record of that offer, default its newest; an offer with no `paste` record gives `422`); `{purpose: classify, offer_id}`; `{purpose: score, offer_id, cv_version_id?}` (a `base` version, default the active one); `{purpose: tailor, offer_id, cv_version_id?}` (a `base` version or a tailored version of the same offer, default the active base); `{purpose: parse_cv, cv_upload_id}` (re-parse).
 - `SourceCreate`: `provider`, `board_token`, `display_name`, optional `enabled`, `nightwatch`. `SourcePatch`: `display_name`, `enabled`, `nightwatch` (provider and token are fixed; a new board is a new source). A duplicate `(provider, board_token)` gives `409 conflict`.
 - `NotionMapping`: `title_property`, `company_property`, optional `location_property`, `url_property`.
 - `CvVersionCreate`: `parent_id`, `content`, `schema_version`, optional `label`; `kind` and `offer_id` come from the parent; `origin` is `user_edit`.
@@ -579,7 +601,7 @@ Shapes at entity level (fields as in the entity tables unless listed):
 
 The admin panel uses the same routes as the rest of the web app, with no admin-only resources: `sources`, `ingest-runs`, `ai-runs`, `nightwatch-runs`, `settings`, and the delete routes. Whether it is a separate role is for the auth ADR.
 
-Error codes in the baseline: `validation_failed` (422), `not_found` (404), `conflict` (409), `offer_merge_invalid` (409), `last_source_record` (409), `payload_too_large` (413), `unsupported_media_type` (415), `not_implemented` (501), `internal_error` (500). Run error codes (`input_deleted`, `output_invalid`, `record_too_large`, `stale`, `not_implemented`) appear only in `error_code` columns.
+Error codes in the baseline: `validation_failed` (422), `not_found` (404), `forbidden_origin` (403), `conflict` (409), `offer_merge_invalid` (409), `last_source_record` (409), `payload_too_large` (413), `unsupported_media_type` (415), `not_implemented` (501), `internal_error` (500). Run error codes (`input_deleted`, `output_invalid`, `record_too_large`, `stale`, `not_implemented`) appear only in `error_code` columns.
 
 ### Migration baseline
 
@@ -592,25 +614,28 @@ Error codes in the baseline: `validation_failed` (422), `not_found` (404), `conf
 
 ### Module layout
 
-Each feature area owns one package in `apps/api` and one in `apps/worker`, with its tests. Feature tasks get these paths as allowed paths, so tasks in different areas do not overlap (ADR-0016 D3).
+Each feature area owns one package in `apps/api/src/lunarhunt_api/<area>/` and one in `apps/worker/src/lunarhunt_worker/<area>/`, with its tests. Every model and every route has exactly one owning area:
 
-| Area | `apps/api/src/lunarhunt_api/` | `apps/worker/src/lunarhunt_worker/` | Built by |
-|---|---|---|---|
-| Shared database | `db/` (base, types, owner seam, triggers' SQL) | | Task 2 |
-| Shared API | `api/` (`Problem`, `Page`, bounds, `current_owner`, router registration), `main.py` | | Task 3 |
-| AI foundation | `ai/` (LLM client, no-tools wrapper, `ai_runs` service, `startAiRun` dispatch) | `runner/` (job claim loop, dispatch table, staging sweep) | Task 4 |
-| Offers | `offers/` (capture, deduplication, merge, delete, `extract`) | `offers/` | Feature 1 |
-| ATS sources | `sources/` | `sources/` | Feature 2 |
-| Notion import | `notion/` | `notion/` | Feature 3 |
-| CV | `cv/` | `cv/` | Feature 4 |
-| Classification | `classification/` | `classification/` | Feature 5 |
-| Match score | `scoring/` | `scoring/` | Feature 6 |
-| Tailoring | `tailoring/` | `tailoring/` | Feature 7 |
-| Nightwatch | `nightwatch/` | `nightwatch/` | Feature 8 |
+| Area | Models | Routes (operationId) | Worker | Built by |
+|---|---|---|---|---|
+| `db/` | `owners`, base types, owner-scoped repository base, triggers' SQL | | | Task 2 |
+| `api/` and `main.py` | | `Problem`, `Page`, bounds validator, origin check, `current_owner`, router registration | | Task 3 |
+| `settings/` | `owner_settings` | `getSettings`, `updateSettings` | | Task 4 |
+| `ai/` | `ai_runs` | `startAiRun` (dispatch to area services), `listAiRuns`, `getAiRun` | `runner/`: claim loop, dispatch table, schedule tick (Nightwatch start, staging sweep) | Task 4 |
+| `ingest/` | `ingest_runs`, `ingest_uploads` | `listIngestRuns`, `getIngestRun` | run lifecycle and staging cleanup | Task 4 |
+| `offers/` | `offers`, `source_records` | offer, merge, duplicate-candidate and source-record routes; `extract` service | `extract` handler | Feature 1 |
+| `sources/` | `sources` | source routes, `scanSource` | `ats_scan` handler | Feature 2 |
+| `notion/` | | `importNotion` | `notion_import` handler | Feature 3 |
+| `cv/` | `cv_uploads`, `cv_versions` | CV upload and version routes | `parse_cv` handler | Feature 4 |
+| `classification/` | `classifications` | `listOfferClassifications`, `createClassification` | `classify` handler | Feature 5 |
+| `scoring/` | `match_scores` | `listOfferMatchScores` | `score` handler | Feature 6 |
+| `tailoring/` | | | `tailor` handler | Feature 7 |
+| `nightwatch/` | `nightwatch_runs`, `morning_summaries`, `morning_summary_items` | Nightwatch run and morning summary routes | Nightwatch start handler, pipeline, summary | Feature 8 |
 
 - Each area package holds `models.py` (ORM), `schemas.py` (Pydantic API models), `router.py` and `service.py`. Task 2 writes every `models.py`; Task 3 every `schemas.py`, `router.py` and `service.py` with `501` stubs; Task 4 a handler stub per `purpose` and `kind` in each worker area. Feature tasks then fill their own area only.
 - Tests mirror the layout: `apps/api/tests/<area>/`, `apps/worker/tests/<area>/`.
-- A feature that changes a request or response model also changes the contract and is serialized on it (ADR-0016 D3). A feature that changes `db/`, `api/`, `ai/`, `runner/` or a migration is serialized with every other task that does.
+- **What runs in parallel:** each area's code and tests. Their paths are disjoint, so feature tasks in different areas can be implemented and reviewed at the same time.
+- **What serializes:** every feature PR changes the contract at least once, because it sets its routes from `alpha` to `stable` and regenerates `packages/contracts/openapi.json` and the client (ADR-0016 D3 `serialize_on`). Feature PRs therefore merge one at a time: the next one rebases, regenerates the contract with `uv run export-openapi`, and re-runs `pnpm check`. A task that changes `db/`, `api/`, `ai/`, `ingest/`, `settings/`, `runner/` or a migration is serialized with every other task that does.
 - `apps/web` layout is set by the first web feature spec.
 
 Feature order (after Tasks 1–4):
@@ -625,13 +650,13 @@ Feature order (after Tasks 1–4):
 8. Nightwatch and the morning summary (needs 2, 5 and 6).
 9. Web screens, including the admin panel (each needs the routes it shows).
 
-Features 2–5 can run in parallel once 1 merges; 6 and 7 in parallel once 4 merges.
+Once Feature 1 merges, the code of Features 2–5 can be built in parallel, and 6 and 7 once 4 merges; their PRs still merge one at a time on the contract.
 
 ### Affected packages and ADRs
 
 - `apps/api`: models, migrations, routes, `current_owner`, `Problem` handler.
 - `packages/contracts`, `packages/api-client`: regenerated only.
-- `apps/worker`: imports models; job runner and handler stubs.
+- `apps/worker`: imports models; job runner, schedule tick and handler stubs.
 - `apps/web`: none in the baseline.
 - ADRs: [ADR-0018](../decisions/0018-lunarhunt-data-model-and-api-contract-baseline.md) (this baseline, `proposed`); the auth ADR (later).
 
@@ -646,19 +671,21 @@ These are human-only paths (`.github/**`, `.env.example`, `.devcontainer/**` are
 ## Requirements on later specs and tasks
 
 - **Task 2:** create the two roles from Prerequisite 2 in `0001_baseline.py`'s setup or the test fixture; the app and worker connect as the runtime role; a test asserts the runtime role cannot `UPDATE` an immutable row, `TRUNCATE`, or drop a trigger.
-- **Task 3:** Host header allowlist (localhost and the Dev Container host names); CORS denied for every origin except the web app's; JSON routes reject a `Content-Type` other than `application/json`, and multipart is accepted only on `uploadCv` and `importNotion`; body size caps enforced before parsing. Sessions and CSRF stay with the auth ADR.
+- **Task 3:** Host header allowlist (localhost and the Dev Container host names); CORS denied for every origin except the web app's; JSON routes reject a `Content-Type` other than `application/json`, and multipart is accepted only on `uploadCv` and `importNotion`; body size caps enforced before parsing. A request with a method other than `GET`, `HEAD` or `OPTIONS` is rejected server-side (`403 forbidden_origin`) unless it carries the header `X-LunarHunt-Client` and its `Origin`, when present, is the web app's; the custom header forces a CORS preflight, so simple cross-origin `POST`s (body-less or multipart) never reach a handler. The generated client sends the header. Sessions and CSRF tokens stay with the auth ADR.
+- **Task 3, owner scoping:** one owner-scoped repository base in `db/` that every area uses, and a SQLAlchemy `do_orm_execute` hook, active in tests, that fails any statement on an owned table without an `owner_id` criterion.
+- **Task 3, error bodies:** `loc` in `Problem.errors` carries schema field names and list indexes only; a key from free JSON (`CvVersionCreate.content`) is replaced by `*`. A test sends a body with a synthetic marker as a key and asserts it is absent from the response.
 - **Task 4:** the LLM client is built with no tools and has a test for that; exceptions are recorded in spans by type only, never by message; the worker logger uses the same redaction test as the API.
-- **Notion feature spec:** detect the archive type from content, not the name; cap decompressed size and entry count; never use an entry name as a file path; skip unmapped pages without storing them.
+- **Notion feature spec:** detect the archive type from content, not the name; set numeric caps for decompressed size and entry count; open a nested archive at most one level deep, inside the same caps, and reject deeper nesting; never use an entry name as a file path; skip unmapped pages without storing them.
 - **CV feature spec:** detect `media_type` from content and allow a fixed list; never use `filename` as a path; the user reviews a tailored CV before any export or sending; CV content is never rendered as Markdown or HTML.
-- **ATS feature spec:** no redirect to another host; a timeout, a response-size cap and a records-per-scan cap per request; oversize records are skipped with `record_too_large`; the adapter maps the posting URL field into the trusted URL.
+- **ATS feature spec:** no redirect to another host; numeric values for a timeout, a response-size cap and a records-per-scan cap per request; oversize records are skipped with `record_too_large`; the adapter maps the posting URL field into the trusted URL.
 - **Every feature spec:** list its new request fields with bounds in this spec's table, and its new `PD` and `UX` fields with their class.
 
 ## Tasks
 
 1. **This spec and ADR-0018.** Krzysztof answers the open questions and sets `status: ready`; Sentinel reviews first (ADR-0016 D8). From then on the spec is a living baseline: a feature that needs a new field or resource changes this spec in its own `docs/specs/**` PR before its `apps/**` PR, and Krzysztof's merge of that PR is the re-approval (C-10). The status stays `ready`. **Allowed paths:** `docs/specs/**`, `docs/decisions/**`.
-2. **Persistence baseline:** SQLAlchemy models in every area's `models.py` and `db/`, Alembic setup, `0001_baseline.py`, triggers, roles, owner seed. Tests: migration round trip, single head, `alembic check`, owner column and `(owner_id, id)` uniques on every owned table, composite FKs, `ON DELETE` actions per the Relations table, immutability triggers (update rejected, delete allowed), `ai_runs` insert trigger and relaxed `CHECK`, CV lineage and `kind = base` triggers, derived-row consistency triggers, unique indexes per deduplication rule, `nightwatch_runs` rerun after `failed`. `risk:high` (migrations). Serialized (ADR-0016 D3). Needs Prerequisites 1–2. **Allowed paths:** `apps/api/**`, `apps/worker/pyproject.toml`, `pyproject.toml`, `uv.lock`.
-3. **API contract baseline:** every area's `schemas.py`, `router.py` and `service.py` with the final models and `501` stubs, `api/` (`Problem`, `Page`, bounds, `current_owner`, the middleware from "Requirements"), `x-lunarhunt-data` marks, `x-stability-level: alpha`, `info.version` from package metadata; tests for the marks against this spec, the D6 conventions, the bounds table, and log and error-body redaction with synthetic markers; regenerated contract and client. Serialized (contract paths). Depends on 2. **Allowed paths:** `apps/api/**`, `packages/contracts/openapi.json`, `packages/api-client/src/**`.
-4. **AI and worker foundation:** `ai/` (LLM client behind an interface with a fake for tests, no-tools wrapper, `ai_runs` lifecycle, `startAiRun` dispatch to per-area stubs), worker `runner/` (claim loop, dispatch table with a stub per `purpose` and `kind`, `input_deleted` handling, staging sweep). No provider integration (out of scope). Depends on 2 and 3. **Allowed paths:** `apps/api/src/lunarhunt_api/ai/**`, `apps/api/tests/ai/**`, `apps/worker/**`.
+2. **Persistence baseline:** SQLAlchemy models in every area's `models.py` and `db/`, Alembic setup, `0001_baseline.py`, triggers, roles, owner seed. Tests: migration round trip, single head, `alembic check`, owner column and `(owner_id, id)` uniques on every owned table, composite FKs, `ON DELETE` actions per the Relations table, immutability triggers (update rejected, delete allowed), `ai_runs` insert trigger, relaxed `CHECK` and `input_sha256` clearing, CV lineage and `kind = base` triggers, derived-row consistency triggers, the `derived_by_ai_run_id` trigger, the deferred last-source-record trigger (direct delete rejected, offer cascade and merged offers pass), the `ingest_uploads` composite FK with `kind` (a non-Notion run cannot get a staged file), the one-import-in-flight index, unique indexes per deduplication rule, `nightwatch_runs` rerun after `failed`. `risk:high` (migrations). Serialized (ADR-0016 D3). Needs Prerequisites 1–2. **Allowed paths:** `apps/api/**`, `apps/worker/pyproject.toml`, `pyproject.toml`, `uv.lock`.
+3. **API contract baseline:** every area's `schemas.py`, `router.py` and `service.py` with the final models and `501` stubs, `api/` (`Problem`, `Page`, bounds, `current_owner`, the middleware from "Requirements"), `x-lunarhunt-data` marks, `x-stability-level: alpha`, `info.version` from package metadata; tests for the marks against this spec, the D6 conventions, the bounds table, an oversize body (`413`) and a too-deep `CvVersionCreate.content` (`422`), the origin check, the owner-scoping hook, and log and error-body redaction with synthetic markers; regenerated contract and client. Serialized (contract paths). Depends on 2. **Allowed paths:** `apps/api/**`, `packages/contracts/openapi.json`, `packages/api-client/src/**`.
+4. **AI, jobs and settings foundation:** `ai/` (LLM client behind an interface with a fake for tests, no-tools wrapper, `ai_runs` lifecycle, `startAiRun` dispatch to per-area stubs), `ingest/` (run lifecycle, staging cleanup), `settings/` (routes implemented), worker `runner/` (claim loop, dispatch table with a stub per `purpose` and `kind`, `input_deleted` handling, a schedule tick every minute that starts due Nightwatch runs through a `nightwatch/` stub and runs the staging sweep). No provider integration (out of scope). Depends on 2 and 3. **Allowed paths:** `apps/api/src/lunarhunt_api/{ai,ingest,settings}/**`, `apps/api/tests/{ai,ingest,settings}/**`, `apps/worker/**`, `packages/contracts/openapi.json`, `packages/api-client/src/**` (settings routes go `stable`).
 
 After Tasks 3 and 4 merge, ADR-0016 D8's start conditions hold, and each feature gets its own feature spec that refers to this one, in the order under "Module layout".
 
@@ -677,14 +704,14 @@ Each question names the options, their consequences and a recommendation. The mo
    - 7b. **Base CVs.** (a) Several base lineages (for example per language), one active: no schema cost. (b) One base CV: simpler UI, a second language needs a separate account later. **Recommend (a).**
 8. **Encryption at rest for `PD`.** (a) Encrypted disk volume and encrypted backups now; column encryption later. Consequences: plaintext `PD` is also in `pg_dump` output, WAL, backups and every task database (`lunarhunt_t<issue>`, which must hold synthetic data only); adding column encryption later changes column types (`bytea`), re-encrypts existing rows and blocks `q` search on those columns. Volume and backup encryption has no enforcer yet (ADR-0018 D4). (b) Application-level column encryption now: stronger, but needs key management (a new secret, an ADR) and blocks search from the start. **Recommend (a)** for the single-user MVP; revisit with multi-user.
 9. **Morning summary.** (a) Deterministic list of new offers with their scores, shown in the web app: no model call, no offer text copied. (b) Model-written narrative: nicer, adds a `summarize` purpose and more `UX` text. Delivery by email would send offer data to a mail provider. **Recommend (a)**, in-app only.
-10. **Deletion semantics.** Confirm the model: (a) user-initiated hard delete with the routes and `ON DELETE` actions above; run rows survive with references set to null; no retention period. Consequences: deleted data is gone (no undo, no audit of content); an ATS offer still posted comes back on the next scan; backups keep deleted rows until they expire. (b) Soft delete or redaction (tombstone rows): undo and audit possible, but `PD` stays in the database and every query must filter. (c) Fixed retention periods on top of (a): less `PD` over time, but needs a scheduled job and a period per entity. **Recommend (a).**
+10. **Deletion semantics.** Confirm the model: (a) user-initiated hard delete with the routes and `ON DELETE` actions above; run rows survive with references set to null; no retention period. Consequences: deleted data is gone from the API (no undo, no audit of content); deleting an offer also deletes the offers merged into it with their derived rows and tailored CVs; deleting a CV version deletes its whole later lineage; an ATS offer still posted comes back on the next scan. Deletion is logical at first: dead tuples stay in table files until `VACUUM`, the WAL holds the old rows until it is recycled, and backups keep them until they expire. `ai_runs.input_sha256` is a hash of the whole CV and offer input, so anyone holding the original could confirm it was processed; the model clears it when an input is deleted. Alternative for the hash: an HMAC with a per-owner key kept outside `ai_runs` (in the secret store), which needs a new secret. (b) Soft delete or redaction (tombstone rows): undo and audit possible, but `PD` stays in the database and every query must filter. (c) Fixed retention periods on top of (a): less `PD` over time, but needs a scheduled job and a period per entity. **Recommend (a).**
 11. **First ATS providers.** (a) Two keyless public board APIs in the first ATS feature (candidates: Greenhouse, Lever, Ashby): no secret, quick to test, covers many tech employers. (b) Only one: smaller first feature, less coverage. (c) Include a provider that needs an API key: wider coverage, but a secret (C-18) and an ADR. **Recommend (a)**; each provider adds a `provider` CHECK value and a fixed host list.
 12. **Job queue** (technical, confirm). (a) Rows in `ai_runs`, `ingest_runs` and `nightwatch_runs` are the queue; the worker claims them with `SELECT … FOR UPDATE SKIP LOCKED`: no extra service, one transaction for state and result. (b) A broker (Redis or similar): another service to run and secure, and job state split from row state. **Recommend (a).**
 13. **Automatic classify and score.** (a) Only Nightwatch queues them, for offers its scans create, capped by `nightwatch_max_ai_runs`; user captures run them on request. Consequences: nightly LLM cost and `PD` (the CV, for `score`) sent to the provider without a user action; Charter `budgets.per_night` is still null, so the cap is the only limit. (b) On every capture: always up to date, highest cost and egress. (c) Never automatic: no unattended egress, but the morning summary has no scores. **Recommend (a)**, with the cap set by Krzysztof.
 14. **Extraction for pasted text.** (a) An LLM `extract` run: handles any layout; sends pasted text (`PD` `UX`) to the provider. (b) A deterministic parser: no egress, but poor on free text. (c) No extraction; the user fills title and company: no egress, more typing. **Recommend (a)**; `paste` is the only channel with a model step.
 15. **LLM provider data handling.** Every purpose sends `PD` to the provider. (a) A commercial API whose terms exclude training on API data, with zero data retention where offered; the provider is named in the LLM client spec. (b) A self-hosted model: no egress, but hardware cost and lower quality. (c) Strip `PD` before sending: breaks `parse_cv`, `score` and `tailor`. **Recommend (a)**, recorded in the LLM client spec with the provider's retention terms.
 16. **URL fragment.** (a) Keep the fragment in normalization: hash-routed career sites (`/#/jobs/123`) stay separate offers; the same page with and without an anchor becomes two offers, shown as a fingerprint duplicate. (b) Drop it: fewer missed links, but every posting of a hash-routed site merges into one offer, silently. **Recommend (a)**: a missed link is visible, a wrong merge is not.
-17. **Notion URL property as trusted.** (a) The mapped Notion URL property is user-supplied (the user's own workspace), so it can auto-link by rule 3. (b) It is only a suggestion: no auto-link from Notion, more manual merges. **Recommend (a)**; URLs in the page body are never used.
+17. **Notion URL property as trusted.** (a) The mapped Notion URL property is user-supplied, so it auto-links by rule 3: fewer manual merges, but one URL repeated across rows (a careers page, for example) silently collapses many distinct offers into one in a bulk import. (b) It is only a suggestion (`suggested_url`), shown as a duplicate candidate: no silent collapse, more manual merges. **Recommend (b)**; `offers_linked` per run shows rule 2 links; URLs in the page body are never used.
 
 Which part of the model each answer affects:
 
@@ -698,7 +725,7 @@ Which part of the model each answer affects:
 | 7a, 7b | `cv_uploads.content`, `AiRunCreate` `parse_cv`, `owner_settings.active_base_cv_version_id` |
 | 8 | Data classes, ADR-0018 D4, deployment |
 | 9 | `morning_summaries`, `morning_summary_items` |
-| 10 | Relations `ON DELETE` table, delete routes, `ai_runs` triggers |
+| 10 | Relations `ON DELETE` table, delete routes, `ai_runs` triggers and `input_sha256` |
 | 11 | `sources.provider` CHECK |
 | 12 | `ai_runs`, `ingest_runs`, `nightwatch_runs` status columns, Task 4 |
 | 13 | `owner_settings.nightwatch_max_ai_runs`, Nightwatch pipeline |
