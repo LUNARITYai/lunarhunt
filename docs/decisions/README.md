@@ -18,6 +18,7 @@ ADRs for PANOPTICON (LUNARITY), written in [MADR 4.0](https://adr.github.io/madr
 | [0012](0012-task-isolation-with-git-worktrees.md) | Task isolation with git worktrees | accepted |
 | [0013](0013-charter-policy-refinements.md) | Charter policy refinements | accepted |
 | [0014](0014-dependency-updates-with-renovate.md) | Dependency updates with Renovate | accepted |
-| [0016](0016-parallel-work-and-a-single-overseer.md) | Parallel work and a single OVERSEER | proposed |
-| [0017](0017-claude-code-as-the-single-agent-harness.md) | Claude Code as the single agent harness | proposed |
-| [0019](0019-ask-paths-that-agents-can-reach.md) | Ask paths that agents can reach, and paths that stay human-only | proposed |
+| [0016](0016-parallel-work-and-a-single-overseer.md) | Parallel work and a single OVERSEER | accepted |
+| [0017](0017-claude-code-as-the-single-agent-harness.md) | Claude Code as the single agent harness | accepted |
+| [0019](0019-ask-paths-that-agents-can-reach.md) | Ask paths that agents can reach, and paths that stay human-only | accepted |
+| [0020](0020-adr-status-is-set-by-the-merge.md) | An ADR is accepted by the merge of its pull request | accepted |
