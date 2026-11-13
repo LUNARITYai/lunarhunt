@@ -266,3 +266,4 @@ Recorded in the [PR #88 comment](https://github.com/LUNARITYai/lunarhunt/pull/88
 - Issue #87 (direction and gap table); #60 (review gate); #62 (effort by risk, Sentinel on security specs); #51 (`WorktreeCreate` hook); #82 (agent GitHub App); #84 (interim ruleset, 0 approvals).
 - Related: ADR-0003 (The Charter), ADR-0008 (autonomy phases, human merge, Sentinel), ADR-0009 (role routing), ADR-0010 (The Ledger), ADR-0012 (worktrees, primary checkout bundle).
 - Revisit when The Ledger is live, when #51 lands, or when D5's trial is proposed.
+- Amended by ADR-0020: D8's last sentence is read as "the pull request carries the final status and Krzysztof's merge accepts it".

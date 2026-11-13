@@ -107,6 +107,6 @@ On top: the **Sentinel** role (blue-team security reviewer) reviews every PR dif
 - Related: ADR-0001 (labels, ruleset), ADR-0003 (The Charter), ADR-0005 (engine), ADR-0008 (risk and autonomy), ADR-0010 (Ledger).
 - Labels `risk:low|medium|high`, `test:waived`, `complexity:high` and `security` must be added to `.github/labels.yml` (ADR-0001).
 - Amended by ADR-0013: `protected-paths` deny/ask split, `command-guard` denies `--no-verify`, `secret-read-guard` excepts `.env.example`, `risk-classifier` rules.
-- Amended by ADR-0016 (proposed): Sentinel reviews every PR diff except a `risk:low` PR that changes no code, policy, decisions or security specs (D6).
-- Amended by ADR-0017 (proposed): Claude Code is the only agent harness; the Cursor ring-0 hooks (`.cursor/hooks.json`) are frozen, not extended.
+- Amended by ADR-0016: Sentinel reviews every PR diff except a `risk:low` PR that changes no code, policy, decisions or security specs (D6).
+- Amended by ADR-0017: Claude Code is the only agent harness; the Cursor ring-0 hooks (`.cursor/hooks.json`) are frozen, not extended.
 - See also ADR-0014: dependency updates use Renovate (Dependabot alerts only).

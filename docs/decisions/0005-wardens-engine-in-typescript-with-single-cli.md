@@ -105,4 +105,4 @@ The decision is cheap to reverse: Wardens are reached only through a process con
 - Claude Code hooks: <https://code.claude.com/docs/en/hooks>; Cursor hooks: <https://cursor.com/docs/agent/hooks>; Cursor third-party hooks: <https://cursor.com/docs/reference/third-party-hooks.md>
 - Research report, sections 2.1, 3.2, 14 (risks 1–3, 9).
 - Related: ADR-0003 (The Charter), ADR-0004 (rings), ADR-0007 (monorepo), ADR-0010 (Ledger).
-- Amended by ADR-0017 (proposed): agent roles invoke the engine from Claude Code only; the `--tool cursor` adapter, `.cursor/hooks.json` generation and the Cursor contract tests stay frozen, with no new Cursor fixtures or features.
+- Amended by ADR-0017: agent roles invoke the engine from Claude Code only; the `--tool cursor` adapter, `.cursor/hooks.json` generation and the Cursor contract tests stay frozen, with no new Cursor fixtures or features.
