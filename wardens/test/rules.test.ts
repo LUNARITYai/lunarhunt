@@ -885,7 +885,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
   ];
 
   it.each(ESCAPES)("denies %s as a path escape", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = shell(root, command);
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe("engine");
@@ -904,14 +904,14 @@ describe("key=path and --opt=path arguments (#75)", () => {
   ];
 
   it.each(SECRETS)("denies %s as a secret", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = shell(root, command);
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe("secret-read-guard");
   });
 
   it("gives a protected or generated path the edit-tool verdict", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const cases: Array<[string, string]> = [
       ["panopticon.charter.yaml", "protected-paths"],
       ["secrets/key", "protected-paths"],
@@ -943,7 +943,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
   });
 
   it("asks for an ask path exactly as the edit tool does", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const target = "docs/specs/AGENTS.md";
     const edit = decide(root, { action: "edit", path: target });
     expect(edit.decision).toBe("ask");
@@ -983,7 +983,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "~+/x",
     "a`id`b",
   ])("treats %s alike for cp, dd of=, --out= and key=", (target) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const reference = shell(root, `cp x ${target}`);
     expect(reference.decision).toBe("deny");
     for (const command of [
@@ -1028,19 +1028,19 @@ describe("key=path and --opt=path arguments (#75)", () => {
   ];
 
   it.each(ALLOWED)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
   it("still denies the command after an env assignment prefix", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, "env A=/tmp/x dd of=/abs/y").decision).toBe("deny");
     expect(shell(root, "A=/tmp/x dd of=/abs/y").decision).toBe("deny");
     expect(shell(root, "env A=/tmp/x cp x /abs/y").decision).toBe("deny");
   });
 
   it("denies an expansion that hides the path of a key=value word", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const command of [
       "dd of=$HOME/x",
       "tool out=$HOME/x",
@@ -1077,7 +1077,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
   ];
 
   it.each(EXPANDING)("denies %s as an unprovable path", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1099,7 +1099,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
   ];
 
   it.each(BUILTINS_ALLOWED)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
@@ -1109,7 +1109,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "export A=1 && dd of=/abs",
     "export A=1; echo x >> ../y",
   ])("still denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1133,7 +1133,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
   it.each(QUOTED_ALLOWED)(
     "allows %s: the quoting makes it literal",
     (command) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       expect(shell(root, command).decision).toBe("allow");
     },
   );
@@ -1150,7 +1150,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     'git log --grep="$x"',
     "dd of=$((1))",
   ])("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1169,7 +1169,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     ["dd of=$HOME/x", "dd of='$HOME/x'"],
     ["git log --grep=$x", "git log --grep='$x'"],
   ])("denies %s and allows %s", (unquoted, quoted) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, unquoted).decision, unquoted).toBe("deny");
     expect(shell(root, quoted).decision, quoted).toBe("allow");
   });
@@ -1180,7 +1180,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "git fast-import --export-marks=panopticon.charter.yaml",
     "git fast-export --all --export-marks=packages/contracts/openapi.json",
   ])("denies %s as a protected or generated write", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1189,7 +1189,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "git log --grep=panopticon",
     "git log --grep=.git",
   ])("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
@@ -1200,7 +1200,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "sort --filter=panopticon.charter.yaml",
     "tool --exclude=.git/x",
   ])("denies %s: not a reader's pattern option", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1208,10 +1208,10 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "tar --exclude=.git -cf x.tar .",
     "tar --exclude=panopticon.charter.yaml -cf x.tar .",
     "rg --glob=panopticon.charter.yaml x",
-    "rsync -a --exclude=.git a/ b/",
+    "rsync -a --exclude=.git a b/",
     "grep --include=panopticon.charter.yaml x f",
   ])("allows %s: a reader's pattern option", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
@@ -1222,7 +1222,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "x/printf out=/abs",
     "tools/export --out=/abs",
   ])("denies %s: not the builtin", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1235,7 +1235,7 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "foo out=.config/panopticon/primaries",
     "foo --sink=~/.config/panopticon/primaries",
   ])("denies %s as git metadata or the anchor", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("deny");
   });
 
@@ -1243,9 +1243,9 @@ describe("key=path and --opt=path arguments (#75)", () => {
     "tar --exclude=.git -cf x.tar .",
     "git --git-dir=.git status",
     "rg --glob=!.git x",
-    "rsync -a --exclude=.git/x a/ b/",
+    "rsync -a --exclude=.git/x a b/",
   ])("allows %s: a pattern or a read, not a write", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 });
@@ -1294,7 +1294,7 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it.each(DENIED)("denies %s", (command, rule) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = shell(root, command);
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe(rule);
@@ -1337,14 +1337,14 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it.each(ALLOWED)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
   // Digits are a descriptor only when they are the whole word before the
   // operator: `x2>f` is the word `x2` and `>f`, `x 2>f` redirects fd 2.
   it("reads digits as a descriptor only when they are the whole word", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const command of [
       "echo x2>/abs/y",
       "echo x 2>/abs/y",
@@ -1364,7 +1364,7 @@ describe("redirects glued to the previous word (#79)", () => {
 
   // A quoted or escaped operator is a literal character, not a redirect.
   it("keeps a quoted or escaped operator literal", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const command of [
       "echo 'x>/abs/y'",
       'echo "x>/abs/y"',
@@ -1440,7 +1440,7 @@ describe("redirects glued to the previous word (#79)", () => {
   );
 
   it.each(CASES)("treats %s alike in %s and %s", (_target, spaced, glued) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const reference = shell(root, spaced);
     const verdict = shell(root, glued);
     expect(verdict.decision, glued).toBe(reference.decision);
@@ -1449,7 +1449,7 @@ describe("redirects glued to the previous word (#79)", () => {
   });
 
   it("denies or asks for every write redirect to a refused target", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const target of TARGETS) {
       for (const glued of [
         `cmd x>${target}`,
@@ -1475,7 +1475,7 @@ describe("redirects glued to the previous word (#79)", () => {
   // meaning (clobber override, append of both streams, `>>|`). Bash does not need
   // them, so the tokenizer calls them unparseable: spaced and glued alike.
   const UNPARSEABLE_MESSAGE = (() => {
-    const reference = shell(tempRepo(), "echo (x)");
+    const reference = shell(tempRepo({ open: true }), "echo (x)");
     return reference.message;
   })();
 
@@ -1505,7 +1505,7 @@ describe("redirects glued to the previous word (#79)", () => {
   it.each(ZSH_DENIED)(
     "denies the zsh spelling %s as unparseable",
     (command) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       const verdict = shell(root, command);
       expect(verdict.decision).toBe("deny");
       expect(verdict.rule).toBe("command-guard");
@@ -1530,7 +1530,7 @@ describe("redirects glued to the previous word (#79)", () => {
     "echo x&>out.txt",
     "git log --format='%h>>|%s'",
   ])("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(shell(root, command).decision).toBe("allow");
   });
 
@@ -1547,7 +1547,7 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it.each(EMPTY_QUOTE_PIPE)("denies the pipe after %j", (command, rule) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = shell(root, command);
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe(rule);
@@ -1568,7 +1568,7 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it.each(CONTINUED_DENIED)("denies %j", (command, rule) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = shell(root, command);
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe(rule);
@@ -1594,7 +1594,7 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it("refuses every zsh spelling for every target as unparseable", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const operator of ZSH_OPERATORS) {
       for (const target of TARGETS) {
         for (const command of [
@@ -1631,7 +1631,7 @@ describe("redirects glued to the previous word (#79)", () => {
   ];
 
   it("treats a continued operator like the joined one for every target", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const [joined, continued] of CONTINUED_FORMS) {
       for (const target of TARGETS) {
         for (const head of ["cmd x", "x", "nice cmd x"]) {
@@ -1991,12 +1991,25 @@ describe("glob intersection with the secret patterns (#78)", () => {
     "rg foo ?secrets",
     "rg foo secret??",
     "cat .envx",
-    "cat .ENV",
     "cat .?nvx",
     "cat .[a-d]nv",
+  ];
+
+  // Another case is the same file on a case-insensitive volume (#77): `.eNv`
+  // is a secret, so a glob that can name it is refused.
+  // An upper-case glob (`S*`, `[A-Z]*`) can name `Secrets` or `.eNv` too: intended denies.
+  it.each([
+    "cat .ENV",
     "cat .e[!n]v",
     "cat .[!e]nv",
-  ];
+    "cat .[!E]nv",
+    "rg foo S*",
+    "rg foo [A-Z]*",
+    "cat .[A-Z]nv",
+  ])("denies %s: another case names the secret", (command) => {
+    const root = tempRepo();
+    expect(shell(root, command).decision).toBe("deny");
+  });
 
   it.each(ALLOWED)("allows %s", (command) => {
     const root = tempRepo();
@@ -2016,8 +2029,18 @@ describe("glob intersection with the secret patterns (#78)", () => {
   const SPELLINGS: Array<{ name: string; hits: string[]; misses: string[] }> = [
     {
       name: ".env",
-      hits: [".e*", ".*nv", ".en?", ".e?v", ".[e]nv", ".[!x]nv", ".[^x]nv"],
-      misses: [".e??v", ".[!e]nv", ".[^e]nv", "e*", "*nv"],
+      hits: [
+        ".e*",
+        ".*nv",
+        ".en?",
+        ".e?v",
+        ".[e]nv",
+        ".[!x]nv",
+        ".[^x]nv",
+        ".[!e]nv",
+        ".[^e]nv",
+      ],
+      misses: [".e??v", "e*", "*nv"],
     },
     {
       name: ".env.local",
@@ -2033,8 +2056,9 @@ describe("glob intersection with the secret patterns (#78)", () => {
         ".?nv.local",
         ".env.[l]ocal",
         ".env.*",
+        ".e[!n]v.local",
       ],
-      misses: [".env[!.]local", "*.local", ".envlocal*", ".e[!n]v.local"],
+      misses: [".env[!.]local", "*.local", ".envlocal*"],
     },
     {
       name: "secrets/key",

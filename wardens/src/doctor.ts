@@ -15,7 +15,10 @@ import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
   checkCharterDrift,
+  checkIssueRepo,
+  checkPrimaryBehind,
   checkTaskDatabases,
+  checkTaskIntegrity,
   checkWorktreeExclusions,
   checkWorktrees,
   defaultWorktreeDeps,
@@ -74,7 +77,7 @@ export const DUPLICATES_WARNING =
   "Cursor is running the Claude Code hooks too. Disable third-party hooks in Cursor settings.";
 export const STALE_BUNDLE_WARNING =
   "Run pnpm --filter wardens build in the primary checkout.";
-export const MIN_CLAUDE_VERSION = [2, 1, 295] as const;
+export const MIN_CLAUDE_VERSION = [2, 1, 321] as const;
 
 const BUNDLE_REL = "wardens/dist/wardens.mjs";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -791,6 +794,9 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkWorktrees(primary, worktreeDeps),
       checkTaskDatabases(primary, worktreeDeps),
       checkCharterDrift(toplevel, primary),
+      checkTaskIntegrity(primary, deps.home),
+      checkIssueRepo(primary, deps.home),
+      checkPrimaryBehind(primary),
     );
   }
   return results;

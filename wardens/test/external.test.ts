@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -7,11 +8,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { loadCharterAt, loadCharterYaml } from "../src/charter.ts";
 import { runHook } from "../src/engine.ts";
+import { caseInsensitiveAt } from "../src/paths.ts";
 import { normativeCharter, repoRoot, tempRepo } from "./support.ts";
 
 type External = { read?: string[]; write?: string[] };
@@ -204,6 +206,56 @@ describe("paths.external engine", () => {
     expect(decision(out)).toBe("deny");
     expect(out).toContain("secret-read-guard");
     expect(decision(claude(f, "Read", join(f.outside, ".env.example")))).toBe(
+      "allow",
+    );
+  });
+
+  it("denies a secret basename in any case inside an allowed directory (#77)", () => {
+    const f = fixture({});
+    writeFileSync(
+      join(f.root, "panopticon.charter.yaml"),
+      charterWith({ read: [`${f.outside}/**`], write: [`${f.outside}/**`] }),
+    );
+    for (const name of [".ENV", ".Env.Local", ".eNV.production"]) {
+      const target = join(f.outside, name);
+      expect(claude(f, "Read", target), name).toContain("secret-read-guard");
+    }
+    expect(decision(claude(f, "Read", join(f.outside, ".ENV.EXAMPLE")))).toBe(
+      "allow",
+    );
+  });
+
+  it("matches another case of an allowed directory only where the volume does (#77)", () => {
+    const f = fixture({});
+    writeFileSync(
+      join(f.root, "panopticon.charter.yaml"),
+      charterWith({ read: [`${f.outside}/**`] }),
+    );
+    const parent = join(f.outside, "..");
+    const swapped = join(
+      parent,
+      [...basename(f.outside)]
+        .map((ch) =>
+          ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase(),
+        )
+        .join(""),
+    );
+    // The independent truth: does the swapped spelling reach the same directory?
+    const same = existsSync(swapped);
+    expect(caseInsensitiveAt(f.outside)).toBe(same);
+    expect(decision(claude(f, "Read", join(swapped, "a.txt")))).toBe(
+      same ? "allow" : "deny",
+    );
+  });
+
+  it("still allows a directory whose name changes length when folded (#77)", () => {
+    const f = fixture({});
+    writeFileSync(
+      join(f.root, "panopticon.charter.yaml"),
+      charterWith({ read: [`${f.outside}/**`] }),
+    );
+    mkdirSync(join(f.outside, "Straße"));
+    expect(decision(claude(f, "Read", join(f.outside, "Straße/a.txt")))).toBe(
       "allow",
     );
   });

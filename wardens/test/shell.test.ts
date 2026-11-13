@@ -19,10 +19,11 @@ type Fixture = {
 };
 
 function fixture(): Fixture {
-  const root = tempRepo();
+  const root = tempRepo({ open: true });
   const readDir = real("wardens-shell-read-");
   const writeDir = real("wardens-shell-write-");
   const doc = parse(charterWithoutWorktree());
+  doc.paths.allowed_paths.unshift("*.md", "*.txt");
   doc.paths.external = { read: [`${readDir}/**`], write: [`${writeDir}/**`] };
   writeFileSync(join(root, "panopticon.charter.yaml"), stringify(doc));
   return { root, home: real("wardens-shell-home-"), readDir, writeDir };

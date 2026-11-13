@@ -56,7 +56,8 @@ Enforcement status per C-01: **enforced** (a Warden or check exists today), **pl
   - declared dependencies: **not yet enforced**.
 
 **D3. Overlapping tasks run one after another.** Tasks whose issues' allowed paths overlap run serially. Tasks that touch a path in Charter `concurrency.serialize_on` also run serially with each other, even if their allowed paths do not otherwise overlap. OVERSEER decides overlap from the issues' allowed paths before assigning work.
-- Shared mechanisms in `serialize_on`: `wardens/src/command.ts`, `wardens/src/guards.ts`, `wardens/src/charter.ts`, `wardens/schema/charter.schema.json`, `packages/contracts/openapi.json`, `packages/api-client/src/**`.
+- Shared mechanisms in `serialize_on`: `wardens/src/command.ts`, `wardens/src/guards.ts`, `wardens/src/charter.ts`, `wardens/schema/charter.schema.json`, `packages/contracts/openapi.json`, `packages/api-client/src/**`, `pnpm-lock.yaml`, `uv.lock`.
+- The lockfiles are listed (Krzysztof, 2026-11-13): two tasks that add dependencies run one after another instead of rebasing a lockfile conflict.
 - The bundle, hook configs and The Charter are not listed: the bundle is not in git, and the others are `deny` or `ask` paths no issue can list. Their hazard is rollout (D7).
 - Rationale: most Wardens and contract tasks edit these files; parallel edits there are the main source of conflicts and re-review.
 - Overlap and `serialize_on` are judged on **declared** allowed paths only. A worktree without a task file is scoped only by the Charter's wide `allowed_paths`, so it can touch a `serialize_on` path without declaring it.
@@ -66,7 +67,8 @@ Enforcement status per C-01: **enforced** (a Warden or check exists today), **pl
   - PR diff (ring 2, C-02): **planned**, a `serialize-check` in `pr-check` that compares the PR's changed files with `serialize_on` and with the changed files of other open PRs, and fails or labels `needs:human` on a shared hit.
   - Until built: **not yet enforced**; OVERSEER applies it by hand.
 
-**D4. Working limit of 2–4 implementers.** At most 4 implementers run at once (Charter `concurrency.max_parallel_implementers: 4`).
+**D4. Working limit of 2–4 implementers.** At most 3 implementers run at once until the `wardens doctor` `concurrency` check (step 1 below) counts them; then the limit is 4 (Charter `concurrency.max_parallel_implementers: 3`, raised to 4 by a Charter PR once the check is live).
+- The count source is the worktree list now; it moves to Ledger session records once The Ledger exists.
 - The limit is operational, not architectural: no design (ports, Cells, The Ledger) depends on it. 2 is the lower bound for parallel work to be useful, not a requirement.
 - The limit is a ceiling, never a target; OVERSEER starts a task only when one is ready and does not overlap (D3).
 - Counted by exclusion: every linked worktree counts as an implementer unless its branch matches a review prefix (`review-*`, `sentinel-*`). The directory name is ignored.
@@ -79,7 +81,7 @@ Enforcement status per C-01: **enforced** (a Warden or check exists today), **pl
   - Both steps stay advisory against an agent that renames its branch; a non-advisory count needs a separate agent identity (#82) or The Ledger's session records.
 - Until built: **not yet enforced**.
 
-**D5. More implementers only as a later trial.** Raising the limit above the Charter limit (towards 5–6) needs a new ADR. The trial starts only when The Ledger shows, over a defined window, healthy values for:
+**D5. More implementers only as a later trial.** Raising the limit above 4 (towards 5–6) needs a new ADR; the step from 3 to 4 is D4's and needs only the Charter PR. The trial starts only when The Ledger shows, over a defined window, healthy values for:
 - review queue time and CI queue time per PR;
 - merge conflicts per PR;
 - fix rounds (review re-runs) per PR;
@@ -90,8 +92,9 @@ Thresholds are set in that ADR.
 - Rationale: the limit is raised on data, like autonomy phases (ADR-0008).
 - Enforcement: the limit is a Charter key. Agent edits to The Charter are **enforced** as denied (`protected-paths`). Human approval of the `risk:high` Charter PR rests on Krzysztof being the one who merges: the interim `main` ruleset requires 0 approvals (decision log 2026-11-07, #37, #84) until the agent GitHub App returns it to 1 (#82). The metrics are **not yet enforced**; they need The Ledger.
 
-**D6. The review gate is never traded for speed.** Current rule: an independent Reviewer on every PR; Sentinel on every PR (ADR-0008 phase 1, `AGENTS.md`). Both are fresh read-only sessions, run in parallel with other work, and are never skipped, shortened or merged with the implementer's session to raise throughput. Reviewers and Sentinels do not count against D4.
-- Practice so far (process of 2026-11-05, #60): Sentinel only on `risk:high` and security PRs. This ADR does not narrow the rule; the scope is an open decision for Krzysztof, keyed to the `risk-classifier` result.
+**D6. The review gate is never traded for speed.** An independent Reviewer runs on every PR. Sentinel runs on every PR except a `risk:low` PR (per `risk-classifier`) that changes no code, policy, decisions or security specs. Both are fresh read-only sessions, run in parallel with other work, and are never skipped, shortened or merged with the implementer's session to raise throughput. Reviewers and Sentinels do not count against D4.
+- The Sentinel exception amends ADR-0008 and `AGENTS.md`, which say Sentinel reviews every PR. It replaces the practice of 2026-11-05 (#60), Sentinel only on `risk:high` and security PRs.
+- Until `risk-classifier` exists, OVERSEER classifies by the Charter `risk:` rules; a PR it cannot place as `risk:low` gets a Sentinel.
 - Rationale: parallel work raises the risk of unseen interactions; the gate is the control for that (C-07, ADR-0008).
 - Enforcement: **planned**, ring-2 check `review-gate` (#60). Until built: **not yet enforced**; OVERSEER applies it by hand.
 
@@ -103,7 +106,7 @@ Thresholds are set in that ADR.
   - stale bundle or drifted configs: **enforced as detection** (`wardens doctor` checks `bundle` and `drift`; CI `charter-drift`);
   - "only between sessions": **not yet enforced**; Krzysztof's own check is the control, and the D4 count (zero counted worktrees, none unattributed) is a supporting signal only.
 
-**D8. Contracts before parallel feature work.** Before parallel feature work on `apps/**` starts, the LunarHunt data model and API contracts are agreed: a spec with `status: ready` (C-10) and the matching `packages/contracts/openapi.json` merged to `main`.
+**D8. Contracts before parallel feature work.** Before parallel feature work on `apps/**` starts, the LunarHunt data model and API contracts are agreed: a dedicated data model spec with `status: ready` (C-10), the matching `packages/contracts/openapi.json` merged to `main`, and an ADR of their own that records the model and contract baseline.
 - Rationale: parallel features on an unagreed model produce conflicting migrations and contract diffs.
 - Enforcement:
   - spec before feature work on `apps/**`: **planned** (C-10, Charter `require_spec_for`; the `spec-check` Warden is not built);
@@ -181,7 +184,7 @@ Order:
 
 ```yaml
 concurrency: # ADR-0016
-  max_parallel_implementers: 4   # operational ceiling; raising it needs a new ADR (D5)
+  max_parallel_implementers: 3   # 4 once the doctor concurrency check is live (D4); above 4 needs a new ADR (D5)
   count: { exclude_branches: ["review-*", "sentinel-*"], resolve_issue: [task_file, branch] }
   serialize_on:
     - "wardens/src/command.ts"
@@ -190,6 +193,8 @@ concurrency: # ADR-0016
     - "wardens/schema/charter.schema.json"
     - "packages/contracts/openapi.json"
     - "packages/api-client/src/**"
+    - "pnpm-lock.yaml"
+    - "uv.lock"
 
 review: # ADR-0016 D9
   max_rounds: 2   # per PR, per reviewer role; then verify, follow-up issue or needs:human
@@ -219,13 +224,21 @@ Add after "Workflow: issue to PR":
 - Review rounds: at most `review.max_rounds` (2); then OVERSEER verifies, moves the item to a follow-up, or labels `needs:human`.
 ```
 
-## Open decisions
+In "Workflow: issue to PR", step 7, replace "Sentinel reviews." with:
 
-- **Limit value:** start at 4 (the top of 2–4) or at 3 until the `doctor` count exists.
-- **Count source:** worktree list by exclusion with `issueOf` attribution (now), or Ledger sessions once The Ledger exists.
-- **Sentinel scope:** every PR (ADR-0008, `AGENTS.md`) or only `risk:high` and security PRs (practice so far). OVERSEER recommends Sentinel on every PR except `risk:low` PRs (per `risk-classifier`) with no change to code, policy, decisions or security specs. A narrower scope amends ADR-0008; resolve before acceptance.
-- **Lockfiles:** whether `pnpm-lock.yaml` and `uv.lock` join `serialize_on` or are left to rebase.
-- **Contract baseline (D8):** which spec defines the LunarHunt data model, and whether it needs its own ADR.
+```markdown
+An independent Reviewer reviews every PR; Sentinel reviews every PR except a `risk:low` one that changes no code, policy, decisions or security specs.
+```
+
+## Decisions on the open points (Krzysztof, 2026-11-13)
+
+Recorded in the [PR #88 comment](https://github.com/LUNARITYai/lunarhunt/pull/88#issuecomment-6841115434) and applied in the text above.
+
+- **Limit value:** 3 until `wardens doctor` counts implementers, then 4 (D4).
+- **Count source:** worktree list by exclusion with `issueOf` attribution now; Ledger sessions once The Ledger exists (D4).
+- **Sentinel scope:** every PR except `risk:low` PRs (per `risk-classifier`) that change no code, policy, decisions or security specs (D6). Amends ADR-0008.
+- **Lockfiles:** `pnpm-lock.yaml` and `uv.lock` join `serialize_on` (D3).
+- **Contract baseline (D8):** a dedicated LunarHunt data model spec plus `packages/contracts/openapi.json`, with an ADR of their own. Parallel `apps/**` feature work starts only after the spec is `status: ready` and the contract is merged.
 
 ## More Information
 

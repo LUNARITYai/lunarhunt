@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { writeRepo } from "../src/sync/anchor.ts";
 import {
   type Deps,
   type Result,
@@ -118,6 +119,14 @@ function fixture(
   sh(primary, "config", "user.email", "t@example.com");
   sh(primary, "config", "user.name", "t");
   writeFileSync(join(primary, ".env"), "SECRET=hunter2-primary\n");
+  // The GitHub URL on record is what setup parses for `gh -R`; git still fetches the local origin.
+  sh(primary, "config", "remote.origin.url", "https://github.com/o/r.git");
+  sh(
+    primary,
+    "config",
+    `url.${origin}.insteadOf`,
+    "https://github.com/o/r.git",
+  );
 
   const issues = new Map<number, Issue>();
   const prs = new Map<string, string>();
@@ -126,8 +135,13 @@ function fixture(
   const steps: { command: string; cwd: string }[] = [];
   const failStep: { command: string | null } = { command: null };
   const ghFail = { on: false };
+  // Hashes of task.json go below this HOME, never the developer's.
+  const home = join(base, "home");
+  mkdirSync(home);
+  // What `wardens sync` records for the primary; setup reads the issue repository only from here.
+  writeRepo(home, primary, "o/r");
   const deps = (over: Partial<Deps> = {}): Deps => ({
-    env: {},
+    env: { HOME: home },
     cwd: primary,
     gh: (args) => {
       if (ghFail.on) {

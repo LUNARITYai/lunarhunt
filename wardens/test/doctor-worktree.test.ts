@@ -415,7 +415,7 @@ describe("doctor with the worktree checks", () => {
       env: { PATH: process.env.PATH ?? "" },
       home: f.primary,
       now: () => Date.now(),
-      claudeVersion: () => "2.1.295 (Claude Code)",
+      claudeVersion: () => "2.1.321 (Claude Code)",
       primary: f.primary,
       bundlePath: join(f.primary, "missing-bundle.mjs"),
       worktree: f.deps(),
@@ -435,14 +435,15 @@ describe("doctor with the worktree checks", () => {
     f.addWorktree("42-offer-crud", "feat/42-offer-crud", false);
     const results = runChecks(false, doctorDeps(f));
     const ids = results.map((r) => r.id);
-    expect(ids.slice(-7)).toEqual([
-      "duplicates",
-      "disable-all-hooks",
+    expect(ids.slice(-8)).toEqual([
       "claude-version",
       "shell-glob-options",
       "worktrees",
       "task-databases",
       "charter-drift",
+      "task-integrity",
+      "issue-repo",
+      "primary-behind",
     ]);
     expect(ids).toContain("worktree-exclusions");
     expect(results.find((r) => r.id === "worktrees")?.status).toBe("warn");

@@ -1,0 +1,6 @@
+---
+description: Shapes for PR bodies, review comments, handover comments and issue bodies posted to GitHub
+alwaysApply: false
+---
+
+`AGENTS.md` is the operating manual. Before you write a PR body, a review comment, a handover comment or an issue body, read and follow `.claude/skills/github-writing/SKILL.md`.

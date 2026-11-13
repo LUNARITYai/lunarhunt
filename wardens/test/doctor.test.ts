@@ -23,7 +23,7 @@ import {
 } from "../src/doctor.ts";
 import { MAPPING_ROWS } from "../src/mapping.ts";
 import { embeddedHash, hashSources } from "../src/source-hash.ts";
-import { anchorPath, writeAnchor } from "../src/sync/anchor.ts";
+import { anchorPath, writeAnchor, writeRepo } from "../src/sync/anchor.ts";
 import { render } from "../src/sync/index.ts";
 import {
   cliPath,
@@ -102,12 +102,13 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
   );
   const home = realpathSync(scratchDir());
   writeAnchor(home, primary);
+  writeRepo(home, primary, "o/r");
   const deps: DoctorDeps = {
     cwd: root,
     env: { PATH: process.env.PATH ?? "", HOME: home },
     home,
     now: () => NOW,
-    claudeVersion: () => "2.1.295 (Claude Code)",
+    claudeVersion: () => "2.1.321 (Claude Code)",
     shellOptions: () => "",
     primary,
     bundlePath: bundle,
@@ -184,6 +185,10 @@ describe("wardens doctor", () => {
       "ok worktrees",
       "ok task-databases",
       "ok charter-drift",
+      "ok task-integrity",
+      "ok issue-repo",
+      // The fixture primary has no origin/main, which only warns.
+      "warn primary-behind",
     ]);
   });
 
@@ -528,14 +533,14 @@ describe("shell-glob-options (#78)", () => {
 });
 
 describe("claude-version", () => {
-  it("warns below 2.1.295, is ok at or above it and ok without claude", () => {
+  it("warns below 2.1.321, is ok at or above it and ok without claude", () => {
     const status = (v: string | null) =>
       byId(
         runChecks(false, fixture({ claudeVersion: () => v }).deps),
         "claude-version",
       ).status;
-    expect(status("2.1.294 (Claude Code)")).toBe("warn");
-    expect(status("2.1.295 (Claude Code)")).toBe("ok");
+    expect(status("2.1.320 (Claude Code)")).toBe("warn");
+    expect(status("2.1.321 (Claude Code)")).toBe("ok");
     expect(status("2.2.0")).toBe("ok");
     expect(status("3.0.0")).toBe("ok");
     expect(status("garbage")).toBe("warn");

@@ -2,8 +2,9 @@ import { join, resolve } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
 import type { Action } from "./event.ts";
+import { foldCase } from "./globs.ts";
 import { UNRESOLVED_HOME } from "./home.ts";
-import { resolveAbsolutePath } from "./paths.ts";
+import { caseInsensitiveAt, resolveAbsolutePath } from "./paths.ts";
 
 const MAGIC = /[*?[\]{}()!+@]/;
 
@@ -58,11 +59,19 @@ export function externalAllows(
   if (target === null) {
     return null;
   }
+  // The allowlist widens access, so another case matches only where the volume
+  // reads it as the same file (or cannot be told, which folds).
+  const fold = caseInsensitiveAt(target);
+  const subject = fold ? foldCase(target) : target;
   for (const glob of globs) {
     const expanded = expandGlob(glob, home);
     if (
       expanded !== null &&
-      picomatch.isMatch(target, expanded, { dot: true })
+      // The glob folds like the subject: a fold can change the length (`ß` is `ss`).
+      picomatch.isMatch(subject, fold ? foldCase(expanded) : expanded, {
+        dot: true,
+        nocase: fold,
+      })
     ) {
       return target;
     }

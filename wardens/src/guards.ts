@@ -1,3 +1,4 @@
+import { type Dirent, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import picomatch from "picomatch";
 import type { Charter } from "./charter.ts";
@@ -9,19 +10,20 @@ import {
   rewriteCommand,
   type Segment,
   secretCandidates,
-  shellWriteTargets,
   tokenizeAll,
   valueTargets,
+  walkCommands,
 } from "./command.ts";
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { segmentsMeet } from "./glob-meet.ts";
-import { anyGlob, basename, denyListMatches } from "./globs.ts";
+import { anyGlob, basename, denyListMatches, foldCase } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
 import type { TaskState } from "./task.ts";
+import { shellWriteSet } from "./writers.ts";
 
 function block(
   rule: string,
@@ -42,24 +44,46 @@ export function pathInScope(
   path: string,
   charter: Charter,
   task: TaskState,
+  fold = false,
 ): boolean {
-  if (!anyGlob(charter.paths.allowed_paths, path)) {
+  if (!anyGlob(charter.paths.allowed_paths, path, fold)) {
     return false;
   }
   if (task.kind === "missing") {
     return true;
   }
-  if (task.kind === "invalid") {
+  if (task.kind !== "ok") {
     return false;
   }
-  return anyGlob(task.allowed_paths, path);
+  return anyGlob(task.allowed_paths, path, fold);
 }
 
 function isMutation(action: string): boolean {
   return action === "edit" || action === "write" || action === "delete";
 }
 
+const UNVERIFIED_WHAT = {
+  mismatch:
+    ".panopticon/task.json changed after wardens worktree setup recorded it",
+  unrecorded:
+    ".panopticon/task.json has no hash recorded by wardens worktree setup",
+  deleted:
+    ".panopticon/task.json is missing although wardens worktree setup recorded it",
+};
+
+function unverifiedTask(reason: keyof typeof UNVERIFIED_WHAT): Objection {
+  return block(
+    "scope-guard",
+    "deny",
+    UNVERIFIED_WHAT[reason],
+    "Ask Krzysztof to run wardens worktree setup",
+  );
+}
+
 export function scopeGuard(ctx: RuleContext): Objection | null {
+  if (ctx.event.action === "shell") {
+    return shellEditVerdict(ctx, scopeGuard, scopeGlob, false);
+  }
   if (!isMutation(ctx.event.action)) {
     return null;
   }
@@ -78,6 +102,9 @@ export function scopeGuard(ctx: RuleContext): Objection | null {
       ".panopticon/task.json is invalid for this task",
       "Ask for needs:human",
     );
+  }
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
   }
   if (!pathInScope(ctx.event.path, ctx.charter, ctx.task)) {
     return block(
@@ -116,7 +143,7 @@ export function protectedDeny(ctx: RuleContext): Objection | null {
 
 export function generatedFilesGuard(ctx: RuleContext): Objection | null {
   if (ctx.event.action === "shell") {
-    return shellEditVerdict(ctx, generatedFilesGuard);
+    return shellEditVerdict(ctx, generatedFilesGuard, generatedGlob);
   }
   if (!isMutation(ctx.event.action)) {
     return null;
@@ -129,7 +156,7 @@ export function generatedFilesGuard(ctx: RuleContext): Objection | null {
       "Ask for needs:human",
     );
   }
-  if (anyGlob(ctx.charter.paths.generated, ctx.event.path)) {
+  if (anyGlob(ctx.charter.paths.generated, ctx.event.path, true)) {
     return block(
       "generated-files-guard",
       "deny",
@@ -213,7 +240,10 @@ function provablyInside(
   }
   const expanded = expandHome(path, home);
   for (const part of expanded.split("/")) {
-    if (/[*?[]/.test(part) && picomatch.isMatch(".git", part, { dot: false })) {
+    if (
+      /[*?[]/.test(part) &&
+      picomatch.isMatch(".git", part, { dot: false, nocase: true })
+    ) {
       return false;
     }
   }
@@ -278,12 +308,11 @@ function meets(
  * path the secret list denies. A pattern without `/` names a basename in any
  * directory; the `!` patterns after it exclude names from it.
  */
-function globMayMatchSecret(
-  ctx: RuleContext,
+function globMayMatch(
+  secrets: readonly string[],
   segments: readonly string[],
   walk: GlobWalk,
 ): boolean {
-  const secrets = ctx.charter.paths.secrets_deny_read;
   return secrets.some((pattern, index) => {
     if (pattern.startsWith("!")) {
       return false;
@@ -304,7 +333,7 @@ function globMayMatchSecret(
  * only when it has no variable, command substitution or `~user` and resolves
  * inside. An unquoted glob is proven when its literal prefix (up to the
  * segment holding the first glob character) is a directory inside the
- * worktree, no segment after it is `..`, and `globMayMatchSecret` finds no
+ * worktree, no segment after it is `..`, and `globMayMatch` finds no
  * secret it can match. `$PWD`, `$HOME` and `$TMPDIR` are variables like any
  * other: never provable.
  */
@@ -340,7 +369,11 @@ function readProvablyInside(
     return false;
   }
   const relative = base.path === "." ? [] : base.path.split("/");
-  return !globMayMatchSecret(ctx, [...relative, ...rest], walk);
+  return !globMayMatch(
+    ctx.charter.paths.secrets_deny_read,
+    [...relative, ...rest],
+    walk,
+  );
 }
 
 type ShellTarget = {
@@ -408,7 +441,7 @@ function shellTargets(ctx: RuleContext, command: string): ShellTarget[] {
     const isExpanding = (path: string) =>
       path.length > 0 &&
       expandingWords.some((word) => word === path || word.endsWith(path));
-    for (const path of shellWriteTargets(segment)) {
+    for (const path of shellWriteSet(segment, cwd).paths) {
       out.push({ path, cwd, expanding: isExpanding(path), kind: "write" });
     }
     if (change?.path) {
@@ -469,6 +502,15 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
     if (expandsDdOperand(segment)) {
       return expansionBlock();
     }
+    // A writer whose destination the command line does not name (#83).
+    if (shellWriteSet(segment, cwd).unknown) {
+      return block(
+        "command-guard",
+        "deny",
+        "a command writes files that the command line does not name",
+        "Name every destination literally, without xargs, find -exec on a writer, archives or scripted editors",
+      );
+    }
     for (const value of valueTargets(segment)) {
       if (value.expanding && !provablyInside(ctx, value.path, cwd, home)) {
         return expansionBlock();
@@ -485,57 +527,315 @@ export function expansionDeny(ctx: RuleContext): Objection | null {
   return null;
 }
 
+type EditTargets = {
+  /** Repo-relative paths. */
+  paths: string[];
+  /** Globs as repo-relative segments: the files a pattern or an extraction may create. */
+  globs: string[][];
+  /** Repo-relative paths only read (copy sources, patterns): not judged by `scope-guard`. */
+  sources: string[];
+  /** The command removes or moves more files than can be listed: denied. */
+  tooLarge: string | null;
+};
+
+/** Entries listed per command, over all trees. A larger tree is denied with a message that says so. */
+const TREE_BUDGET = 100_000;
+const SKIPPED_TREES = new Set([".git", "node_modules"]);
+const GLOB_PART = /[*?[]/;
+
+/** Files below a directory a command removes or moves, without `.git` and `node_modules`; null when `budget` runs out. */
+function treeFiles(
+  root: string,
+  start: string,
+  budget: { left: number },
+): string[] | null {
+  const found: string[] = [];
+  const pending = [start];
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    let entries: Dirent[] = [];
+    try {
+      entries = readdirSync(join(root, dir), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    budget.left -= entries.length;
+    if (budget.left < 0) {
+      return null;
+    }
+    for (const entry of entries) {
+      const path = dir === "." ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isDirectory() && !SKIPPED_TREES.has(entry.name)) {
+        pending.push(path);
+      }
+      found.push(path);
+    }
+  }
+  return found;
+}
+
+/** The segments of a glob word, from the worktree root. `null` when it points outside. */
+function globSegments(
+  ctx: RuleContext,
+  path: string,
+  cwd: string,
+  home: string,
+): string[] | null {
+  const parts = expandHome(path, home).split("/");
+  const first = parts.findIndex((part) => GLOB_PART.test(part));
+  const prefix = parts.slice(0, first).join("/");
+  const base = resolveRepoPath(
+    prefix === "" ? (path.startsWith("/") ? "/" : ".") : prefix,
+    cwd,
+    ctx.root,
+  );
+  if (!base.ok) {
+    return null;
+  }
+  const rest = parts.slice(first).filter((part) => part !== "" && part !== ".");
+  return [
+    ...(base.path === "." ? [] : base.path.split("/")),
+    ...(rest.includes("..") ? ["**"] : rest),
+  ];
+}
+
+const EDIT_TARGETS = new WeakMap<RuleContext, Map<boolean, EditTargets>>();
+
 /**
- * Every path a shell command writes, as repo-relative paths: its own write
- * targets plus `key=value` and `--opt=value` values. Paths that resolve outside
- * the worktree are left to the escape check in `secretReadGuard`.
+ * Every path a shell command writes: its own write targets (`shellWriteSet`)
+ * and, with `values`, `key=value` and `--opt=value` values. Paths that resolve
+ * outside the worktree are left to the escape check in `secretReadGuard`. The
+ * three rules that judge them share one walk per command.
  */
-function shellEditPaths(ctx: RuleContext, command: string): string[] {
+function shellEditTargets(
+  ctx: RuleContext,
+  command: string,
+  values: boolean,
+): EditTargets {
+  const cached = EDIT_TARGETS.get(ctx)?.get(values);
+  if (cached) {
+    return cached;
+  }
   const home = ctx.home ?? homeOrUnresolved(process.env);
-  const out: string[] = [];
+  const {
+    secrets_deny_read: secrets,
+    protected: guarded,
+    generated,
+  } = ctx.charter.paths;
+  const out: EditTargets = {
+    paths: [],
+    globs: [],
+    sources: [],
+    tooLarge: null,
+  };
+  const budget = { left: TREE_BUDGET };
+  const keep = (path: string): void => {
+    // A secret is already denied as a candidate by `secret-read-guard`, which
+    // keeps its own verdict (a `--config=.env` may be a read).
+    if (!denyListMatches(secrets, path)) {
+      out.paths.push(path);
+    }
+  };
   for (const { segment, cwd } of trackedSteps(ctx, command)) {
-    for (const target of [
-      ...shellWriteTargets(segment),
-      ...valueTargets(segment)
-        .filter((value) => !value.pattern)
-        .map((value) => value.path),
-    ]) {
+    const writes = shellWriteSet(segment, cwd);
+    const named = values
+      ? valueTargets(segment)
+          .filter((value) => !value.pattern)
+          .map((value) => value.path)
+      : [];
+    for (const target of [...writes.paths, ...named]) {
+      // A `key=value` word only guesses at a path: its glob stays a literal one.
+      if (GLOB_PART.test(target) && !named.includes(target)) {
+        const glob = globSegments(ctx, target, cwd, home);
+        if (glob) {
+          out.globs.push(glob);
+        }
+        continue;
+      }
       const resolved = resolveRepoPath(expandHome(target, home), cwd, ctx.root);
-      // A secret is already denied as a candidate by `secret-read-guard`, which
-      // keeps its own verdict (a `--config=.env` may be a read).
+      if (resolved.ok) {
+        keep(resolved.path);
+      }
+    }
+    // The tail of a glued short option (`-rtsecrets`) is a path only when it
+    // exists or names a protected or generated file.
+    for (const tail of writes.weak) {
+      const resolved = resolveRepoPath(expandHome(tail, home), cwd, ctx.root);
       if (
         resolved.ok &&
-        !denyListMatches(ctx.charter.paths.secrets_deny_read, resolved.path)
+        (existsSync(join(ctx.root, resolved.path)) ||
+          denyListMatches(guarded.deny, resolved.path) ||
+          anyGlob(guarded.ask, resolved.path, true) ||
+          anyGlob(generated, resolved.path, true))
       ) {
-        out.push(resolved.path);
+        // Nothing else saw this word as a path: a secret is judged here.
+        out.paths.push(resolved.path);
+        out.paths.push(...(treeFiles(ctx.root, resolved.path, budget) ?? []));
+      }
+    }
+    // A copy source or a pattern: read, so only protected and generated apply.
+    for (const read of writes.reads) {
+      const resolved = resolveRepoPath(expandHome(read, home), cwd, ctx.root);
+      if (resolved.ok && !GLOB_PART.test(read)) {
+        out.sources.push(resolved.path);
+      }
+    }
+    for (const tree of writes.trees) {
+      const resolved = resolveRepoPath(
+        expandHome(tree.path, home),
+        cwd,
+        ctx.root,
+      );
+      const files = resolved.ok
+        ? treeFiles(ctx.root, resolved.path, budget)
+        : [];
+      out.tooLarge ??= files === null ? tree.path : null;
+      for (const file of files ?? []) {
+        keep(file);
       }
     }
   }
+  const byValues = EDIT_TARGETS.get(ctx) ?? new Map<boolean, EditTargets>();
+  byValues.set(values, out);
+  EDIT_TARGETS.set(ctx, byValues);
   return out;
+}
+
+type GlobRule = (
+  ctx: RuleContext,
+  segments: readonly string[],
+) => Objection | null;
+
+/** The directory a glob lists before its first pattern segment, as a path inside it. */
+function globProbe(segments: readonly string[]): string {
+  const first = segments.findIndex((part) => GLOB_PART.test(part));
+  return [...segments.slice(0, first < 0 ? undefined : first), "x"].join("/");
+}
+
+function walkOf(ctx: RuleContext): GlobWalk {
+  return {
+    dot: DOTFILE_GLOBBING.test(ctx.event.command ?? ""),
+    filesOnly: false,
+  };
+}
+
+function scopeGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  const probe = globProbe(segments);
+  if (ctx.task.kind === "unverified") {
+    return unverifiedTask(ctx.task.reason);
+  }
+  if (
+    ctx.task.kind === "invalid" ||
+    !pathInScope(probe, ctx.charter, ctx.task)
+  ) {
+    return block(
+      "scope-guard",
+      "deny",
+      `path ${segments.join("/")} not in allowed_paths for this task`,
+      "Ask for needs:human",
+    );
+  }
+  return null;
+}
+
+function generatedGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  return globMayMatch(ctx.charter.paths.generated, segments, walkOf(ctx))
+    ? block(
+        "generated-files-guard",
+        "deny",
+        `${segments.join("/")} may name a generated file`,
+        "Run uv run export-openapi to regenerate it",
+      )
+    : null;
+}
+
+function protectedGlob(
+  ctx: RuleContext,
+  segments: readonly string[],
+): Objection | null {
+  const { deny, ask } = ctx.charter.paths.protected;
+  const walk = walkOf(ctx);
+  const name = segments.join("/");
+  if (globMayMatch(deny, segments, walk)) {
+    return block(
+      "protected-paths",
+      "deny",
+      `${name} may name a file that is deny for agents`,
+      "A human must change it in a reviewed PR",
+    );
+  }
+  if (
+    !globMayMatch(ask, segments, walk) ||
+    !pathInScope(globProbe(segments), ctx.charter, ctx.task, true)
+  ) {
+    return null;
+  }
+  return block(
+    "protected-paths",
+    ctx.event.interactive ? "ask" : "deny",
+    ctx.event.interactive
+      ? `${name} may name a file that requires approval`
+      : `${name} may name a file that requires ask and this session is non-interactive`,
+    ctx.event.interactive
+      ? "Ask Krzysztof to approve this edit in the session"
+      : "Label the issue needs:human",
+  );
 }
 
 /**
  * Applies an edit-tool rule to each path a shell command writes (#75), as if
- * an Edit tool call had named it. The strongest objection wins; a deny ends
- * the walk.
+ * an Edit tool call had named it, and `onGlob` to each glob it writes (#83).
+ * The strongest objection wins; a deny ends the walk. `values` adds the
+ * `key=value` words, which are only guesses at a path: not for `scope-guard`.
  */
 function shellEditVerdict(
   ctx: RuleContext,
   rule: (edit: RuleContext) => Objection | null,
+  onGlob: GlobRule,
+  values = true,
 ): Objection | null {
   if (ctx.event.action !== "shell" || ctx.event.command === null) {
     return null;
   }
+  const targets = shellEditTargets(ctx, ctx.event.command, values);
+  if (targets.tooLarge !== null) {
+    return block(
+      "command-guard",
+      "deny",
+      `${targets.tooLarge} holds too many files to check before it is removed or moved`,
+      "Remove or move a smaller directory, or ask for needs:human",
+    );
+  }
   let found: Objection | null = null;
-  for (const path of shellEditPaths(ctx, ctx.event.command)) {
-    const objection = rule({
-      ...ctx,
-      event: { ...ctx.event, action: "write", path, command: null },
-    });
+  const consider = (objection: Objection | null): boolean => {
     if (objection?.decision === "deny") {
-      return objection;
+      found = objection;
+      return true;
     }
     found ??= objection;
+    return false;
+  };
+  // `values` is false for `scope-guard`, which does not judge what is only read.
+  for (const path of values
+    ? [...targets.paths, ...targets.sources]
+    : targets.paths) {
+    const edit = {
+      ...ctx,
+      event: { ...ctx.event, action: "write" as const, path, command: null },
+    };
+    if (consider(rule(edit))) {
+      return found;
+    }
+  }
+  for (const glob of targets.globs) {
+    if (consider(onGlob(ctx, glob))) {
+      return found;
+    }
   }
   return found;
 }
@@ -618,7 +918,7 @@ export function protectedPaths(ctx: RuleContext): Objection | null {
   }
   // `ask` guards edits only: agents must read the Covenant files (#46).
   if (ctx.event.action === "shell") {
-    return shellEditVerdict(ctx, protectedEdit);
+    return shellEditVerdict(ctx, protectedEdit, protectedGlob);
   }
   if (!isMutation(ctx.event.action)) {
     return null;
@@ -633,10 +933,11 @@ function protectedEdit(ctx: RuleContext): Objection | null {
     return denied;
   }
   const path = ctx.event.path;
-  if (!pathInScope(path, ctx.charter, ctx.task)) {
+  // Scope is read in any case here: another spelling of an in-scope ask path still asks.
+  if (!pathInScope(path, ctx.charter, ctx.task, true)) {
     return null;
   }
-  if (!anyGlob(ctx.charter.paths.protected.ask, path)) {
+  if (!anyGlob(ctx.charter.paths.protected.ask, path, true)) {
     return null;
   }
   if (!ctx.event.interactive) {
@@ -748,6 +1049,14 @@ const GIT_CONFIG_READ_EXTRAS = new Set([
   "-z",
   "--null",
 ]);
+/** `git remote` subcommands that leave every URL as it is. */
+const GIT_REMOTE_KEEPS_URL = new Set([
+  "show",
+  "get-url",
+  "update",
+  "prune",
+  "set-head",
+]);
 const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "--namespace", "--super-prefix"]);
 
 function gitMetadataCommandBlock(what: string): Objection {
@@ -766,8 +1075,24 @@ function gitMetadataCommandBlock(what: string): Objection {
  * `--git-dir` and `--work-tree` in front of a subcommand that writes.
  */
 function gitRewriteDeny(segment: Segment): Objection | null {
+  // The segment's own command word and every command a see-through wrapper
+  // (`env`, `command`, `nohup`, `sudo`, `xargs`, `find -exec`, ...) may run.
+  const starts = [...walkCommands(segment.argv).at].sort((a, b) => a - b);
+  for (const start of starts) {
+    const denied = gitRewriteDenyOne({
+      ...segment,
+      argv: segment.argv.slice(start),
+    });
+    if (denied) {
+      return denied;
+    }
+  }
+  return null;
+}
+
+function gitRewriteDenyOne(segment: Segment): Objection | null {
   const argv = segment.argv;
-  if ((argv[0] ?? "").split("/").pop() !== "git") {
+  if (foldCase((argv[0] ?? "").split("/").pop() ?? "") !== "git") {
     return null;
   }
   const configs: string[] = [];
@@ -824,6 +1149,19 @@ function gitRewriteDeny(segment: Segment): Objection | null {
     if (!readsOnly) {
       return gitMetadataCommandBlock(
         "git config writes are denied; only --get, --get-all, --get-regexp and --list are allowed",
+      );
+    }
+  }
+  // The remote URL names the repository whose issue sets a task's scope, and
+  // `refs/remotes/origin/main` is what `doctor` compares; both are shared.
+  if (sub === "update-ref") {
+    return gitMetadataCommandBlock("git update-ref is denied");
+  }
+  if (sub === "remote") {
+    const verb = args.find((a) => !a.startsWith("-"));
+    if (verb !== undefined && !GIT_REMOTE_KEEPS_URL.has(verb)) {
+      return gitMetadataCommandBlock(
+        "git remote changes are denied; only git remote, -v, show, get-url, update, prune and set-head are allowed",
       );
     }
   }
@@ -907,8 +1245,8 @@ function environmentDeny(segment: Segment): Objection | null {
   }
   const envAt = segment.argv.findIndex(
     (word, index) =>
-      (word.split("/").pop() ?? "") === "env" &&
-      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(w)),
+      foldCase(word.split("/").pop() ?? "") === "env" &&
+      segment.argv.slice(0, index).every((w) => ENV_WRAPPERS.has(foldCase(w))),
   );
   if (envAt >= 0) {
     const words = segment.argv.slice(envAt + 1);
