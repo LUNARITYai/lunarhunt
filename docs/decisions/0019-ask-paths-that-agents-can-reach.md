@@ -36,7 +36,7 @@ Krzysztof decided on 2026-11-13 (#34) which of these paths become reachable `ask
 
 ## Decision Outcome
 
-Chosen option: **narrow `ask` (3)**, decided by Krzysztof on 2026-11-13. It unblocks product work and keeps agent configs and the root Covenant files out of agent reach. Option 1 would leave every CI and deploy change to Krzysztof. Option 2 would let an approved prompt change the hooks and permissions that guard the same session.
+Chosen option: **narrow `ask` (3)**, decided by Krzysztof on 2026-11-13. It unblocks product work and keeps agent configs and the root Covenant files out of reach of the agent's own edit tools. Option 1 would leave every CI and deploy change to Krzysztof. Option 2 would let an approved prompt change the hooks and permissions that guard the same session.
 
 A path is a **reachable `ask` path** only when it matches both `paths.allowed_paths` and `paths.protected.ask`. A path outside `paths.allowed_paths` is **human-only**, even if `protected.ask` lists it.
 
@@ -55,7 +55,7 @@ A session prompts only when it is marked interactive: the hook payload says so, 
 
 These three paths run with more rights than the agent that edits them; see "Residual risk" below.
 
-- Enforcement: **enforced** by `scope-guard` and `protected-paths` (ring 0) once the Charter PR merges; `non_interactive_ask: deny` is unchanged, so headless sessions are denied. Review of the edit before it runs: **not yet enforced** in code; Krzysztof's merge is the control.
+- Enforcement: **enforced** by `scope-guard` and `protected-paths` (ring 0) once the Charter PR merges; `non_interactive_ask: deny` is unchanged, so headless sessions are denied. Review of the content: **not yet enforced** in code. Before the edit runs, the only human gate is the approval prompt; a workflow on a pushed branch runs before any merge. Krzysztof's merge covers only what takes effect at merge time.
 
 ### D2. `.env.example` becomes reachable
 
@@ -80,9 +80,9 @@ An agent that needs a change there proposes the text in an issue or PR comment a
 
 The `AGENTS.md` and `CLAUDE.md` entries stay in `protected.ask`. For the root files they change nothing: `scope-guard` alone keeps them human-only. If `allowed_paths` were widened, they would become `ask`, not blocked. For a file of the same name in an allowed directory the entries do apply: `apps/web/CLAUDE.md` is a reachable `ask` path (D4).
 
-The globs are anchored at the repository root. A `.claude/` or `.cursor/` directory nested under an allowed directory (for example `apps/web/.claude/`) is in scope and is not an `ask` path. No such directory exists; closing the gap needs a Charter entry and is a follow-up (#61).
+The globs are anchored at the repository root. A `.claude/` or `.cursor/` directory nested under an allowed directory (for example `apps/web/.claude/`) is in scope and is not an `ask` path. No such directory exists; closing the gap needs a Charter entry and is a follow-up (#108, criterion 10 in its comments).
 
-Ring 0 is the only control on the human-only set. A second ring (C-02) is **not yet enforced**: the options are to move the set to `protected.deny`, or a CI check that fails an agent PR touching it (#108).
+Ring 0 is the only control on the human-only set. A second ring (C-02) is **not yet enforced**: the options are to move the set to `protected.deny`, or a CI check that fails an agent PR touching it (#108, criterion 9 in its comments).
 
 - Enforcement: **enforced** by `scope-guard` (ring 0). CODEOWNERS (ring 3) lists these paths, but code-owner review is **not yet enforced**: the interim `main` ruleset requires 0 approvals and no code-owner review (decision log 2026-11-07), so the control is that Krzysztof is the one who merges.
 
@@ -144,7 +144,7 @@ risk:
 
 with:
 
-> Agent edits to this file, `AGENTS.md` and `CLAUDE.md` files below `apps/`, `packages/`, `wardens/` and `docs/`, CI workflows (`.github/workflows/**`), `.devcontainer/**`, `deploy/**`, migrations and `.env.example` are `ask`: allowed only after Krzysztof approves the action, and denied in non-interactive sessions. The root `AGENTS.md`, the root `CLAUDE.md`, agent configs (`.claude/**`, `.cursor/**`), the rest of `.github/**` and `lefthook.yml` are human-only: agents MUST NOT edit them. Generated configs change only through `wardens sync`.
+> Agent edits to this file, `AGENTS.md` and `CLAUDE.md` files below `apps/`, `packages/`, `wardens/` and `docs/`, CI workflows (`.github/workflows/**`), `.devcontainer/**`, `deploy/**`, migrations and `.env.example` are `ask`: allowed only after Krzysztof approves the action, and denied in non-interactive sessions. The root `AGENTS.md`, the root `CLAUDE.md`, the root agent configs (`.claude/**`, `.cursor/**`), the rest of `.github/**` and `lefthook.yml` are human-only: agents MUST NOT edit them. Generated configs change only through `wardens sync`.
 
 The third sentence of C-24 ("All such PRs, and PRs touching auth code, are `risk:high`.") becomes:
 
@@ -156,7 +156,7 @@ The enforcer line of C-24 becomes:
 
 **Root `AGENTS.md`, "Rules Wardens will enforce", first bullet.** Replace the sentence that starts "The Charter and secrets are **deny**" with:
 
-> The Charter and secrets are **deny**; `docs/constitution.md`, `AGENTS.md` and `CLAUDE.md` files below `apps/`, `packages/`, `wardens/` and `docs/`, `.github/workflows/**`, `.devcontainer/**`, `deploy/**`, migrations and `.env.example` are **ask** (Krzysztof approves; denied in headless runs); the root `AGENTS.md`, the root `CLAUDE.md`, `.claude/**`, `.cursor/**`, the rest of `.github/**` and `lefthook.yml` are human-only, and generated configs change only through `wardens sync` (`scope-guard`, `protected-paths`, [ADR-0013](docs/decisions/0013-charter-policy-refinements.md), [ADR-0019](docs/decisions/0019-ask-paths-that-agents-can-reach.md)).
+> The Charter and secrets are **deny**; `docs/constitution.md`, `AGENTS.md` and `CLAUDE.md` files below `apps/`, `packages/`, `wardens/` and `docs/`, `.github/workflows/**`, `.devcontainer/**`, `deploy/**`, migrations and `.env.example` are **ask** (Krzysztof approves; denied in headless runs); the root `AGENTS.md`, the root `CLAUDE.md`, the root `.claude/**` and `.cursor/**`, the rest of `.github/**` and `lefthook.yml` are human-only, and generated configs change only through `wardens sync` (`scope-guard`, `protected-paths`, [ADR-0013](docs/decisions/0013-charter-policy-refinements.md), [ADR-0019](docs/decisions/0019-ask-paths-that-agents-can-reach.md)).
 
 ### Amended points per ADR
 
@@ -182,7 +182,7 @@ Texts that state the old policy and are updated by follow-ups, not here:
 - Good, because the Charter, C-24 and `AGENTS.md` state one policy, and the `ask` list names only paths where a prompt can really appear.
 - Good, because agents can change CI workflows, the Dev Container, deploy manifests and `.env.example` for product work, each edit approved by Krzysztof.
 - Good, because ring 0 denies agent edits to hook configs, permissions, skills, rules, `CODEOWNERS` and the root Covenant entry files, even with an approved prompt.
-- Bad, because an approved workflow edit can change what CI checks, and an approved Dev Container edit changes the image that CI builds and runs. The control is that Krzysztof reviews and merges every such PR; code-owner review is not yet enforced by the ruleset. These edits need a careful review.
+- Bad, because an approved workflow edit can change what CI checks, and an approved Dev Container edit changes the image that CI builds and runs. Krzysztof reviews and merges every such PR, but a workflow on a pushed branch runs before that review; the approval prompt is the only gate before it runs. Code-owner review is not yet enforced by the ruleset. These edits need a careful look at the prompt and at the PR.
 - Bad, because every change to skills, rules, issue templates or labels still needs Krzysztof's hands.
 - Bad, because a worktree without `.panopticon/task.json` (every OVERSEER subagent worktree today) is scoped by the Charter alone, so the issue's allowed paths do not narrow the new paths there.
 - Neutral: headless sessions gain nothing; `ask` still resolves to deny there.
@@ -192,21 +192,23 @@ Texts that state the old policy and are updated by follow-ups, not here:
 The approval prompt and Krzysztof's merge are the only controls on the content of these edits. A prompt for a shell write shows the command, not the content. None of the points below has a deterministic control today (C-01); each is **not yet enforced** and tracked in #108.
 
 - **A PR can edit what gates it.** The required checks `check`, `contract`, `charter-drift` and `wardens-test` run from the PR's own workflow files and build the PR's own `.devcontainer/Dockerfile`.
-- **Workflow token rights.** The existing workflows pin `permissions: contents: read`. An approved edit can widen that, and a workflow with write rights could act on its own PR while the ruleset requires no approval.
+- **Workflow token rights.** The existing workflows pin `permissions: contents: read`. An approved edit can widen that, and a workflow with write rights could act on its own PR while the ruleset requires no approval. A workflow runs outside ring 0, so with write rights it could also change human-only paths on its own branch.
 - **A new workflow runs on push**, before any review.
 - **Privileged triggers.** `pull_request_target` and `workflow_run` run with the base repository's rights and secrets. No secrets exist yet; deploy will add some.
 - **Dev Container.** Parts of `devcontainer.json` and the compose file run on the host and its Docker daemon, with the repository mounted read-write. Opened on the primary checkout, that reaches the Wardens bundle and the git hooks. A Dev Container per task worktree (the planned Cell) would run agent-edited config before review.
 - **Deploy.** `deploy/**` is the GitOps source: a merge applies it with the deploy controller's rights.
 - **CI trust base.** Agents already edit, with no prompt, files that decide what the checks run (`wardens/**`, `turbo.json`, package scripts). The `ask` on workflows narrows the gap; it does not close it.
 
-Human rule until the controls exist: never open a Dev Container or a compose stack from an unreviewed agent branch.
+Human rule until the controls exist (OVERSEER proposal; Krzysztof confirms): never open a Dev Container or a compose stack from an unreviewed agent branch.
 
 ### Preconditions for the Charter change (proposed; Krzysztof decides)
 
 OVERSEER proposes that Krzysztof does these before he applies the Charter change. They are repository settings, not agent work:
 
-1. Actions default workflow token: read-only; Actions may not create or approve pull requests.
-2. The required checks in the `main` ruleset are pinned to the GitHub Actions app.
+1. Actions default workflow token: read-only; Actions may not create or approve pull requests. This closes the default case and self-approval. It does not bind a workflow that declares its own `permissions:` block.
+2. The required checks in the `main` ruleset are pinned to the GitHub Actions app. This stops another identity from posting a check result. It does not stop a workflow that declares check-write rights itself.
+
+The workflow-token class stays open until the permissions lint and the required approval exist (#108, items 3 and 4).
 
 Tracked, not preconditions: a zizmor and actionlint required check, gitleaks, a manifest policy check for `deploy/**`, and the return to one approval with code-owner review (#82). All are in #108. Krzysztof may instead narrow D1 until they exist, for example to `.github/workflows/**` and `.devcontainer/observability/**`.
 
@@ -239,11 +241,12 @@ Tracked, not preconditions: a zizmor and actionlint required check, gitleaks, a 
 ## More Information
 
 - Decision by Krzysztof on 2026-11-13, recorded on #34 (option B; three globs; `.env.example` reachable; root `AGENTS.md` and `CLAUDE.md` human-only; C-24 reworded in the Charter PR).
-- Rollout, with no implementer session running (the rule proposed as ADR-0016 D7, PR #88):
+- Rollout (OVERSEER proposal; Krzysztof confirms), with no implementer session running (the rule proposed as ADR-0016 D7, PR #88):
   1. Krzysztof edits the Charter, `docs/constitution.md` and the root `AGENTS.md` on a branch, runs `wardens sync` and commits its output in the same PR (`charter-drift` requires it).
   2. An implementer adds the two Wardens test edits named under Confirmation to that branch; `wardens-test` stays red until they land.
   3. After the merge: `git pull` in the primary checkout, then `wardens doctor`.
   4. Existing worktrees keep a stale `.claude/settings.json` until they merge `main`; the hook reads the Charter from the primary checkout, so the verdicts are already the new ones.
-  5. Before agent sessions restart, probe one path per class in an interactive session: a new `ask` path asks, a human-only path is denied.
+  5. Before agent sessions restart, probe one path per class from a task worktree, in the permission mode agents really run in: a new `ask` path asks (decline the prompt; do not approve an edit), a human-only path is denied, and one headless call to an `ask` path is denied.
+  6. Export `PANOPTICON_INTERACTIVE=1` only in the shell of a session a human watches. Child sessions inherit it, so an unattended child started from that shell would be asked instead of denied.
 - Related: ADR-0003 (The Charter), ADR-0004 (rings), ADR-0006 (Covenant), ADR-0008 (risk), ADR-0013 (amended), ADR-0014 (amended), ADR-0016 (proposed, PR #88; its C-20 edit rides in the same Charter PR).
 - The ADR number 0018 is reserved for the data model baseline (#105).
