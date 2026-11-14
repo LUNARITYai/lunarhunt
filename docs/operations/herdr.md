@@ -20,7 +20,7 @@ How agent sessions run on the agent host (Krzysztof's Mac). A fresh OVERSEER, im
 - Branch `<type>/<issue>-<slug>`. A subagent worktree is named `agent-<hash>` until the `WorktreeCreate` hook lands (#51); the subagent switches to the task branch itself.
 - Limits, overlap and serialization: [ADR-0016](../decisions/0016-parallel-work-and-a-single-overseer.md) D2–D4.
 - OVERSEER runs at most 2 implementer or spec-writer subagents at once (Krzysztof, 2026-11-14). This is a lower cap than ADR-0016 D4's, which still applies.
-- The count is not enforced on the subagent path: it is a `wardens doctor` warning at most until #51 lands (ADR-0016 D4).
+- The count is not enforced on the subagent path: the cap of 2 is OVERSEER's practice, and `wardens doctor` warns only above the Charter limit until #51 lands (ADR-0016 D4).
 - The issue's allowed paths are not enforced in a subagent worktree: it has no `.panopticon/task.json`, so `scope-guard` uses the Charter alone (ADR-0019, Consequences). The brief names the allowed paths and the reviewers check the diff against them.
 
 ## Starting an implementer or spec-writer
@@ -113,7 +113,7 @@ Resume:
 
 - A fresh session follows the [resume procedure](context-handoff.md#resume-procedure).
 - A fresh OVERSEER enters its existing worktree. It starts a fresh subagent for an unfinished issue as in "Starting an implementer or spec-writer", pointed at the handoff comment.
-- The branch of the issue stays. A fresh subagent gets a new worktree from the harness and continues from the pushed branch: `git switch -c <type>/<issue>-<slug> origin/<type>/<issue>-<slug>`.
-- A branch can be checked out in one worktree only. The old worktree of the issue is removed first (Krzysztof: `wardens worktree remove`), after its work is pushed. Never two worktrees with work for one issue.
+- The branch of the issue stays. A fresh subagent gets a new worktree from the harness and continues from the pushed branch: `git switch <type>/<issue>-<slug>` (it also creates the local branch from `origin` when it is missing).
+- A branch can be checked out in one worktree only. Krzysztof removes the old worktree of the issue first, after its work is pushed: `git worktree remove <path>` without force for an `agent-<hash>` worktree (`wardens worktree remove` refuses a worktree without a task file). Never two worktrees with work for one issue.
 
 Rollout of bundle, hook, Charter or config changes follows [ADR-0016](../decisions/0016-parallel-work-and-a-single-overseer.md) D7: Krzysztof rolls it out between sessions, after he has checked that no agent session is running.
