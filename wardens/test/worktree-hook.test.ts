@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,7 +18,7 @@ import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
 import { writeRepo } from "../src/sync/anchor.ts";
 import { loadTask } from "../src/task.ts";
-import { integrityOf, recordTaskHash } from "../src/task-integrity.ts";
+import { integrityOf, recordTaskHash, taskId } from "../src/task-integrity.ts";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
 import type { Deps, Result } from "../src/worktree/index.ts";
 import { normativeCharter, repoRoot } from "./support.ts";
@@ -243,6 +244,17 @@ function commit(dir: string, file: string): void {
 }
 
 /** Replaces a parent's task.json and, unless `record` is false, records its hash as `wardens worktree setup` does. */
+/** The hash records below the test HOME. */
+function records(r: Repo): string[] {
+  try {
+    return readdirSync(join(r.home, ".config", "panopticon", "tasks")).filter(
+      (name) => name.endsWith(".sha256"),
+    );
+  } catch {
+    return [];
+  }
+}
+
 function writeTask(r: Repo, dir: string, task: unknown, record = true): void {
   const text = typeof task === "string" ? task : JSON.stringify(task);
   mkdirSync(join(dir, ".panopticon"), { recursive: true });
@@ -314,6 +326,8 @@ describe("WorktreeCreate: task names", () => {
     expect(existsSync(r.path("66-rec-test"))).toBe(false);
     expect(branches(r)).toEqual(["main"]);
     expect(worktreeCount(r)).toBe(1);
+    // The record written before the failing step goes with the worktree.
+    expect(records(r)).toEqual([]);
   });
 
   it("refuses a second create of the same name and keeps the first", () => {
@@ -1024,6 +1038,90 @@ describe("task.json hash records (#96)", () => {
       expect(branches(r)).toEqual(before);
     },
   );
+
+  it("refuses a parent whose task.json was deleted after it was recorded", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    writeTask(r, parent, { issue: 5, allowed_paths: ["docs/**"] });
+    rmSync(join(parent, ".panopticon", "task.json"));
+    const before = branches(r);
+    const sub = run("create", r, createBody(parent, "agent-del1"));
+    expect(sub.exitCode).toBe(2);
+    expect(sub.stderr).toContain("unverified");
+    expect(branches(r)).toEqual(before);
+    const named = run("create", r, createBody(parent, "5-same-issue"));
+    expect(named.exitCode).toBe(2);
+    expect(named.stderr).toContain("unverified");
+  });
+
+  it("cleans up and records nothing when the record cannot be written", () => {
+    const r = repo();
+    const parent = taskWorktree(r);
+    const target = r.path("agent-rec4");
+    // A directory where the record file belongs makes the atomic rename fail.
+    mkdirSync(
+      join(
+        r.home,
+        ".config",
+        "panopticon",
+        "tasks",
+        `${taskId(r.primary, target)}.sha256`,
+      ),
+    );
+    const before = branches(r);
+    const res = run("create", r, createBody(parent, "agent-rec4"));
+    expect(res.exitCode).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("could not be copied and recorded");
+    expect(existsSync(target)).toBe(false);
+    expect(branches(r)).toEqual(before);
+    expect(worktreeCount(r)).toBe(2);
+    // Only the parent record and the blocking directory remain.
+    expect(records(r)).toHaveLength(2);
+  });
+
+  it("drops a stale record when a subagent without a task.json takes its name", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const target = r.path("agent-stale1");
+    recordTaskHash(r.home, r.primary, target, "{}");
+    expect(records(r)).toHaveLength(1);
+    expect(run("create", r, createBody(parent, "agent-stale1")).exitCode).toBe(
+      0,
+    );
+    expect(records(r)).toEqual([]);
+    expect(loadTask(target, { primary: r.primary, home: r.home }).kind).toBe(
+      "missing",
+    );
+  });
+
+  it("stops starting setup steps at the deadline and cleans up", () => {
+    const r = repo();
+    let now = 0;
+    const deps = r.deps();
+    const slow: Deps = {
+      ...deps,
+      step: (command, cwd) => {
+        now += 1000;
+        return deps.step(command, cwd);
+      },
+    };
+    const before = branches(r);
+    const res = runWorktreeHook(
+      "create",
+      "claude",
+      JSON.stringify(createBody(r.primary, "66-slow")),
+      slow,
+      r.primary,
+      { now: () => now, limitMs: 500 },
+    );
+    expect(res.exitCode).toBe(2);
+    expect(res.stdout).toBe("");
+    expect(r.steps).toHaveLength(1);
+    expect(existsSync(r.path("66-slow"))).toBe(false);
+    expect(branches(r)).toEqual(before);
+    expect(records(r)).toEqual([]);
+  });
 
   it("fails when HOME does not resolve, before touching git", () => {
     const r = repo();

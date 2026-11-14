@@ -142,6 +142,20 @@ describe("agents cannot invoke the worktree hook entrypoints from a shell", () =
     }
   });
 
+  // The entrypoint rule is the fallback if the earlier refusal is ever relaxed:
+  // wherever the form tokenizes, it must still name the hook.
+  it.each([...DENIED_EARLIER])(
+    "the entrypoint rule alone denies: %s",
+    (command) => {
+      const pipelines = tokenizeAll(command);
+      const parsed = pipelines.filter((pipeline) => pipeline.ok);
+      if (parsed.length === pipelines.length) {
+        expect(invokesWorktreeHook(parsed)).toBe(true);
+      }
+      // A form that does not tokenize is refused as unparseable, asserted above.
+    },
+  );
+
   it.each(ALLOWED)("allows: %s", (command) => {
     expect(bash(command)).toBe("");
   });

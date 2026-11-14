@@ -142,7 +142,9 @@ function branchExists(primary: string, branch: string): boolean {
  * succeeded for this very target and branch (both were proven new before), so
  * it can never touch a path or branch this call did not create.
  */
-function cleanup(primary: string, created: Created): void {
+function cleanup(primary: string, created: Created, home: string): void {
+  // The id depends on the physical path, so it is taken before the directory goes.
+  const id = taskId(primary, created.target);
   git(primary, ["worktree", "remove", "--force", created.target]);
   try {
     rmSync(created.target, { recursive: true, force: true });
@@ -151,6 +153,7 @@ function cleanup(primary: string, created: Created): void {
   }
   git(primary, ["worktree", "prune"]);
   git(primary, ["branch", "-D", created.branch]);
+  forgetTaskHash(home, id);
 }
 
 function record(
@@ -260,6 +263,7 @@ function createTask(
   issue: string,
   slug: string,
   deps: Deps,
+  home: string,
 ): Result {
   const res = newWorktree(
     ctx.cfg,
@@ -271,7 +275,7 @@ function createTask(
   );
   if (res.exitCode !== 0) {
     if (res.created !== undefined) {
-      cleanup(ctx.primary, res.created);
+      cleanup(ctx.primary, res.created, home);
     }
     return {
       ...res,
@@ -425,8 +429,7 @@ function createSubagent(
     );
   }
   if (task.kind === "ok" && !copyTask(task, primary, target, home)) {
-    cleanup(primary, { target, branch });
-    forgetTaskHash(home, taskId(primary, target));
+    cleanup(primary, { target, branch }, home);
     return fail(
       msg(
         "the parent task.json could not be copied and recorded safely",
@@ -434,10 +437,59 @@ function createSubagent(
       ),
     );
   }
+  if (task.kind !== "ok") {
+    // The target was proven new, so a record under its id is stale.
+    forgetTaskHash(home, taskId(primary, target));
+  }
   return ok(`${target}\n`);
 }
 
-function create(stdin: string, deps: Deps, anchor: string | null): Result {
+/**
+ * One deadline for a whole create, below the 900 s hook timeout: per-call
+ * timeouts alone can add up past it (3 steps x 240 s, git, gh), and a killed
+ * hook leaves a worktree with a verified task.json. After the deadline no new
+ * `gh` call or setup step starts, so the create fails and the clean failure
+ * runs. A step may start just before the deadline and run 240 s, so 540 s
+ * leaves 120 s of the 900 s for git and the cleanup.
+ */
+const HOOK_DEADLINE_MS = 540_000;
+
+/** The time source and the limit; only tests pass their own. */
+export type Clock = { now: () => number; limitMs: number };
+
+function withDeadline(deps: Deps, clock: Clock): Deps {
+  const start = clock.now();
+  const over = () => clock.now() - start >= clock.limitMs;
+  const note = () =>
+    process.stderr.write(
+      `${msg("the hook deadline passed, so no further gh call or setup step was started", "Run wardens worktree new <issue> yourself, or retry")}\n`,
+    );
+  return {
+    ...deps,
+    gh: (args, cwd) => {
+      if (over()) {
+        note();
+        return { status: 1, stdout: "" };
+      }
+      return deps.gh(args, cwd);
+    },
+    step: (command, cwd) => {
+      if (over()) {
+        note();
+        return 1;
+      }
+      return deps.step(command, cwd);
+    },
+  };
+}
+
+function create(
+  stdin: string,
+  base: Deps,
+  anchor: string | null,
+  clock: Clock,
+): Result {
+  const deps = withDeadline(base, clock);
   const payload = parsePayload(createPayload, stdin, "WorktreeCreate");
   if (!payload.ok) {
     return fail(payload.error);
@@ -507,10 +559,14 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
   try {
     return task === null
       ? createSubagent(ctx, name, target, home)
-      : createTask(ctx, name, task[1] ?? "", task[2] ?? "", {
-          ...deps,
-          cwd: ctx.primary,
-        });
+      : createTask(
+          ctx,
+          name,
+          task[1] ?? "",
+          task[2] ?? "",
+          { ...deps, cwd: ctx.primary },
+          home,
+        );
   } catch {
     return fail(
       msg(
@@ -605,6 +661,7 @@ export function runWorktreeHook(
   stdin: string,
   deps: Deps = hookDeps,
   anchor: string | null = bundleAnchor(),
+  clock: Clock = { now: Date.now, limitMs: HOOK_DEADLINE_MS },
 ): Result {
   if (tool !== "claude") {
     return fail(
@@ -616,7 +673,7 @@ export function runWorktreeHook(
   }
   return withHardenedGit(() =>
     kind === "create"
-      ? create(stdin, deps, anchor)
+      ? create(stdin, deps, anchor, clock)
       : remove(stdin, deps, anchor),
   );
 }
