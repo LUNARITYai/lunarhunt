@@ -80,3 +80,4 @@ Chosen option: **Renovate (1)**, because it groups updates flexibly, supports pn
 
 - Renovate PEP 621 manager (uv, `uv.lock`, workspaces): <https://docs.renovatebot.com/modules/manager/pep621/>; uv with Renovate: <https://docs.astral.sh/uv/guides/integration/renovate/>; minimum release age: <https://docs.renovatebot.com/key-concepts/minimum-release-age/>
 - Related: ADR-0001 (labels), ADR-0004 (security tools, `pr-check`), ADR-0007 (toolchain), ADR-0008 (risk and autonomy), ADR-0013 (protected paths).
+- Amended by ADR-0019: "`.github/renovate.json5` … so `ask` for agents" reads "human-only".

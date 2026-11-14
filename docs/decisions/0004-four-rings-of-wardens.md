@@ -109,4 +109,5 @@ On top: the **Sentinel** role (blue-team security reviewer) reviews every PR dif
 - Amended by ADR-0013: `protected-paths` deny/ask split, `command-guard` denies `--no-verify`, `secret-read-guard` excepts `.env.example`, `risk-classifier` rules.
 - Amended by ADR-0016: Sentinel reviews every PR diff except a `risk:low` PR that changes no code, policy, decisions or security specs (D6). The exception takes effect when C-20 is edited (ADR-0016 D6); until then Sentinel runs on every PR.
 - Amended by ADR-0017: Claude Code is the only agent harness; the Cursor ring-0 hooks (`.cursor/hooks.json`) are frozen, not extended.
+- Amended by ADR-0019: in the `protected-paths` row, agent configs are human-only (denied by `scope-guard`), not `ask`.
 - See also ADR-0014: dependency updates use Renovate (Dependabot alerts only).

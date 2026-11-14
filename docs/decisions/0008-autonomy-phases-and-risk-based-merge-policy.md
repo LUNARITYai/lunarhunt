@@ -116,4 +116,5 @@ Sentinel findings block auto-merge for any class.
 - Amended by ADR-0013: risk classes encoded in the Charter `risk:` schema; high-risk paths extended with `wardens/**`, `docs/decisions/**` and `docs/decision-log.md` (A1).
 - Amended by ADR-0016: Sentinel reviews every PR except a `risk:low` PR that changes no code, policy, decisions or security specs (D6); phase 1's "Sentinel review on every PR" is read with that exception, in phases 0–2 only. The phase 3 auto-merge gate is unchanged: it still needs a green Sentinel review. The exception takes effect when C-20 is edited (ADR-0016 D6); until then Sentinel runs on every PR.
 - Amended by ADR-0017: in phases 0–2 local agent roles run in Claude Code only; "local agents (Claude Code, Cursor)" is read as Claude Code.
+- Amended by ADR-0019: the high-risk path list gains `.devcontainer/**` (D6).
 - See also ADR-0014: Renovate PRs follow these risk and auto-merge rules.
