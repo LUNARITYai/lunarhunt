@@ -73,4 +73,4 @@ A fresh session, in this order:
 5. Do the **Next step**. Do not redo anything under **Do not redo**.
 6. Post a one-line comment that the new session took over, with its role (and its `hc` terminal name, if it has one).
 
-Work in the existing worktree and on the existing branch of the issue. Do not create a second worktree for the same issue (see [Herdr operating model](herdr.md)).
+Work on the existing branch of the issue. A session that Krzysztof starts works in the existing worktree. A fresh subagent gets a new worktree and continues from the pushed branch, after the old worktree is removed (see [Herdr operating model](herdr.md#shutdown-and-resume)).

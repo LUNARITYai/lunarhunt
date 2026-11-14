@@ -658,7 +658,7 @@ Once Feature 1 merges, the code of Features 2–5 can be built in parallel, and 
 - `packages/contracts`, `packages/api-client`: regenerated only.
 - `apps/worker`: imports models; job runner, schedule tick and handler stubs.
 - `apps/web`: none in the baseline.
-- ADRs: [ADR-0018](../decisions/0018-lunarhunt-data-model-and-api-contract-baseline.md) (this baseline, `proposed`); the auth ADR (later).
+- ADRs: [ADR-0018](../decisions/0018-lunarhunt-data-model-and-api-contract-baseline.md) (this baseline, `accepted`); the auth ADR (later).
 
 ## Prerequisites for Krzysztof (before Task 2)
 
