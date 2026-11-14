@@ -16,6 +16,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
 import { writeRepo } from "../src/sync/anchor.ts";
+import { loadTask } from "../src/task.ts";
+import { integrityOf, recordTaskHash } from "../src/task-integrity.ts";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
 import type { Deps, Result } from "../src/worktree/index.ts";
 import { normativeCharter, repoRoot } from "./support.ts";
@@ -240,12 +242,14 @@ function commit(dir: string, file: string): void {
   sh(dir, "commit", "-q", "-m", file);
 }
 
-function writeTask(dir: string, task: unknown): void {
+/** Replaces a parent's task.json and, unless `record` is false, records its hash as `wardens worktree setup` does. */
+function writeTask(r: Repo, dir: string, task: unknown, record = true): void {
+  const text = typeof task === "string" ? task : JSON.stringify(task);
   mkdirSync(join(dir, ".panopticon"), { recursive: true });
-  writeFileSync(
-    join(dir, ".panopticon", "task.json"),
-    typeof task === "string" ? task : JSON.stringify(task),
-  );
+  writeFileSync(join(dir, ".panopticon", "task.json"), text);
+  if (record) {
+    recordTaskHash(r.home, r.primary, dir, text);
+  }
 }
 
 describe("WorktreeCreate: task names", () => {
@@ -340,7 +344,7 @@ describe("WorktreeCreate: a scoped session cannot widen its scope (S-B3)", () =>
   it("refuses any task name when the parent task.json is invalid", () => {
     const r = repo();
     const parent = taskWorktree(r);
-    writeTask(parent, "{nope");
+    writeTask(r, parent, "{nope");
     const res = run("create", r, createBody(parent, "66-again"));
     expect(res.exitCode).toBe(2);
     expect(res.stderr).toContain("invalid");
@@ -412,7 +416,7 @@ describe("WorktreeCreate: subagents", () => {
   it("copies the task.json of a detached parent that has one (S-B2)", () => {
     const r = repo();
     const parent = detachedParent(r);
-    writeTask(parent, { issue: 5, allowed_paths: ["docs/**"] });
+    writeTask(r, parent, { issue: 5, allowed_paths: ["docs/**"] });
     const res = run("create", r, createBody(parent, "agent-det2"));
     expect(res.exitCode).toBe(0);
     expect(
@@ -428,7 +432,7 @@ describe("WorktreeCreate: subagents", () => {
   it("fails closed on an invalid task.json of a detached parent (S-B2)", () => {
     const r = repo();
     const parent = detachedParent(r);
-    writeTask(parent, "{nope");
+    writeTask(r, parent, "{nope");
     const before = branches(r);
     const res = run("create", r, createBody(parent, "agent-det3"));
     expect(res.exitCode).toBe(2);
@@ -462,7 +466,7 @@ describe("WorktreeCreate: subagents", () => {
   it("fails closed on an invalid parent task.json and leaves nothing", () => {
     const r = repo();
     const parent = taskWorktree(r);
-    writeTask(parent, "{nope");
+    writeTask(r, parent, "{nope");
     const before = branches(r);
     const res = run("create", r, createBody(parent, "agent-bad1"));
     expect(res.exitCode).toBe(2);
@@ -486,7 +490,7 @@ describe("WorktreeCreate: subagents", () => {
     const r = repo({ panopticonSymlink: true });
     const parent = detachedParent(r);
     rmSync(join(parent, ".panopticon"), { force: true });
-    writeTask(parent, { issue: 5, allowed_paths: ["docs/**"] });
+    writeTask(r, parent, { issue: 5, allowed_paths: ["docs/**"] });
     const before = branches(r);
     const res = run("create", r, createBody(parent, "agent-sym1"));
     expect(res.exitCode).toBe(2);
@@ -953,6 +957,90 @@ function installSources(r: Repo): void {
     join(dest, "node_modules"),
   );
 }
+
+describe("task.json hash records (#96)", () => {
+  const verified = (r: Repo, wt: string) =>
+    loadTask(wt, { primary: r.primary, home: r.home });
+
+  it("records the hash of a task.json the hook copies into a subagent worktree", () => {
+    const r = repo();
+    const parent = taskWorktree(r);
+    const res = run("create", r, createBody(parent, "agent-rec1"));
+    expect(res.exitCode).toBe(0);
+    const wt = r.path("agent-rec1");
+    expect(verified(r, wt)).toMatchObject({ kind: "ok", issue: 66 });
+    // The record is the guard's view: a later edit makes the file unverified.
+    writeFileSync(join(wt, ".panopticon", "task.json"), "{}");
+    expect(verified(r, wt)).toEqual({ kind: "unverified", reason: "mismatch" });
+  });
+
+  it("records the hash of a task.json copied from a detached parent", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    writeTask(r, parent, { issue: 5, allowed_paths: ["docs/**"] });
+    expect(run("create", r, createBody(parent, "agent-rec2")).exitCode).toBe(0);
+    expect(verified(r, r.path("agent-rec2")).kind).toBe("ok");
+  });
+
+  it("records the hash of a task worktree and drops it again on remove", () => {
+    const r = repo();
+    const parent = taskWorktree(r);
+    expect(verified(r, parent).kind).toBe("ok");
+    const sub = run("create", r, createBody(parent, "agent-rec3"));
+    expect(sub.exitCode).toBe(0);
+    const wt = r.path("agent-rec3");
+    const removed = run("remove", r, removeBody(parent, wt));
+    expect(removed.exitCode).toBe(0);
+    expect(existsSync(wt)).toBe(false);
+    mkdirSync(wt, { recursive: true });
+    expect(
+      integrityOf(Buffer.from("x"), wt, { primary: r.primary, home: r.home }),
+    ).toBe("unrecorded");
+  });
+
+  it.each([
+    ["unrecorded", false],
+    ["edited after it was recorded", true],
+  ])(
+    "refuses a subagent and a task name when the parent task.json is %s",
+    (_label, edited) => {
+      const r = repo();
+      const parent = detachedParent(r);
+      writeTask(r, parent, { issue: 5, allowed_paths: ["docs/**"] }, edited);
+      if (edited) {
+        writeFileSync(
+          join(parent, ".panopticon", "task.json"),
+          JSON.stringify({ issue: 5, allowed_paths: ["**"] }),
+        );
+      }
+      const before = branches(r);
+      const sub = run("create", r, createBody(parent, "agent-un1"));
+      expect(sub.exitCode).toBe(2);
+      expect(sub.stderr).toContain("unverified");
+      const named = run("create", r, createBody(parent, "5-same-issue"));
+      expect(named.exitCode).toBe(2);
+      expect(named.stderr).toContain("unverified");
+      expect(existsSync(r.path("agent-un1"))).toBe(false);
+      expect(branches(r)).toEqual(before);
+    },
+  );
+
+  it("fails when HOME does not resolve, before touching git", () => {
+    const r = repo();
+    const parent = detachedParent(r);
+    const before = branches(r);
+    const res = runWorktreeHook(
+      "create",
+      "claude",
+      JSON.stringify(createBody(parent, "agent-nohome")),
+      { ...r.deps(parent), env: { CLAUDECODE: "1", HOME: "relative/home" } },
+      r.primary,
+    );
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("HOME");
+    expect(branches(r)).toEqual(before);
+  });
+});
 
 describe("CLI entrypoint", () => {
   function cli(r: Repo, args: string[], input: string) {

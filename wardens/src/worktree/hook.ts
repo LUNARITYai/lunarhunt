@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -9,10 +9,12 @@ import {
   gitToplevel,
   primaryCheckout,
 } from "../git.ts";
+import { trustedHome } from "../home.ts";
 import { appendVerdict, type LogLine, logLine } from "../log.ts";
 import { wardenMessage } from "../messages.ts";
 import { primaryProblem } from "../sync/primary.ts";
 import { loadTask, type TaskState } from "../task.ts";
+import { forgetTaskHash, taskId } from "../task-integrity.ts";
 import { git, listWorktrees, withHardenedGit } from "./git.ts";
 import {
   baseBranchOf,
@@ -21,7 +23,7 @@ import {
   newWorktree,
   removeOne,
 } from "./index.ts";
-import { isSymlink, writeFresh } from "./setup.ts";
+import { installTask } from "./setup.ts";
 import {
   type Deps,
   fail,
@@ -285,18 +287,22 @@ const PARENT_REFUSAL = wardenMessage(
   'Create a task worktree with "wardens worktree new <issue>" and start the session there',
 );
 
+/**
+ * Copies the parent's narrowing into the new worktree and records its hash
+ * (#96), the same way `wardens worktree new` does; without the record every
+ * guard would deny the subagent as unrecorded.
+ */
 function copyTask(
   task: Extract<TaskState, { kind: "ok" }>,
+  primary: string,
   target: string,
+  home: string,
 ): boolean {
-  try {
-    const dir = join(target, ".panopticon");
-    if (isSymlink(dir)) {
-      return false;
-    }
-    mkdirSync(dir, { recursive: true });
-    writeFresh(
-      join(dir, "task.json"),
+  return (
+    installTask(
+      target,
+      primary,
+      home,
       `${JSON.stringify(
         {
           issue: task.issue,
@@ -307,15 +313,16 @@ function copyTask(
         null,
         2,
       )}\n`,
-      0o644,
-    );
-  } catch {
-    return false;
-  }
-  return loadTask(target).kind === "ok";
+    ) === null
+  );
 }
 
-function createSubagent(ctx: Context, name: string, target: string): Result {
+function createSubagent(
+  ctx: Context,
+  name: string,
+  target: string,
+  home: string,
+): Result {
   const { cfg, primary, toplevel } = ctx;
   const parent = classifyCwd(ctx.cwd);
   if (parent === null) {
@@ -342,12 +349,13 @@ function createSubagent(ctx: Context, name: string, target: string): Result {
     );
   }
   // The parent's narrowing follows in every case: a valid task.json is copied,
-  // an invalid one fails closed, none means the Charter scope (OVERSEER).
-  const task = loadTask(toplevel);
-  if (task.kind === "invalid") {
+  // an invalid or unverified (no matching recorded hash) one fails closed,
+  // none means the Charter scope (OVERSEER).
+  const task = loadTask(toplevel, { primary, home });
+  if (task.kind === "invalid" || task.kind === "unverified") {
     return fail(
       msg(
-        "the parent .panopticon/task.json is invalid",
+        `the parent .panopticon/task.json is ${task.kind === "invalid" ? "invalid" : "unverified"}`,
         "Ask Krzysztof to check the parent worktree",
       ),
     );
@@ -416,12 +424,13 @@ function createSubagent(ctx: Context, name: string, target: string): Result {
       ),
     );
   }
-  if (task.kind === "ok" && !copyTask(task, target)) {
+  if (task.kind === "ok" && !copyTask(task, primary, target, home)) {
     cleanup(primary, { target, branch });
+    forgetTaskHash(home, taskId(primary, target));
     return fail(
       msg(
-        "the parent task.json could not be copied safely",
-        "Ask Krzysztof to check the parent worktree",
+        "the parent task.json could not be copied and recorded safely",
+        "Ask Krzysztof to check the parent worktree and HOME",
       ),
     );
   }
@@ -437,6 +446,17 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
   const ctx = context(cwd, anchor);
   if (typeof ctx === "string") {
     return fail(ctx);
+  }
+  // The parent's task.json is believed only with its recorded hash, and every
+  // copy this hook makes is recorded, so HOME must resolve.
+  const home = trustedHome(deps.env);
+  if (home === null) {
+    return fail(
+      msg(
+        "cannot resolve HOME, so the task.json hashes cannot be read or recorded",
+        "Set HOME to an absolute path of an existing directory",
+      ),
+    );
   }
   if (!NAME_PATTERN.test(name)) {
     return fail(
@@ -458,9 +478,10 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
   if (task !== null) {
     // A task name grants the scope of the issue, so a session that is already
     // scoped (it has a task.json) may only ask for its own issue.
-    const own = loadTask(ctx.toplevel);
+    const own = loadTask(ctx.toplevel, { primary: ctx.primary, home });
     if (
       own.kind === "invalid" ||
+      own.kind === "unverified" ||
       (own.kind === "ok" && own.issue !== Number(task[1]))
     ) {
       return fail(
@@ -468,7 +489,7 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
           "worktree-guard",
           own.kind === "ok"
             ? `this session is scoped to issue #${own.issue} and cannot create a task worktree for issue #${task[1]}`
-            : "this session has an invalid .panopticon/task.json and cannot create a task worktree",
+            : `this session has an ${own.kind === "invalid" ? "invalid" : "unverified"} .panopticon/task.json and cannot create a task worktree`,
           "Ask Krzysztof to run wardens worktree new <issue> for the other issue",
         ),
       );
@@ -485,7 +506,7 @@ function create(stdin: string, deps: Deps, anchor: string | null): Result {
   }
   try {
     return task === null
-      ? createSubagent(ctx, name, target)
+      ? createSubagent(ctx, name, target, home)
       : createTask(ctx, name, task[1] ?? "", task[2] ?? "", {
           ...deps,
           cwd: ctx.primary,

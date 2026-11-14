@@ -81,6 +81,44 @@ export function writeFresh(path: string, text: string, mode: number): void {
   writeFileSync(path, text, { flag: "wx", mode });
 }
 
+/** Why `installTask` stopped; `record` means the file was written but its hash was not. */
+export type InstallFailure = "write" | "invalid" | "record";
+
+/**
+ * The only place that writes a worktree's `.panopticon/task.json`: the file,
+ * its validation and the hash record (below `home`) go together, so no task
+ * file exists that the guards would deny as unrecorded. `wardens worktree
+ * setup` and the `WorktreeCreate` hook both use it; a class test in
+ * `task-writers.test.ts` fails when another source writes the file.
+ */
+export function installTask(
+  wt: string,
+  primary: string,
+  home: string,
+  text: string,
+): InstallFailure | null {
+  const dir = join(wt, ".panopticon");
+  try {
+    if (isSymlink(dir)) {
+      throw new Error(`${dir} is a symlink`);
+    }
+    mkdirSync(dir, { recursive: true });
+    rmSync(join(dir, "setup.ok"), { force: true });
+    writeFresh(join(dir, "task.json"), text, 0o644);
+  } catch {
+    return "write";
+  }
+  if (loadTask(wt).kind !== "ok") {
+    return "invalid";
+  }
+  try {
+    recordTaskHash(home, primary, wt, text);
+  } catch {
+    return "record";
+  }
+  return null;
+}
+
 /** Template text, read only when it resolves to a regular file inside `wt`. */
 function readTemplate(wt: string, template: string): string | null {
   try {
@@ -148,14 +186,8 @@ export function setupWorktree(
     2,
   )}\n`;
   const dir = join(wt, ".panopticon");
-  try {
-    if (isSymlink(dir)) {
-      throw new Error(`${dir} is a symlink`);
-    }
-    mkdirSync(dir, { recursive: true });
-    rmSync(join(dir, "setup.ok"), { force: true });
-    writeFresh(join(dir, "task.json"), taskText, 0o644);
-  } catch {
+  const installed = installTask(wt, primary, home, taskText);
+  if (installed === "write") {
     return fail(
       msg(
         "task.json could not be written safely (symlink or write error)",
@@ -163,7 +195,7 @@ export function setupWorktree(
       ),
     );
   }
-  if (loadTask(wt).kind !== "ok") {
+  if (installed === "invalid") {
     return fail(
       msg(
         "the issue's Allowed paths do not make a valid task.json",
@@ -171,9 +203,7 @@ export function setupWorktree(
       ),
     );
   }
-  try {
-    recordTaskHash(home, primary, wt, taskText);
-  } catch {
+  if (installed === "record") {
     return fail(
       msg(
         "the task.json hash could not be recorded under ~/.config/panopticon/tasks",
