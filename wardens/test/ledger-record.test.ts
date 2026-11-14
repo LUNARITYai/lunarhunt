@@ -79,8 +79,27 @@ describe("record schema", () => {
       warden_rule_id: null,
       action: null,
       event: null,
+      role: null,
+      agent_type: null,
+      tool_name: null,
+      outcome: null,
     });
     expect(ledgerRecordSchema.safeParse(record).success).toBe(true);
+  });
+
+  it.each([
+    "v",
+    "record",
+    "ts",
+    "project",
+    "decision",
+    "rendered",
+    "interactive",
+    "primary",
+    "duration_ms",
+  ])("rejects null for the non-nullable key %s", (key) => {
+    const record = { ...sampleRecord(), [key]: null };
+    expect(ledgerRecordSchema.safeParse(record).success).toBe(false);
   });
 
   it.each([
@@ -176,6 +195,32 @@ describe("field rules", () => {
       expect(identifierOrNull(`${prefix}${tail.slice(1)}`)).toBe(
         `${prefix}${tail.slice(1)}`,
       );
+    }
+  });
+
+  it("keeps ordinary words that contain `sk-` or `xox`, and filters at the boundaries", () => {
+    const tail = "0123456789abcdef";
+    for (const kept of [
+      `task-${tail}`,
+      `Task-${tail}`,
+      "risk-assessment-module",
+      "feat/42-risk-assessment-module",
+      `1sk-${tail}`,
+      `fooxox${tail}`,
+    ]) {
+      expect(identifierOrNull(kept)).toBe(kept);
+    }
+    for (const filtered of [
+      `x/sk-${tail}`,
+      `a-sk-${tail}`,
+      `a_sk-${tail}`,
+      `a.xox${tail}`,
+      `SK-${tail}`,
+      `fooghp_${tail}`,
+      `1ghs_${tail}`,
+      `task_github_pat_${tail}`,
+    ]) {
+      expect(identifierOrNull(filtered)).toBeNull();
     }
   });
 

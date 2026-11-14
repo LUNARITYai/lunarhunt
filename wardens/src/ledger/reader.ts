@@ -24,15 +24,25 @@ export type ReadStats = {
   partial: number;
   /** Entries named like Ledger files that are not regular files (symlink, FIFO, directory). */
   skipped: number;
-  /** True when reading stopped at the total cap. */
+  /** True when the total cap stopped the read with bytes left, in a file or in later files. */
   truncated: boolean;
 };
 
 const CHUNK_BYTES = 64 * 1024;
 const LINE_LIMIT = 4 * 4096;
 const NAME = /^events.*\.jsonl$/;
+/** Every record the writer produces starts like this (key order of the schema). */
+const RECORD_START = Buffer.from('{"v":1,"record":"');
+/** Shorter than the smallest valid record (all nullable keys null): not worth a JSON parse. */
+export const MIN_RECORD_BYTES = 300;
 
 function parse(line: Buffer): LedgerRecord | null {
+  if (
+    line.length < MIN_RECORD_BYTES ||
+    !line.subarray(0, RECORD_START.length).equals(RECORD_START)
+  ) {
+    return null;
+  }
   try {
     const parsed = ledgerRecordSchema.safeParse(
       JSON.parse(line.toString("utf8")),
@@ -126,7 +136,10 @@ export function readLedgerFile(
         }
       }
     }
-    if (oversize || pendingBytes > 0) {
+    if (total >= maxBytes && fstatSync(fd).size > total) {
+      // The cap cut the read: the unread tail is not a partial line.
+      stats.truncated = true;
+    } else if (oversize || pendingBytes > 0) {
       stats.partial += 1;
     }
     return total;

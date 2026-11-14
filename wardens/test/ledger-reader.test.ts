@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { readLedgerDirectory, readLedgerFile } from "../src/ledger/reader.ts";
+import {
+  MIN_RECORD_BYTES,
+  readLedgerDirectory,
+  readLedgerFile,
+} from "../src/ledger/reader.ts";
 import { type LedgerRecord, ledgerRecordSchema } from "../src/ledger/record.ts";
 import { sampleRecord, tempHome } from "./fixtures/ledger/sample.ts";
 
@@ -142,6 +146,66 @@ describe("reader", () => {
     expect(records).toHaveLength(2);
     expect(stats.truncated).toBe(true);
     expect(read(dir, one * 3).stats.truncated).toBe(false);
+  });
+
+  it("sets truncated when the cap cuts inside the last file, without counting the cut as partial", () => {
+    const dir = directory();
+    const one = Buffer.byteLength(line());
+    let text = "";
+    for (let index = 0; index < 10; index += 1) {
+      text += line({ duration_ms: index });
+    }
+    fs.writeFileSync(join(dir, "events.jsonl"), text);
+    const { records, stats } = read(dir, one * 2 + 25);
+    expect(records.map((r) => r.duration_ms)).toEqual([0, 1]);
+    expect(stats).toMatchObject({ truncated: true, partial: 0, malformed: 0 });
+    const exact = read(dir, one * 10);
+    expect(exact.records).toHaveLength(10);
+    expect(exact.stats).toMatchObject({ truncated: false, partial: 0 });
+    expect(read(dir, one * 3).stats.truncated).toBe(true);
+  });
+
+  it("counts a short line or a line that does not start like a record as malformed", () => {
+    const dir = directory();
+    const reordered = JSON.stringify(
+      Object.fromEntries(Object.entries(sampleRecord()).reverse()),
+    );
+    fs.writeFileSync(
+      join(dir, "events.jsonl"),
+      `{"v":1,"record":"event"}\n${reordered}\n${line()}`,
+    );
+    const { records, stats } = read(dir);
+    expect(records).toHaveLength(1);
+    expect(stats).toMatchObject({ malformed: 2, partial: 0 });
+  });
+
+  it("keeps the shortest record the writer can produce above the parse threshold", () => {
+    const smallest = JSON.stringify(
+      sampleRecord({
+        project: "a",
+        session_id: null,
+        run_id: null,
+        tool: null,
+        model: null,
+        event: null,
+        tool_name: null,
+        action: null,
+        warden_rule_id: null,
+        worktree: null,
+        branch: null,
+        issue: null,
+        decision: "ask",
+        rendered: "ask",
+        duration_ms: 0,
+      }),
+    );
+    expect(ledgerRecordSchema.safeParse(JSON.parse(smallest)).success).toBe(
+      true,
+    );
+    expect(smallest.length).toBeGreaterThanOrEqual(MIN_RECORD_BYTES);
+    const dir = directory();
+    fs.writeFileSync(join(dir, "events.jsonl"), `${smallest}\n`);
+    expect(read(dir).records).toHaveLength(1);
   });
 
   it("reads a missing directory as empty", () => {

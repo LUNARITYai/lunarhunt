@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readLedgerDirectory } from "../src/ledger/reader.ts";
 import {
+  closeQuietly,
   FAILURE_REASONS,
+  LedgerFailure,
   type LedgerFs,
+  openChecked,
   type WriterDeps,
   writeLedgerRecord,
 } from "../src/ledger/writer.ts";
@@ -127,7 +130,206 @@ describe("writer: a record", () => {
     });
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    expect(fail(writeLedgerRecord(cyclic, { home }))).toBe("write");
+    expect(fail(writeLedgerRecord(cyclic, { home }))).toBe("schema");
+  });
+
+  it("never throws while rotating or closing", () => {
+    const { home, dir } = preparedHome();
+    fs.writeFileSync(join(dir, "events.jsonl"), "x\n", { mode: 0o600 });
+    const boom = () => {
+      throw new Error("/secret/path EIO");
+    };
+    const limits = { project: { rotateBytes: 1 } };
+    for (const [name, ok] of [
+      ["readdirSync", false],
+      ["renameSync", false],
+      ["closeSync", true],
+    ] as const) {
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits,
+        pid: 1,
+        fs: { [name]: boom },
+      });
+      expect(result.ok).toBe(ok);
+      expect(JSON.stringify(result)).not.toContain("secret");
+    }
+  });
+
+  it("writes what the schema returned, not a second read of the input", () => {
+    const { home, dir } = preparedHome();
+    let reads = 0;
+    const record = sampleRecord();
+    Object.defineProperty(record, "branch", {
+      enumerable: true,
+      get: () => `branch-${++reads}`,
+    });
+    expect(writeLedgerRecord(record, { home }).ok).toBe(true);
+    const [written] = lines(join(dir, "events.jsonl"));
+    const branch = JSON.parse(written ?? "").branch;
+    expect(branch).toMatch(/^branch-[0-9]+$/);
+    expect(branch).toBe("branch-2");
+  });
+
+  it("maps a record that cannot be read or serialised to schema", () => {
+    const { home } = preparedHome();
+    const hostile = sampleRecord();
+    Object.defineProperty(hostile, "branch", {
+      enumerable: true,
+      get: () => {
+        throw new Error("/secret/path");
+      },
+    });
+    expect(writeLedgerRecord(hostile, { home })).toEqual({
+      ok: false,
+      reason: "schema",
+    });
+    expect(
+      fail(writeLedgerRecord({ ...sampleRecord(), issue: 10n }, { home })),
+    ).toBe("schema");
+  });
+});
+
+describe("writer: descriptors", () => {
+  /** Every descriptor the writer opens must be closed again, on every path. */
+  function tracked(overrides: Partial<LedgerFs> = {}, failSecondOpen = false) {
+    const open = new Set<number>();
+    let opens = 0;
+    const base: Partial<LedgerFs> = {
+      openSync: ((path: string, flags: number, mode: number) => {
+        opens += 1;
+        if (failSecondOpen && opens === 2) {
+          throw new Error("EMFILE");
+        }
+        const fd = fs.openSync(path, flags, mode);
+        open.add(fd);
+        return fd;
+      }) as LedgerFs["openSync"],
+      closeSync: ((fd: number) => {
+        open.delete(fd);
+        fs.closeSync(fd);
+      }) as LedgerFs["closeSync"],
+    };
+    return { fs: { ...base, ...overrides }, open };
+  }
+
+  const foreign = ((fd: number) => {
+    const st = fs.fstatSync(fd);
+    return Object.create(st, { uid: { value: st.uid + 1 } });
+  }) as LedgerFs["fstatSync"];
+
+  const cases: [
+    string,
+    string,
+    (dir: string, home: string) => Partial<LedgerFs>,
+    Partial<WriterDeps>,
+  ][] = [
+    ["ok", "ok", () => ({}), {}],
+    [
+      "a FIFO",
+      "not_regular",
+      (dir) => {
+        execFileSync("mkfifo", [join(dir, "events.jsonl")]);
+        return {};
+      },
+      {},
+    ],
+    [
+      "a hard link",
+      "link_count",
+      (dir, home) => {
+        fs.writeFileSync(join(home, "other.txt"), "");
+        fs.linkSync(join(home, "other.txt"), join(dir, "events.jsonl"));
+        return {};
+      },
+      {},
+    ],
+    ["a foreign owner", "not_owned", () => ({ fstatSync: foreign }), {}],
+    [
+      "a failing read",
+      "write",
+      (dir) => {
+        fs.writeFileSync(join(dir, "events.jsonl"), "x\n", { mode: 0o600 });
+        return {
+          readSync: (() => {
+            throw new Error("EIO");
+          }) as LedgerFs["readSync"],
+        };
+      },
+      {},
+    ],
+    [
+      "a failing write",
+      "write",
+      () => ({
+        writeSync: (() => {
+          throw new Error("EIO");
+        }) as LedgerFs["writeSync"],
+      }),
+      {},
+    ],
+    [
+      "the total cap",
+      "cap",
+      (dir) => {
+        fs.writeFileSync(join(dir, "events.jsonl"), "x\n", { mode: 0o600 });
+        return {};
+      },
+      { limits: { project: { rotateBytes: 1, totalBytes: 1 } } },
+    ],
+    [
+      "a failed rename",
+      "rotate",
+      (dir) => {
+        fs.writeFileSync(join(dir, "events.jsonl"), "x\n", { mode: 0o600 });
+        return {
+          renameSync: (() => {
+            throw new Error("EXDEV");
+          }) as LedgerFs["renameSync"],
+        };
+      },
+      { limits: { project: { rotateBytes: 1 } } },
+    ],
+  ];
+
+  it.each(cases)("closes what it opened: %s", (_name, reason, setup, extra) => {
+    const { home, dir } = preparedHome();
+    const overrides = setup(dir, home);
+    const { fs: spy, open } = tracked(overrides);
+    expect(
+      fail(writeLedgerRecord(sampleRecord(), { home, fs: spy, ...extra })),
+    ).toBe(reason);
+    expect(open.size).toBe(0);
+  });
+
+  it("closes the first descriptor when the open after a rotation fails", () => {
+    const { home, dir } = preparedHome();
+    fs.writeFileSync(join(dir, "events.jsonl"), "x\n", { mode: 0o600 });
+    const { fs: spy, open } = tracked({}, true);
+    const result = writeLedgerRecord(sampleRecord(), {
+      home,
+      fs: spy,
+      limits: { project: { rotateBytes: 1 } },
+    });
+    expect(fail(result)).toBe("open");
+    expect(open.size).toBe(0);
+  });
+
+  it("exports the checked open for the failure-line appender", () => {
+    const { dir } = preparedHome();
+    const uid = process.getuid?.() ?? 0;
+    const { fd, st } = openChecked(fs, join(dir, "failures.jsonl"), uid);
+    closeQuietly(fs, fd);
+    expect(st.isFile()).toBe(true);
+    expect(fs.statSync(join(dir, "failures.jsonl")).mode & 0o777).toBe(0o600);
+    execFileSync("mkfifo", [join(dir, "fifo.jsonl")]);
+    try {
+      openChecked(fs, join(dir, "fifo.jsonl"), uid);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LedgerFailure);
+      expect((error as LedgerFailure).reason).toBe("not_regular");
+    }
   });
 });
 
@@ -181,8 +383,6 @@ describe("writer: failure reasons", () => {
   it("symlink: each of the three directories", () => {
     for (const level of [0, 1, 2]) {
       const { home, dir } = preparedHome();
-      const target = fs.mkdtempSync(join(home, "elsewhere-"));
-      fs.chmodSync(target, 0o700);
       const victim = [join(dir, "../.."), join(dir, ".."), dir][level] ?? "";
       const moved = `${victim}-real`;
       fs.renameSync(victim, moved);
@@ -224,6 +424,32 @@ describe("writer: failure reasons", () => {
       expect(fail(writeLedgerRecord(sampleRecord(), { home }))).toBe(
         "bad_mode",
       );
+    }
+  });
+
+  it("mkdir race: a directory another writer created is judged, not trusted", () => {
+    for (const [mode, expected] of [
+      [0o755, "bad_mode"],
+      [0o700, "ok"],
+    ] as const) {
+      const { home, dir } = preparedHome();
+      fs.chmodSync(join(dir, "../.."), mode);
+      let first = true;
+      const racing: Partial<LedgerFs> = {
+        lstatSync: ((path: string) => {
+          if (first) {
+            first = false;
+            throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+          }
+          return fs.lstatSync(path);
+        }) as LedgerFs["lstatSync"],
+        mkdirSync: (() => {
+          throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+        }) as LedgerFs["mkdirSync"],
+      };
+      expect(
+        fail(writeLedgerRecord(sampleRecord(), { home, fs: racing })),
+      ).toBe(expected);
     }
   });
 
@@ -373,6 +599,33 @@ describe("writer: rotation and caps", () => {
       }),
     );
     expect(fail(result)).toBe("rotate");
+    expect(lines(join(dir, "events.jsonl"))).toHaveLength(2);
+  });
+
+  it("rotate: a second rotation by one pid in one second does not replace the first", () => {
+    const { home, dir } = preparedHome();
+    const limits = { project: { rotateBytes: 600 } };
+    const results = Array.from({ length: 5 }, () =>
+      fail(writeLedgerRecord(sampleRecord(), deps(home, { limits }))),
+    );
+    expect(results).toEqual(["ok", "ok", "ok", "ok", "rotate"]);
+    const rotated = join(dir, "events-20261120T080910Z-4242.jsonl");
+    expect(lines(rotated)).toHaveLength(3);
+    expect(lines(join(dir, "events.jsonl"))).toHaveLength(3);
+  });
+
+  it("rotate: a file planted at the rotated name is not replaced", () => {
+    const { home, dir } = preparedHome();
+    const planted = join(dir, "events-20261120T080910Z-4242.jsonl");
+    fs.writeFileSync(planted, "planted\n");
+    fs.writeFileSync(join(dir, "events.jsonl"), `${"x".repeat(100)}\n`, {
+      mode: 0o600,
+    });
+    const limits = { project: { rotateBytes: 50 } };
+    expect(
+      fail(writeLedgerRecord(sampleRecord(), deps(home, { limits }))),
+    ).toBe("rotate");
+    expect(fs.readFileSync(planted, "utf8")).toBe("planted\n");
     expect(lines(join(dir, "events.jsonl"))).toHaveLength(2);
   });
 

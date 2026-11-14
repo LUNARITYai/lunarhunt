@@ -67,14 +67,15 @@ export type WriterDeps = {
   fs?: Partial<LedgerFs>;
 };
 
-const OPEN_FLAGS =
+export const OPEN_FLAGS =
   constants.O_RDWR |
   constants.O_APPEND |
   constants.O_CREAT |
   constants.O_NOFOLLOW |
   constants.O_NONBLOCK;
 
-class Failure extends Error {
+/** Carries a failure reason out of the helpers; `writeLedgerRecord` turns it into a result. */
+export class LedgerFailure extends Error {
   readonly reason: FailureReason;
   constructor(reason: FailureReason) {
     super(reason);
@@ -94,16 +95,16 @@ function rotatedName(now: Date, pid: number): string {
 /** `panopticon`, `ledger` and `<project>` must be directories, not links, owned by the UID, mode 0700. */
 function checkDirectory(st: nodeFs.Stats, uid: number): void {
   if (st.isSymbolicLink()) {
-    throw new Failure("symlink");
+    throw new LedgerFailure("symlink");
   }
   if (!st.isDirectory()) {
-    throw new Failure("not_directory");
+    throw new LedgerFailure("not_directory");
   }
   if (st.uid !== uid) {
-    throw new Failure("not_owned");
+    throw new LedgerFailure("not_owned");
   }
   if ((st.mode & 0o777) !== 0o700) {
-    throw new Failure("bad_mode");
+    throw new LedgerFailure("bad_mode");
   }
 }
 
@@ -125,10 +126,10 @@ function ensureDirectories(
       st = fs.lstatSync(dir);
     } catch (error) {
       if (code(error) === "ENOTDIR") {
-        throw new Failure("not_directory");
+        throw new LedgerFailure("not_directory");
       }
       if (code(error) !== "ENOENT") {
-        throw new Failure("mkdir");
+        throw new LedgerFailure("mkdir");
       }
     }
     if (st === undefined) {
@@ -149,13 +150,13 @@ function ensureDirectories(
         continue;
       } catch (error) {
         if (code(error) !== "EEXIST") {
-          throw new Failure("mkdir");
+          throw new LedgerFailure("mkdir");
         }
         // Another writer created it first: judge what it made. No retry of the mkdir.
         try {
           st = fs.lstatSync(dir);
         } catch {
-          throw new Failure("mkdir");
+          throw new LedgerFailure("mkdir");
         }
       }
     }
@@ -164,8 +165,13 @@ function ensureDirectories(
   return parts[2] ?? "";
 }
 
-/** Open the file and check the descriptor. The caller closes it on every path. */
-function openChecked(
+/**
+ * Open the file with `OPEN_FLAGS` (mode 0600) and check the descriptor: a regular file, link count 1,
+ * owned by `uid`. Throws `LedgerFailure` (`open`, `not_regular`, `link_count`, `not_owned`) and then
+ * holds no descriptor. On success the caller closes `fd` on every path (`closeQuietly`). Exported
+ * so the failure-line appender (Task 4) opens its file the same way.
+ */
+export function openChecked(
   fs: LedgerFs,
   file: string,
   uid: number,
@@ -174,27 +180,27 @@ function openChecked(
   try {
     fd = fs.openSync(file, OPEN_FLAGS, 0o600);
   } catch {
-    throw new Failure("open");
+    throw new LedgerFailure("open");
   }
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) {
-      throw new Failure("not_regular");
+      throw new LedgerFailure("not_regular");
     }
     if (st.nlink !== 1) {
-      throw new Failure("link_count");
+      throw new LedgerFailure("link_count");
     }
     if (st.uid !== uid) {
-      throw new Failure("not_owned");
+      throw new LedgerFailure("not_owned");
     }
     return { fd, st };
   } catch (error) {
     closeQuietly(fs, fd);
-    throw error instanceof Failure ? error : new Failure("open");
+    throw error instanceof LedgerFailure ? error : new LedgerFailure("open");
   }
 }
 
-function closeQuietly(fs: LedgerFs, fd: number): void {
+export function closeQuietly(fs: LedgerFs, fd: number): void {
   try {
     fs.closeSync(fd);
   } catch {
@@ -202,17 +208,21 @@ function closeQuietly(fs: LedgerFs, fd: number): void {
   }
 }
 
-/** Sum of the sizes of the directory's entries; a vanished entry counts 0. */
-function directoryBytes(fs: LedgerFs, dir: string): number {
-  let total = 0;
-  for (const name of fs.readdirSync(dir)) {
+/** The directory's entry names and the sum of their sizes; a vanished entry counts 0. */
+function scanDirectory(
+  fs: LedgerFs,
+  dir: string,
+): { names: string[]; bytes: number } {
+  const names = fs.readdirSync(dir);
+  let bytes = 0;
+  for (const name of names) {
     try {
-      total += fs.lstatSync(join(dir, name)).size;
+      bytes += fs.lstatSync(join(dir, name)).size;
     } catch {
       // Removed between `readdir` and `lstat`.
     }
   }
-  return total;
+  return { names, bytes };
 }
 
 function writeLine(
@@ -229,16 +239,23 @@ function writeLine(
     if (st.size >= limits.rotateBytes) {
       let rotated: string;
       try {
-        if (directoryBytes(fs, dir) >= limits.totalBytes) {
-          throw new Failure("cap");
+        const scan = scanDirectory(fs, dir);
+        if (scan.bytes >= limits.totalBytes) {
+          throw new LedgerFailure("cap");
         }
         rotated = rotatedName(
           (deps.now ?? (() => new Date()))(),
           deps.pid ?? process.pid,
         );
+        if (scan.names.includes(rotated)) {
+          // `rename` would replace it and lose a rotated file.
+          throw new LedgerFailure("rotate");
+        }
         fs.renameSync(file, join(dir, rotated));
       } catch (error) {
-        throw error instanceof Failure ? error : new Failure("rotate");
+        throw error instanceof LedgerFailure
+          ? error
+          : new LedgerFailure("rotate");
       }
       // A writer that still holds the old descriptor finishes into the renamed file.
       closeQuietly(fs, fd);
@@ -249,16 +266,16 @@ function writeLine(
     if (st.size > 0) {
       const last = Buffer.alloc(1);
       if (fs.readSync(fd, last, 0, 1, st.size - 1) !== 1) {
-        throw new Failure("write");
+        throw new LedgerFailure("write");
       }
       prefix = last[0] === 0x0a ? "" : "\n";
     }
     const data = Buffer.from(`${prefix}${line}`, "utf8");
     if (fs.writeSync(fd, data) !== data.length) {
-      throw new Failure("write");
+      throw new LedgerFailure("write");
     }
   } catch (error) {
-    throw error instanceof Failure ? error : new Failure("write");
+    throw error instanceof LedgerFailure ? error : new LedgerFailure("write");
   } finally {
     if (fd >= 0) {
       closeQuietly(fs, fd);
@@ -277,13 +294,30 @@ export function writeLedgerRecord(
 ): WriteResult {
   try {
     const fs: LedgerFs = { ...nodeFs, ...deps.fs };
-    const line = `${JSON.stringify(record)}\n`;
-    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
+    // Each read of the input is one read of a possibly non-plain object: measure it, parse it, and
+    // write only what the schema returned.
+    let raw: string | undefined;
+    try {
+      raw = JSON.stringify(record);
+    } catch {
+      return { ok: false, reason: "schema" };
+    }
+    if (Buffer.byteLength(`${raw}\n`, "utf8") > MAX_LINE_BYTES) {
       return { ok: false, reason: "too_long" };
     }
-    const parsed = ledgerRecordSchema.safeParse(record);
+    let parsed: ReturnType<typeof ledgerRecordSchema.safeParse>;
+    let line: string;
+    try {
+      parsed = ledgerRecordSchema.safeParse(record);
+      line = `${JSON.stringify(parsed.data)}\n`;
+    } catch {
+      return { ok: false, reason: "schema" };
+    }
     if (!parsed.success) {
       return { ok: false, reason: "schema" };
+    }
+    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
+      return { ok: false, reason: "too_long" };
     }
     if (deps.home === null || !isAbsolute(deps.home)) {
       return { ok: false, reason: "home_unresolved" };
@@ -298,7 +332,7 @@ export function writeLedgerRecord(
   } catch (error) {
     return {
       ok: false,
-      reason: error instanceof Failure ? error.reason : "write",
+      reason: error instanceof LedgerFailure ? error.reason : "write",
     };
   }
 }
