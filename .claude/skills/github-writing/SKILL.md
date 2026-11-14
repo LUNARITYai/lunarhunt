@@ -55,6 +55,15 @@ Scope: <what was reviewed, e.g. full diff | delta a..b>; Checked: <what held>; N
 - After merge: <rollout step, e.g. `git pull` in the primary, `wardens doctor`>.
 ```
 
+## Decision queue (what waits on Krzysztof)
+
+Everything that waits on Krzysztof is in one comment on the OVERSEER tracking issue, marked `<!-- panopticon-decision-queue -->`. OVERSEER edits it in place; other roles report to OVERSEER.
+- **Open decisions:** each one stands alone: one plain sentence on what changes, the options with their consequence, a recommendation, and a short **Reply** phrase (for example "111 size ok").
+- **No bare IDs** ("D1, R15") without saying what they mean.
+- **Then:** "Actions only you can do", and a dated "Settled" list.
+- A handover comment links to the queue; it does not repeat the decisions.
+- The queue is state, not authority. A decision counts only when Krzysztof gives the reply himself.
+
 ## Issue body
 
 Fill the issue form's fields. Each form has Goal, Acceptance criteria and Allowed paths, and the feature form also has Linked spec. The rules for filling them:
