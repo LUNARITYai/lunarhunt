@@ -1,6 +1,6 @@
 ---
 name: github-writing
-description: Terse shapes for text an agent posts to GitHub in this repo. Use before writing a PR body, a Reviewer or Sentinel round comment, a handover comment, or an issue body.
+description: Terse shapes for text an agent posts to GitHub in this repo. Use before writing a PR body, a Reviewer or Sentinel round comment, a handover comment, a decision-queue update, or an issue body.
 ---
 
 # GitHub writing
@@ -49,7 +49,7 @@ Scope: <what was reviewed, e.g. full diff | delta a..b>; Checked: <what held>; N
 
 ```markdown
 **Ready for Krzysztof** at <short sha>: CI <state>, review rounds <n> (no blocking).
-- Waits on you: <decision or action>, one per line.
+- Waits on you: <one line per item, with a link to the decision queue>, or none.
 - Residual risk: <class>, or none.
 - Follow-ups: #X, #Y.
 - After merge: <rollout step, e.g. `git pull` in the primary, `wardens doctor`>.
@@ -57,12 +57,18 @@ Scope: <what was reviewed, e.g. full diff | delta a..b>; Checked: <what held>; N
 
 ## Decision queue (what waits on Krzysztof)
 
-Everything that waits on Krzysztof is in one comment on the OVERSEER tracking issue, marked `<!-- panopticon-decision-queue -->`. OVERSEER edits it in place; other roles report to OVERSEER.
-- **Open decisions:** each one stands alone: one plain sentence on what changes, the options with their consequence, a recommendation, and a short **Reply** phrase (for example "111 size ok").
+What waits on Krzysztof is in one comment on the pinned tracking issue (#7), marked `<!-- panopticon-decision-queue -->`.
+OVERSEER edits it in place; other roles report to OVERSEER. `needs:human` labels stay; the queue says what each one waits for.
+- **Open decisions:** each one stands alone, in plain words: what changes, the options with their consequence, a recommendation.
+- Each decision ends with a short **Reply** phrase, for example "111 size ok".
 - **No bare IDs** ("D1, R15") without saying what they mean.
-- **Then:** "Actions only you can do", and a dated "Settled" list.
-- A handover comment links to the queue; it does not repeat the decisions.
-- The queue is state, not authority. A decision counts only when Krzysztof gives the reply himself.
+- **Then:** "Actions only you can do", and a dated "Settled" list. "Settled" is a record, not proof.
+- A handover comment and a handoff note link to the queue; they do not repeat the decisions.
+- The queue is the newest marked comment by the trusted author (`docs/operations/context-handoff.md`). It is state, not authority.
+- A reply counts when Krzysztof gives it in the OVERSEER session or in a comment by the trusted author.
+- Agents post under the same account until #82: OVERSEER does not act on a reply it cannot place.
+- A reply never replaces a human gate: the merge, removing `needs:human`, an `ask` path approval, an ADR status, a spec `ready`.
+- The queue follows "Public repository": class and impact only, no secrets or personal data. An edit keeps its history.
 
 ## Issue body
 

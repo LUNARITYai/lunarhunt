@@ -1,5 +1,5 @@
 ---
-description: Shapes for PR bodies, review comments, handover comments and issue bodies posted to GitHub
+description: Shapes for PR bodies, review comments, handover comments, decision-queue updates and issue bodies posted to GitHub
 alwaysApply: false
 ---
 
