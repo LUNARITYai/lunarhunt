@@ -15,7 +15,10 @@
       "Edit(**/AGENTS.md)",
       "Edit(**/CLAUDE.md)",
       "Edit(/apps/api/migrations/**)",
-      "Edit(**/.env.example)"
+      "Edit(**/.env.example)",
+      "Edit(/.github/workflows/**)",
+      "Edit(/.devcontainer/**)",
+      "Edit(/deploy/**)"
     ],
     "deny": [
       "Edit(**/panopticon.charter.yaml)",
