@@ -82,7 +82,7 @@ Use `pnpm`, never `npm`; Python runs through `uv run`. TypeScript is linted and 
 
 Do not restate these as prose elsewhere; read the constitution for the full list.
 
-- Edits outside allowed paths are blocked (`scope-guard`). The Charter and secrets are **deny**; Covenant files, `.claude/**`, `.cursor/**`, `.github/**`, `deploy/**`, migrations and `.env.example` are **ask** (Krzysztof approves; denied in headless runs) (`protected-paths`, [ADR-0013](docs/decisions/0013-charter-policy-refinements.md)).
+- Edits outside allowed paths are blocked (`scope-guard`). The Charter and secrets are **deny**; `docs/constitution.md`, `AGENTS.md` and `CLAUDE.md` files below `apps/`, `packages/`, `wardens/` and `docs/`, `.github/workflows/**`, `.devcontainer/**`, `deploy/**`, migrations and `.env.example` are **ask** (Krzysztof approves; denied in headless runs); the root `AGENTS.md`, the root `CLAUDE.md`, the root `.claude/**` and `.cursor/**`, the rest of `.github/**` and `lefthook.yml` are human-only, and generated configs change only through `wardens sync` (`scope-guard`, `protected-paths`, [ADR-0013](docs/decisions/0013-charter-policy-refinements.md), [ADR-0019](docs/decisions/0019-ask-paths-that-agents-can-reach.md)).
 - `.env`, `.env.*` and `secrets/**` cannot be read, except `.env.example` (`secret-read-guard`); force pushes, `--no-verify`, prod `kubectl`, publishing and pipe-to-shell are denied (`command-guard`).
 - Dependency version bumps come from Renovate ([ADR-0014](docs/decisions/0014-dependency-updates-with-renovate.md)); add a dependency only when the task needs it.
 - Generated contract and client cannot be edited by hand (`generated-files-guard`).

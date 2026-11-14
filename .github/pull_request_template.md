@@ -11,7 +11,7 @@ Closes #N
 ## Risk class
 
 <!-- ADR-0008, extended by ADR-0013. Choose one.
-`risk:high` if this touches auth, secrets (`.env*`, `secrets/**`), `.github/**`, `panopticon.charter.yaml`, Covenant files (`docs/constitution.md`, `AGENTS.md`, `**/AGENTS.md`, `CLAUDE.md`), `.claude/**`, `.cursor/**`, `lefthook.yml`, `deploy/**`, `apps/api/migrations/**`, `wardens/**`, `docs/decisions/**`, `docs/decision-log.md`, or the PR carries `test:waived` or `needs:human`.
+`risk:high` if this touches auth, secrets (`.env*`, `secrets/**`), `.github/**`, `panopticon.charter.yaml`, Covenant files (`docs/constitution.md`, `AGENTS.md`, `**/AGENTS.md`, `CLAUDE.md`), `.claude/**`, `.cursor/**`, `lefthook.yml`, `deploy/**`, `.devcontainer/**`, `apps/api/migrations/**`, `wardens/**`, `docs/decisions/**`, `docs/decision-log.md`, or the PR carries `test:waived` or `needs:human`.
 `risk:medium` is the default for product code.
 `risk:low` is documentation, tests only, or a small change on non-protected paths. `risk-classifier` sets the label; this box is the author's claim. -->
 
