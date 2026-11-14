@@ -79,3 +79,4 @@ Chosen option: **the Covenant (option 1)**, because `AGENTS.md` is an open forma
 - Research report, sections 2.3, 4, 11.1.
 - Related: ADR-0003 (The Charter), ADR-0005 (message format), ADR-0011 (spec process).
 - Amended by ADR-0013: Covenant files are `ask` (not deny) for agents; generated packages (`packages/contracts`, `packages/api-client`) are exempt from per-package `AGENTS.md`.
+- Amended by ADR-0019: "Covenant files are `ask`" holds for the constitution and for `AGENTS.md` and `CLAUDE.md` files below the allowed directories; the root `AGENTS.md` and the root `CLAUDE.md` are human-only.

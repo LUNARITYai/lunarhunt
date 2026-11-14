@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateRules, runCheck, runHook } from "../src/engine.ts";
-import { MESSAGE_PATTERN, wardenMessage } from "../src/messages.ts";
+import {
+  MESSAGE_PATTERN,
+  NO_PRIMARY_MESSAGE,
+  wardenMessage,
+} from "../src/messages.ts";
 import type { Rule } from "../src/rules.ts";
 import { cliPath, tempRepo, writeRepoFile } from "./support.ts";
 
@@ -181,8 +185,86 @@ describe("fail-closed engine", () => {
   });
 });
 
+describe("trusted primary (#73)", () => {
+  const read = (root: string) =>
+    JSON.stringify({
+      tool_name: "Read",
+      tool_input: { file_path: "wardens/src/cli.ts" },
+      cwd: root,
+    });
+
+  it("fails closed in a hook run with no resolvable primary, naming wardens sync", () => {
+    const root = tempRepo();
+    for (const event of ["PreToolUse", "Stop"]) {
+      const result = runHook("claude", event, read(root), {
+        cwd: () => root,
+        env: {},
+        primary: null,
+      });
+      expect(result.exitCode).toBe(0);
+      const out = JSON.parse(result.stdout);
+      const reason =
+        out.hookSpecificOutput?.permissionDecisionReason ?? out.reason;
+      expect(reason).toMatch(MESSAGE_PATTERN);
+      expect(reason).toContain("wardens sync");
+    }
+    // The same run is allowed outside a hook (no `primary` dependency at all).
+    const direct = runHook("claude", "PreToolUse", read(root), {
+      cwd: () => root,
+      env: {},
+    });
+    expect(direct.stdout).toBe("");
+  });
+
+  it("is not fooled by CLAUDECODE, PANOPTICON_AGENT or a primary named in the environment", () => {
+    const root = tempRepo();
+    const result = runHook("claude", "PreToolUse", read(root), {
+      cwd: () => root,
+      env: {
+        CLAUDECODE: "1",
+        PANOPTICON_AGENT: "claude",
+        PANOPTICON_PRIMARY: root,
+      },
+      primary: null,
+    });
+    expect(
+      JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
+    ).toBe("deny");
+  });
+});
+
 describe("hook CLI", () => {
-  it("returns exit 0 and empty stdout for a Claude allow", () => {
+  it("fails closed with the no-primary message when HOME cannot be resolved", () => {
+    const root = tempRepo();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        join(import.meta.dirname, "no-passwd.mjs"),
+        "--experimental-strip-types",
+        cliPath,
+        "hook",
+        "--tool",
+        "claude",
+        "--event",
+        "PreToolUse",
+      ],
+      {
+        cwd: root,
+        env: { PATH: process.env.PATH ?? "" },
+        encoding: "utf8",
+        input: JSON.stringify({
+          tool_name: "Read",
+          tool_input: { file_path: "wardens/src/cli.ts" },
+          cwd: root,
+        }),
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(NO_PRIMARY_MESSAGE);
+  });
+
+  it("fails closed from TypeScript source: no bundle of a trusted primary, no Charter", () => {
     const root = tempRepo();
     const result = spawnSync(
       process.execPath,
@@ -207,7 +289,10 @@ describe("hook CLI", () => {
     );
     expect(result.status).toBe(0);
     expect(result.status).not.toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stdout).not.toContain("permissionDecision");
+    const out = JSON.parse(result.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain(
+      "wardens sync",
+    );
   });
 });

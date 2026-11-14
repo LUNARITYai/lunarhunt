@@ -7,6 +7,8 @@ export type Result = { exitCode: 0 | 2; stdout: string; stderr: string };
 export type Deps = {
   env: NodeJS.ProcessEnv;
   cwd: string;
+  /** Trusted primary (from the running bundle and the launcher anchor) whose Charter applies; absent: the checkout git names as primary. */
+  charterRoot?: string;
   /** Runs `gh <args>`; `status` is the exit code (non-zero when gh is missing). */
   gh: (args: string[], cwd: string) => { status: number; stdout: string };
   /** Runs one `setup.steps` command through the shell; returns its exit code. */

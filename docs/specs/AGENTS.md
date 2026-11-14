@@ -41,7 +41,7 @@ adrs: [0007]             # related ADRs, may be empty
 
 ## Rules for the `spec-writer` role
 
-- Write only under `docs/specs/**` and `docs/decisions/**` (`scope-guard`). ADRs you draft stay `proposed`.
+- Write only under `docs/specs/**` and `docs/decisions/**` (`scope-guard`). ADRs you draft carry the status they will have on `main` (ADR-0020); Krzysztof's merge accepts them.
 - Never set `status: ready`; only Krzysztof does.
 - Respect the constitution; if the feature needs to break a principle, propose an ADR instead.
 - No personal data or real CV content in examples; use synthetic data (C-19).

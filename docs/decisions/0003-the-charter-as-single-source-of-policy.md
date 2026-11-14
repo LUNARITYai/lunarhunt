@@ -154,3 +154,4 @@ The outline above is the intended shape, not a frozen schema. Values marked as p
 - Research report, sections 1, 7.2–7.4 (the original Polish draft called the file "Codex" / `panopticon.policy.yaml`; the English version uses The Charter and marks the schema sketch in 7.3 as superseded by this ADR).
 - Related: ADR-0004 (rings of Wardens), ADR-0005 (Wardens engine), ADR-0008 (autonomy and risk), ADR-0009 (model routing), ADR-0010 (log access).
 - Amended by ADR-0013 (Charter policy refinements): `paths.protected` split into `deny`/`ask`, `.env.example` read exception, `--no-verify` in `commands.deny`, `covenant.agents_md_exempt`, `risk:` aligned with ADR-0008, `require_spec_for`, `roles.debugger`.
+- Amended by ADR-0019: in the schema outline, `.claude/**`, `.cursor/**` and `.github/**` outside `workflows/` are human-only through `allowed_paths`, not protected `ask` paths.

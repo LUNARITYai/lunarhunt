@@ -1,15 +1,34 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cliPath, repoRoot, tempRepo } from "./support.ts";
+import { writeAnchor } from "../src/sync/anchor.ts";
+import { repoRoot, tempRepo } from "./support.ts";
 
 // One level below wardens/ so the bundle finds ../schema like dist/ does.
 const outDir = mkdtempSync(join(repoRoot, "wardens", ".bundle-test-"));
 const bundle = join(outDir, "wardens.mjs");
 
-function run(args: string[], cwd: string, input?: string) {
-  return spawnSync(process.execPath, args, { cwd, encoding: "utf8", input });
+function run(
+  args: string[],
+  cwd: string,
+  input?: string,
+  env?: NodeJS.ProcessEnv,
+) {
+  return spawnSync(process.execPath, args, {
+    cwd,
+    encoding: "utf8",
+    input,
+    ...(env ? { env } : {}),
+  });
 }
 
 describe("built bundle", () => {
@@ -30,8 +49,9 @@ describe("built bundle", () => {
     expect(res.status).toBe(0);
   });
 
-  it("answers a hook payload exactly like the TypeScript source", () => {
-    const root = tempRepo();
+  it("answers a hook payload from the primary it sits in, and fails closed anywhere else (#73)", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "wardens-home-")));
+    const root = realpathSync(tempRepo());
     const fixture = JSON.parse(
       readFileSync(
         join(repoRoot, "wardens/test/fixtures/claude/edit.json"),
@@ -43,14 +63,51 @@ describe("built bundle", () => {
       root,
     );
     const args = ["hook", "--tool", "claude", "--event", "PreToolUse"];
-    const fromBundle = run([bundle, ...args], root, input);
-    const fromSource = run(
-      ["--experimental-strip-types", cliPath, ...args],
-      root,
-      input,
-    );
-    expect(fromBundle.stdout).not.toBe("");
-    expect(fromBundle.stdout).toBe(fromSource.stdout);
-    expect(fromBundle.status).toBe(fromSource.status);
+    const env = { PATH: process.env.PATH ?? "", HOME: home };
+    try {
+      // `root` is a primary checkout (`.git` directory) listed in the anchor.
+      mkdirSync(join(root, "wardens", "dist"), { recursive: true });
+      cpSync(bundle, join(root, "wardens", "dist", "wardens.mjs"));
+      cpSync(
+        join(repoRoot, "wardens", "schema"),
+        join(root, "wardens", "schema"),
+        {
+          recursive: true,
+        },
+      );
+      writeAnchor(home, root);
+      const trusted = run(
+        [join(root, "wardens", "dist", "wardens.mjs"), ...args],
+        root,
+        input,
+        env,
+      );
+      expect(trusted.stderr).toBe("");
+      // The Charter of the primary judged it: scope-guard, not the engine.
+      expect(trusted.stdout).toContain("Blocked by Warden scope-guard");
+      expect(trusted.stdout).not.toContain("wardens sync");
+      expect(trusted.status).toBe(0);
+      // The allow path: empty stdout, exit 0.
+      const read = JSON.stringify({
+        tool_name: "Read",
+        tool_input: { file_path: "wardens/src/cli.ts" },
+        cwd: root,
+      });
+      const allowed = run(
+        [join(root, "wardens", "dist", "wardens.mjs"), ...args],
+        root,
+        read,
+        env,
+      );
+      expect(allowed.stdout).toBe("");
+      expect(allowed.status).toBe(0);
+      // The same bundle where the anchor does not list it fails closed.
+      const untrusted = run([bundle, ...args], root, input, env);
+      expect(untrusted.status).toBe(0);
+      expect(untrusted.stdout).toContain("wardens sync");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

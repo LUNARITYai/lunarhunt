@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadCharterYaml } from "../src/charter.ts";
 import { render } from "../src/sync/index.ts";
@@ -16,6 +17,7 @@ import {
   LAUNCHER_BLOCK_MESSAGE,
   LAUNCHER_BUNDLE_MESSAGE,
 } from "../src/sync/render.ts";
+import { bundlePrimary } from "../src/trusted.ts";
 import { normativeCharter } from "./support.ts";
 
 const loaded = loadCharterYaml(normativeCharter());
@@ -476,5 +478,79 @@ describe("launcher: hardening", () => {
     const primary = withBundle(tmp(), "PRIMARY");
     anchor(home, `${primary}\r\n`);
     expectBlocked(claudeIn(primary, home));
+  });
+});
+
+describe("bundlePrimary: the trusted primary of a running bundle (#73)", () => {
+  /** A structural primary (`.git` directory) with a stub bundle in `wardens/dist`. */
+  function primaryWithBundle(): string {
+    const primary = withBundle(tmp(), "PRIMARY");
+    mkdirSync(join(primary, ".git"));
+    return primary;
+  }
+  const url = (primary: string) =>
+    pathToFileURL(join(primary, "wardens/dist/wardens.mjs")).href;
+
+  it("names the anchored primary the bundle sits in", () => {
+    const home = tmp();
+    const primary = primaryWithBundle();
+    anchor(home, `${primary}\n`);
+    expect(bundlePrimary(url(primary), home)).toBe(primary);
+  });
+
+  it("returns the physical path for a bundle reached through a symlink", () => {
+    const home = tmp();
+    const primary = primaryWithBundle();
+    const link = join(tmp(), "link");
+    symlinkSync(primary, link);
+    anchor(home, `${primary}\n`);
+    expect(bundlePrimary(url(link), home)).toBe(primary);
+  });
+
+  it("is null without an anchor, with a foreign anchor entry and with an empty anchor", () => {
+    const home = tmp();
+    const primary = primaryWithBundle();
+    expect(bundlePrimary(url(primary), home)).toBeNull();
+    anchor(home, `${primaryWithBundle()}\n`);
+    expect(bundlePrimary(url(primary), home)).toBeNull();
+    anchor(home, "");
+    expect(bundlePrimary(url(primary), home)).toBeNull();
+  });
+
+  it("is null for a bundle built inside a task worktree, even when the anchor lists the worktree", () => {
+    const home = tmp();
+    const primary = primaryWithBundle();
+    const worktree = join(primary, ".claude/worktrees/42-task");
+    withBundle(worktree, "WORKTREE");
+    writeFileSync(join(worktree, ".git"), "gitdir: elsewhere\n");
+    anchor(home, `${primary}\n${worktree}\n`);
+    expect(bundlePrimary(url(worktree), home)).toBeNull();
+  });
+
+  it("is null, and never throws, for a home that is undefined, empty, relative or missing", () => {
+    const primary = primaryWithBundle();
+    for (const home of [
+      undefined,
+      "",
+      "relative/home",
+      join(tmp(), "no-such-dir"),
+    ]) {
+      expect(bundlePrimary(url(primary), home as string)).toBeNull();
+    }
+  });
+
+  it("is null when run from TypeScript source or from a bundle with another name or place", () => {
+    const home = tmp();
+    const primary = primaryWithBundle();
+    anchor(home, `${primary}\n`);
+    mkdirSync(join(primary, "wardens/src"), { recursive: true });
+    writeFileSync(join(primary, "wardens/src/cli.ts"), "");
+    writeFileSync(join(primary, "wardens/dist/other.mjs"), "");
+    for (const file of ["wardens/src/cli.ts", "wardens/dist/other.mjs"]) {
+      expect(
+        bundlePrimary(pathToFileURL(join(primary, file)).href, home),
+      ).toBeNull();
+    }
+    expect(bundlePrimary("file:///no/such/wardens.mjs", home)).toBeNull();
   });
 });

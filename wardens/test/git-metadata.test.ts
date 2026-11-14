@@ -109,7 +109,6 @@ const ALLOWED_COMMANDS = [
   "ls .git",
   "git status",
   "grep foo .git/config",
-  "cp .git/HEAD x",
   "echo x > .gitignore",
   "cp x .github/y",
   "echo x > docs/.git-notes.md",
@@ -126,8 +125,8 @@ const ALLOWED_COMMANDS = [
   "sed -n 1p .git/HEAD",
   "awk 1 .git/HEAD",
   "tar --exclude=.git -cf x.tar .",
-  "rsync -a --exclude .git a/ b/",
-  "rsync -a a/ b/ --exclude .git",
+  "rsync -a --exclude .git a b/",
+  "rsync -a a b/ --exclude .git",
   "git --git-dir=.git status",
   "echo x > /dev/null",
   "ls . 2>&1",
@@ -137,7 +136,7 @@ const ALLOWED_COMMANDS = [
 describe("git metadata is not editable by agents", () => {
   describe.each(["edit", "write", "delete"] as const)("%s", (action) => {
     it.each(DENIED_PATHS)("denies %s", (path) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       const verdict = protectedPathsVerdict(root, { action, path });
       expect(verdict.decision).toBe("deny");
       expect(verdict.rule).toBe("protected-paths");
@@ -146,14 +145,14 @@ describe("git metadata is not editable by agents", () => {
     });
 
     it.each(ALLOWED_PATHS)("does not fire for %s", (path) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       const verdict = protectedPathsVerdict(root, { action, path });
       expect(verdict.message ?? "").not.toContain("git metadata");
     });
   });
 
   it.each(DENIED_COMMANDS)("denies the shell command %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = protectedPathsVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe("protected-paths");
@@ -163,7 +162,7 @@ describe("git metadata is not editable by agents", () => {
   it.each(ALLOWED_COMMANDS)(
     "does not fire for the shell command %s",
     (command) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       const verdict = protectedPathsVerdict(root, { action: "shell", command });
       expect(verdict.message ?? "").not.toContain("git metadata");
       // No other rule objects either.
@@ -174,7 +173,7 @@ describe("git metadata is not editable by agents", () => {
   );
 
   it("allows reading .git/HEAD with the read tool", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = protectedPathsVerdict(root, {
       action: "read",
       path: ".git/HEAD",
@@ -183,14 +182,14 @@ describe("git metadata is not editable by agents", () => {
   });
 
   it("is a built-in rule: it holds with every rule evaluated together", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "write", path: ".git" });
     expect(verdict.decision).toBe("deny");
     expect(verdict.message).toBe(MESSAGE);
   });
 
   it("denies a shell write through a symlink that resolves into .git", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     symlinkSync(join(root, ".git"), join(root, "alias"));
     const verdict = protectedPathsVerdict(root, {
       action: "shell",
@@ -219,7 +218,7 @@ describe("git metadata is not editable by agents", () => {
     };
 
     it("denies a Write to the .git pointer and to a file under .git/", () => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       writeRepoFile(root, "sub/keep", "x");
       for (const file_path of [
         join(root, ".git"),
@@ -233,14 +232,14 @@ describe("git metadata is not editable by agents", () => {
     });
 
     it("denies a Bash redirect onto .git", () => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       const out = hook(root, "Bash", { command: "echo gitdir: x > .git" });
       expect(out.permissionDecision).toBe("deny");
       expect(out.permissionDecisionReason).toBe(MESSAGE);
     });
 
     it("does not block a read of .git/HEAD or a write to .gitignore", () => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       expect(
         hook(root, "Read", { file_path: join(root, ".git/HEAD") })
           .permissionDecision,
@@ -279,7 +278,7 @@ describe("expansion in write targets fails closed", () => {
   ];
 
   it.each(DENIED_EXPANSIONS)("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     for (const verdict of [
       protectedPathsVerdict(root, { action: "shell", command }),
       allRulesVerdict(root, { action: "shell", command }),
@@ -296,7 +295,7 @@ describe("expansion in write targets fails closed", () => {
     'cp x "$VAR/wardens/dist/wardens.mjs"',
     "echo x > .g*t/config",
   ])("secret-read-guard denies %s with the same message", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const { event, ctx } = eventFor(root, { action: "shell", command });
     const verdict = finalizeVerdict(
       evaluateRule("secret-read-guard", ctx),
@@ -307,7 +306,7 @@ describe("expansion in write targets fails closed", () => {
   });
 
   it("names the expansion in the message", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = protectedPathsVerdict(root, {
       action: "shell",
       command: "echo x > $VAR",
@@ -326,14 +325,14 @@ describe("expansion in write targets fails closed", () => {
     'git commit -m "$MSG"',
     "echo $X",
   ])("still allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(allRulesVerdict(root, { action: "shell", command }).decision).toBe(
       "allow",
     );
   });
 
   it("denies a TMPDIR target, because TMPDIR cannot be proven to resolve into paths.external.write", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, {
       action: "shell",
       command: 'echo x > "$TMPDIR/x"',
@@ -355,13 +354,13 @@ describe("the launcher configuration is not editable by agents", () => {
     "cd ~/.config/panopticon",
     'echo x > "$HOME/.config/panopticon/primaries"',
   ])("denies shell text naming it: %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
   });
 
   it("names it with the neutral message", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = protectedPathsVerdict(root, {
       action: "shell",
       command: "cat ~/.config/panopticon/primaries",
@@ -372,7 +371,7 @@ describe("the launcher configuration is not editable by agents", () => {
   it.each(["edit", "write", "delete"] as const)(
     "denies %s on the directory",
     (action) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       for (const path of [
         ".config/panopticon/primaries",
         "sub/.config/panopticon",
@@ -385,7 +384,7 @@ describe("the launcher configuration is not editable by agents", () => {
   );
 
   it("denies the Write tool on the anchor in the home directory", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const out = runHook(
       "claude",
       "PreToolUse",
@@ -472,7 +471,7 @@ describe("git commands that rewrite metadata", () => {
   ];
 
   it.each(DENIED_GIT)("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe("command-guard");
@@ -480,7 +479,7 @@ describe("git commands that rewrite metadata", () => {
   });
 
   it.each(ALLOWED_GIT)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(allRulesVerdict(root, { action: "shell", command }).decision).toBe(
       "allow",
     );
@@ -517,7 +516,7 @@ describe("directory changes the tracker cannot follow fail closed", () => {
   ];
 
   it.each(DENIED_CD)("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
     expect(verdict.message).toMatch(MESSAGE_PATTERN);
@@ -526,7 +525,7 @@ describe("directory changes the tracker cannot follow fail closed", () => {
   it.each(["cd", 'cd ""', "cd -", "pushd", "popd", "cd /tmp && ls"])(
     "reports %s as not parseable safely, from both guards",
     (command) => {
-      const root = tempRepo();
+      const root = tempRepo({ open: true });
       for (const id of ["secret-read-guard", "protected-paths"] as const) {
         const { event, ctx } = eventFor(root, { action: "shell", command });
         const verdict = finalizeVerdict(evaluateRule(id, ctx), event);
@@ -536,14 +535,14 @@ describe("directory changes the tracker cannot follow fail closed", () => {
   );
 
   it.each(ALLOWED_CD)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(allRulesVerdict(root, { action: "shell", command }).decision).toBe(
       "allow",
     );
   });
 
   it("resolves each word against the tracked directory, not the starting one", () => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     // From sub/, ../.env is the repository's .env.
     const secret = allRulesVerdict(root, {
       action: "shell",
@@ -609,7 +608,7 @@ describe("environment that redirects the shell or git fails closed", () => {
   ];
 
   it.each(DENIED_ENV)("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
     expect(verdict.rule).toBe("command-guard");
@@ -617,7 +616,7 @@ describe("environment that redirects the shell or git fails closed", () => {
   });
 
   it.each(ALLOWED_ENV)("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(allRulesVerdict(root, { action: "shell", command }).decision).toBe(
       "allow",
     );
@@ -661,7 +660,7 @@ describe("abbreviated long options", () => {
     "git --exec-p=bin status",
     "git --config-e=core.pager=EVIL log",
   ])("denies %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     const verdict = allRulesVerdict(root, { action: "shell", command });
     expect(verdict.decision).toBe("deny");
   });
@@ -673,7 +672,7 @@ describe("abbreviated long options", () => {
     "git clone https://example.com/r.git",
     "git --no-pager log",
   ])("allows %s", (command) => {
-    const root = tempRepo();
+    const root = tempRepo({ open: true });
     expect(allRulesVerdict(root, { action: "shell", command }).decision).toBe(
       "allow",
     );

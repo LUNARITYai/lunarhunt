@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { type Integrity, integrityOf } from "./task-integrity.ts";
 
 const taskSchema = z
   .strictObject({
@@ -25,6 +26,8 @@ export type TaskFile = z.infer<typeof taskSchema>;
 export type TaskState =
   | { kind: "missing" }
   | { kind: "invalid" }
+  /** task.json is present but does not match the hash recorded by `wardens worktree setup`, or none was recorded. */
+  | { kind: "unverified"; reason: "mismatch" | "unrecorded" | "deleted" }
   | ({ kind: "ok" } & TaskFile);
 
 function isMissing(err: unknown): boolean {
@@ -36,14 +39,32 @@ function isMissing(err: unknown): boolean {
   );
 }
 
-export function loadTask(toplevel: string): TaskState {
+/**
+ * With `integrity`, a present task.json must match the hash recorded for this
+ * worktree, and a missing one is `missing` (Charter scope alone) only if no
+ * record exists: a recorded worktree that lost its file is `unverified`.
+ */
+export function loadTask(toplevel: string, integrity?: Integrity): TaskState {
   const file = join(toplevel, ".panopticon", "task.json");
-  let text: string;
+  let raw: Buffer;
   try {
-    text = readFileSync(file, "utf8");
+    raw = readFileSync(file);
   } catch (err) {
-    return isMissing(err) ? { kind: "missing" } : { kind: "invalid" };
+    if (!isMissing(err)) {
+      return { kind: "invalid" };
+    }
+    return integrity !== undefined &&
+      integrityOf(null, toplevel, integrity) === "deleted"
+      ? { kind: "unverified", reason: "deleted" }
+      : { kind: "missing" };
   }
+  if (integrity !== undefined) {
+    const state = integrityOf(raw, toplevel, integrity);
+    if (state === "mismatch" || state === "unrecorded") {
+      return { kind: "unverified", reason: state };
+    }
+  }
+  const text = raw.toString("utf8");
   let data: unknown;
   try {
     data = JSON.parse(text);

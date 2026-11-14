@@ -19,10 +19,11 @@ type Fixture = {
 };
 
 function fixture(): Fixture {
-  const root = tempRepo();
+  const root = tempRepo({ open: true });
   const readDir = real("wardens-shell-read-");
   const writeDir = real("wardens-shell-write-");
   const doc = parse(charterWithoutWorktree());
+  doc.paths.allowed_paths.unshift("*.md", "*.txt");
   doc.paths.external = { read: [`${readDir}/**`], write: [`${writeDir}/**`] };
   writeFileSync(join(root, "panopticon.charter.yaml"), stringify(doc));
   return { root, home: real("wardens-shell-home-"), readDir, writeDir };
@@ -212,6 +213,41 @@ describe("message-like option values", () => {
         { path: "a", write: false },
         { path: "b", write: true },
       ]);
+    }
+  });
+});
+
+describe("key=value candidates (#75)", () => {
+  function candidates(command: string) {
+    const pipeline = tokenize(command);
+    expect(pipeline.ok).toBe(true);
+    return pipeline.ok
+      ? secretCandidates(pipeline.segments[0] as never).map((c) => c.path)
+      : [];
+  }
+
+  it("lists the value of a key=value word and of an --opt=value word", () => {
+    expect(candidates("dd if=a of=/abs/b")).toContain("/abs/b");
+    expect(candidates("dd if=a of=/abs/b")).toContain("a");
+    expect(candidates("tool --out=../x")).toContain("../x");
+  });
+
+  it("does not list the assignments in front of the command", () => {
+    expect(candidates("A=/tmp/x pnpm check")).not.toContain("/tmp/x");
+    expect(candidates("env A=/tmp/x B=../y pnpm check")).not.toContain(
+      "/tmp/x",
+    );
+    expect(candidates("env A=/tmp/x pnpm check B=/abs")).toContain("/abs");
+  });
+
+  it("keeps a glued short option value secret-read only", () => {
+    const pipeline = tokenize("cut -d/ -f1 f");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      const glued = secretCandidates(pipeline.segments[0] as never).find(
+        (c) => c.path === "/",
+      );
+      expect(glued).toEqual({ path: "/", write: false, secretOnly: true });
     }
   });
 });
@@ -418,6 +454,171 @@ describe("a # the shell reads differently from the tokenizer", () => {
   });
 });
 
+// #79: an unquoted redirect operator ends the word before it, as in the shell.
+describe("glued redirects in the tokenizer", () => {
+  function words(command: string): string[] {
+    const pipeline = tokenize(command);
+    expect(pipeline.ok, command).toBe(true);
+    return pipeline.ok ? (pipeline.segments[0]?.argv ?? []) : [];
+  }
+
+  it.each([
+    ["echo x>f", ["echo", "x", ">f"]],
+    ["echo x>>f", ["echo", "x", ">>f"]],
+    ["echo x>|f", ["echo", "x", ">|f"]],
+    ["echo x<f", ["echo", "x", "<f"]],
+    ["echo x<>f", ["echo", "x", "<>f"]],
+    ["echo x&>f", ["echo", "x", "&>f"]],
+    ["echo x&>>f", ["echo", "x", "&>>f"]],
+    ["echo x>&2", ["echo", "x", ">&2"]],
+    ["echo x<&-", ["echo", "x", "<&-"]],
+    ["echo x>&f", ["echo", "x", ">&f"]],
+    ["echo x 2>f", ["echo", "x", "2>f"]],
+    ["echo x 2>>f", ["echo", "x", "2>>f"]],
+    ["echo x 0<f", ["echo", "x", "0<f"]],
+    ["echo x 2>&1", ["echo", "x", "2>&1"]],
+    ["echo x 1<&0", ["echo", "x", "1<&0"]],
+    ["echo x {fd}>f", ["echo", "x", "{fd}>f"]],
+    ["echo x>f>g", ["echo", "x", ">f", ">g"]],
+    ["echo x>f 2>&1", ["echo", "x", ">f", "2>&1"]],
+    ["echo x 2>&1>f", ["echo", "x", "2>&1", ">f"]],
+    ["echo x<a>b", ["echo", "x", "<a", ">b"]],
+    // `a=b` is the assignment, `>c` the redirect
+    ["a=b>c", [">c"]],
+    ["x>f", ["x", ">f"]],
+    ["echo>f", ["echo", ">f"]],
+    ["cat<<<x", ["cat", "<<<x"]],
+    ["cat x<<<y", ["cat", "x", "<<<y"]],
+    ["cat 0<<<y", ["cat", "0<<<y"]],
+    ["echo 'a'>f", ["echo", "a", ">f"]],
+    ['echo "a">f', ["echo", "a", ">f"]],
+    // digits are a descriptor only as the whole word before the operator
+    ["echo x2>f", ["echo", "x2", ">f"]],
+    ["echo 2x>f", ["echo", "2x", ">f"]],
+    ['echo "2">f', ["echo", "2", ">f"]],
+    ["echo \\2>f", ["echo", "2", ">f"]],
+    ["echo a=2>f", ["echo", "a=2", ">f"]],
+    ["echo 22>f", ["echo", "22>f"]],
+    ["echo 2 >f", ["echo", "2", ">f"]],
+  ])("splits %s", (command, expected) => {
+    expect(words(command)).toEqual(expected);
+  });
+
+  it.each([
+    ["rg 'a>b'", ["rg", "a>b"]],
+    ['echo "x<y"', ["echo", "x<y"]],
+    ["git log --format='%h > %s'", ["git", "log", "--format=%h > %s"]],
+    ['git commit -m "a>b"', ["git", "commit", "-m", "a>b"]],
+    ["echo x\\>y", ["echo", "x>y"]],
+    ["echo x\\<y", ["echo", "x<y"]],
+    ["echo 'x'\">\"'y'", ["echo", "x>y"]],
+  ])("keeps %s literal", (command, expected) => {
+    const pipeline = tokenize(command);
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments[0]?.argv).toEqual(expected);
+      expect(pipeline.segments[0]?.meta).toEqual([]);
+    }
+  });
+
+  it("reads a redirect after an assignment-like word as an assignment and a redirect", () => {
+    const pipeline = tokenize("a=b>c");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      expect(pipeline.segments[0]?.env).toEqual({ a: "b" });
+      expect(pipeline.segments[0]?.meta).toEqual([0]);
+    }
+  });
+
+  it("flags only the redirect words as meta", () => {
+    const pipeline = tokenize("echo x>f y 2>&1 z<g");
+    expect(pipeline.ok).toBe(true);
+    if (pipeline.ok) {
+      const [segment] = pipeline.segments;
+      expect(segment?.argv).toEqual([
+        "echo",
+        "x",
+        ">f",
+        "y",
+        "2>&1",
+        "z",
+        "<g",
+      ]);
+      expect(segment?.meta).toEqual([2, 4, 6]);
+    }
+  });
+
+  it("lists the target of a glued redirect as a candidate exactly like a spaced one", () => {
+    const pairs: Array<[string, string]> = [
+      ["echo x > f", "echo x>f"],
+      ["echo x >> f", "echo x>>f"],
+      ["echo x 2> f", "echo x 2>f"],
+      ["echo x >| f", "echo x>|f"],
+      ["echo x &> f", "echo x&>f"],
+      ["echo x >& f", "echo x>&f"],
+      ["echo x <> f", "echo x<>f"],
+      ["cat x < f", "cat x<f"],
+      ["cat x 0< f", "cat x 0<f"],
+      ["cat x 2>&1", "cat x 2>&1"],
+      ["cat x <&-", "cat x<&-"],
+    ];
+    const list = (command: string) => {
+      const pipeline = tokenize(command);
+      expect(pipeline.ok, command).toBe(true);
+      return pipeline.ok
+        ? secretCandidates(pipeline.segments[0] as never).map(
+            (c) => `${c.path}:${c.write}`,
+          )
+        : [];
+    };
+    for (const [spaced, glued] of pairs) {
+      expect(list(glued), glued).toEqual(list(spaced));
+    }
+    expect(list("echo x>f")).toContain("f:true");
+    expect(list("cat x<f")).toContain("f:false");
+  });
+
+  it("keeps heredocs and here-strings working glued to the word before", () => {
+    const f = fixture();
+    const body = "subject\n\nsee /etc/passwd and $(rm -rf x) and `id`";
+    for (const head of ["git commit -F -", "git commit -F-", "cat", "cat -"]) {
+      for (const glued of ["<<'EOF'", '<<"EOF"']) {
+        const command = `${head}${glued}\n${body}\nEOF`;
+        expect(allowed(bash(f, command)), command).toBe(true);
+      }
+    }
+    expect(allowed(bash(f, "cat<<<'x'"))).toBe(true);
+    expect(allowed(bash(f, "cat -<<<'/etc/passwd'"))).toBe(false);
+    expect(allowed(bash(f, "cat <<<'/etc/passwd'"))).toBe(false);
+  });
+
+  it("applies paths.external to a glued redirect like a spaced one", () => {
+    const f = fixture();
+    const read = join(f.readDir, "a.txt");
+    const write = join(f.writeDir, "a.txt");
+    for (const command of [
+      `echo x>${write}`,
+      `echo x>>${write}`,
+      `echo x 2>${write}`,
+      `echo x&>${write}`,
+      `cat<${read}`,
+      `cat x<${read}`,
+    ]) {
+      expect(allowed(bash(f, command)), command).toBe(true);
+    }
+    for (const command of [
+      `echo x>${read}`,
+      `echo x>>${read}`,
+      `echo x&>${read}`,
+      `echo x>${f.readDir}/../a.txt`,
+      "echo x>/etc/hosts",
+      "cat</etc/hosts",
+    ]) {
+      expect(allowed(bash(f, command)), command).toBe(false);
+    }
+  });
+});
+
 describe("device paths in shell", () => {
   const devices = [
     "/dev/null",
@@ -440,6 +641,16 @@ describe("device paths in shell", () => {
     (d: string) => `cat <${d}`,
     (d: string) => `cat < ${d}`,
     (d: string) => `echo x | tee ${d}`,
+    // glued to the previous word (#79)
+    (d: string) => `echo x>${d}`,
+    (d: string) => `echo x>>${d}`,
+    (d: string) => `echo x>|${d}`,
+    (d: string) => `echo x 2>${d}`,
+    (d: string) => `echo x&>${d}`,
+    (d: string) => `echo x&>>${d}`,
+    (d: string) => `echo x>&${d}`,
+    (d: string) => `cat<${d}`,
+    (d: string) => `cat x<${d}`,
   ];
 
   it("are not path candidates in any redirect form", () => {
@@ -470,6 +681,62 @@ describe("device paths in shell", () => {
           "path escapes the worktree",
         );
       }
+    }
+  });
+});
+
+describe("a home that cannot be resolved (#73)", () => {
+  function viaEnv(f: Fixture, command: string, env: NodeJS.ProcessEnv): string {
+    return runHook(
+      "claude",
+      "PreToolUse",
+      JSON.stringify({
+        cwd: f.root,
+        tool_name: "Bash",
+        tool_input: { command },
+      }),
+      { cwd: () => f.root, env },
+    ).stdout;
+  }
+
+  function withHomeGlob(f: Fixture): void {
+    const doc = parse(charterWithoutWorktree());
+    doc.paths.external = { read: ["~/.wardens-cache/**"], write: [] };
+    writeFileSync(join(f.root, "panopticon.charter.yaml"), stringify(doc));
+  }
+
+  it("grants a ~ external read only when HOME resolves", () => {
+    const f = fixture();
+    withHomeGlob(f);
+    const command = "cat ~/.wardens-cache/x";
+    expect(allowed(viaEnv(f, command, { HOME: f.home }))).toBe(true);
+    for (const HOME of ["", "relative/home"]) {
+      expect(allowed(viaEnv(f, command, { HOME }))).toBe(false);
+    }
+  });
+
+  it("denies writes to and reads of home-relative paths as unprovable", () => {
+    const f = fixture();
+    for (const HOME of ["", "relative/home"]) {
+      for (const command of [
+        "echo hi > ~/x",
+        "tee ~/x",
+        "cat ~/.ssh/id_rsa",
+        "cd ~ && touch y",
+      ]) {
+        expect(allowed(viaEnv(f, command, { HOME })), command).toBe(false);
+      }
+      const write = runHook(
+        "claude",
+        "PreToolUse",
+        JSON.stringify({
+          cwd: f.root,
+          tool_name: "Write",
+          tool_input: { file_path: "~/x", content: "x" },
+        }),
+        { cwd: () => f.root, env: { HOME } },
+      ).stdout;
+      expect(allowed(write)).toBe(false);
     }
   });
 });

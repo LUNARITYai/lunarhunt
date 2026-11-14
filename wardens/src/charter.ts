@@ -16,7 +16,7 @@ const schemaPath = fileURLToPath(
   new URL("../schema/charter.schema.json", import.meta.url),
 );
 
-const CHARTER_FILENAME = "panopticon.charter.yaml";
+export const CHARTER_FILENAME = "panopticon.charter.yaml";
 const ALLOWED_NEGATION = "!*.example";
 const NEGATION_LISTS = new Set([
   "paths.protected.deny",

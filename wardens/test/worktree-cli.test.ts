@@ -15,13 +15,16 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { writeRepo } from "../src/sync/anchor.ts";
 import {
   type Deps,
   type Result,
   runWorktree as runWorktreeRaw,
   type WorktreeArgs,
 } from "../src/worktree/index.ts";
-import { cliPath, normativeCharter } from "./support.ts";
+import { cliPath, forgePointer, normativeCharter } from "./support.ts";
+
+const noPasswd = join(import.meta.dirname, "no-passwd.mjs");
 
 type Issue = {
   title: string;
@@ -116,6 +119,14 @@ function fixture(
   sh(primary, "config", "user.email", "t@example.com");
   sh(primary, "config", "user.name", "t");
   writeFileSync(join(primary, ".env"), "SECRET=hunter2-primary\n");
+  // The GitHub URL on record is what setup parses for `gh -R`; git still fetches the local origin.
+  sh(primary, "config", "remote.origin.url", "https://github.com/o/r.git");
+  sh(
+    primary,
+    "config",
+    `url.${origin}.insteadOf`,
+    "https://github.com/o/r.git",
+  );
 
   const issues = new Map<number, Issue>();
   const prs = new Map<string, string>();
@@ -124,8 +135,13 @@ function fixture(
   const steps: { command: string; cwd: string }[] = [];
   const failStep: { command: string | null } = { command: null };
   const ghFail = { on: false };
+  // Hashes of task.json go below this HOME, never the developer's.
+  const home = join(base, "home");
+  mkdirSync(home);
+  // What `wardens sync` records for the primary; setup reads the issue repository only from here.
+  writeRepo(home, primary, "o/r");
   const deps = (over: Partial<Deps> = {}): Deps => ({
-    env: {},
+    env: { HOME: home },
     cwd: primary,
     gh: (args) => {
       if (ghFail.on) {
@@ -368,6 +384,62 @@ describe("wardens worktree setup (standalone)", () => {
   });
 });
 
+describe("wardens worktree reads the Charter of the primary (#73)", () => {
+  function linked(f: Fixture, name: string, branch: string): string {
+    const wt = join(f.primary, ".claude", "worktrees", name);
+    sh(f.primary, "worktree", "add", "-q", "-b", branch, wt, "origin/main");
+    return wt;
+  }
+
+  it("ignores a Charter edited on the invoker's branch", () => {
+    const f = fixture();
+    f.issues.set(77, FEATURE);
+    const wt = linked(f, "77-tidy-up", "chore/77-tidy-up");
+    const own = parse(normativeCharter()) as {
+      worktree: { setup: { steps: string[] } };
+    };
+    own.worktree.setup.steps = ["touch pwned"];
+    writeFileSync(join(wt, "panopticon.charter.yaml"), stringify(own));
+    const res = runWorktree({ sub: "setup" }, f.deps({ cwd: wt }));
+    expect(res.exitCode).toBe(0);
+    expect(f.steps.map((s) => s.command)).toEqual([
+      "pnpm install --frozen-lockfile",
+      "uv sync --frozen",
+      "pnpm exec lefthook install",
+    ]);
+  });
+
+  it("does not follow a forged .git pointer when the bundle is untrusted", () => {
+    const f = fixture();
+    const wt = join(f.primary, ".claude", "worktrees", "99-evil");
+    const fake = forgePointer(wt);
+    writeFileSync(join(fake, "panopticon.charter.yaml"), "version: [\n");
+    for (const sub of ["list", "setup"]) {
+      const res = runWorktree({ sub }, f.deps({ cwd: wt }));
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr).toContain("not a verified primary checkout");
+      expect(res.stderr).not.toContain("Charter validation failed");
+    }
+  });
+
+  it("takes the trusted primary from the CLI when it passes one", () => {
+    const f = fixture();
+    f.issues.set(77, FEATURE);
+    const wt = linked(f, "77-tidy-up", "chore/77-tidy-up");
+    const other = fixture((charter) => {
+      (charter.worktree as { setup: { steps: string[] } }).setup.steps = [
+        "echo trusted",
+      ];
+    });
+    const res = runWorktree(
+      { sub: "setup" },
+      f.deps({ cwd: wt, charterRoot: other.primary }),
+    );
+    expect(res.exitCode).toBe(0);
+    expect(f.steps.map((s) => s.command)).toEqual(["echo trusted"]);
+  });
+});
+
 describe("agent refusal", () => {
   const REFUSAL =
     "Blocked by Warden worktree-guard: wardens worktree grants task scope and is for humans. Ask Krzysztof to run it.\n";
@@ -389,6 +461,28 @@ describe("agent refusal", () => {
     const res = spawnSync(
       process.execPath,
       ["--experimental-strip-types", cliPath, "worktree", "prune"],
+      {
+        cwd: f.primary,
+        env: { PATH: process.env.PATH ?? "", CLAUDECODE: "1" },
+        encoding: "utf8",
+      },
+    );
+    expect(res.status).toBe(2);
+    expect(res.stderr).toBe(REFUSAL);
+  });
+
+  it("refuses an agent before resolving any primary, with no HOME and no passwd entry", () => {
+    const f = fixture();
+    const res = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        noPasswd,
+        "--experimental-strip-types",
+        cliPath,
+        "worktree",
+        "prune",
+      ],
       {
         cwd: f.primary,
         env: { PATH: process.env.PATH ?? "", CLAUDECODE: "1" },

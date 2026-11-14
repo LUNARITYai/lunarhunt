@@ -4,12 +4,14 @@ import { runDoctor } from "./doctor.ts";
 import { type RunResult, runCheck, runHook } from "./engine.ts";
 import { resolveRole } from "./engines.ts";
 import { gitToplevel } from "./git.ts";
+import { trustedHome } from "./home.ts";
 import { engineMessage } from "./messages.ts";
 import { runSync } from "./sync/index.ts";
 import { runAgentTrailer } from "./trailer.ts";
+import { bundlePrimary } from "./trusted.ts";
 import { runWorktreeHook } from "./worktree/hook.ts";
-import { type Result, runWorktree } from "./worktree/index.ts";
-import { fail, msg } from "./worktree/types.ts";
+import { agentRefusal, type Result, runWorktree } from "./worktree/index.ts";
+import { fail, msg, realDeps } from "./worktree/types.ts";
 
 function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
@@ -159,7 +161,20 @@ async function main(): Promise<void> {
                   ),
                 );
         } else {
-          result = runWorktree({ sub, arg, ...rest });
+          // An agent is refused before any primary is resolved.
+          const refusal = agentRefusal(sub, realDeps.env);
+          const trusted =
+            refusal === null
+              ? bundlePrimary(import.meta.url, trustedHome(process.env))
+              : null;
+          result =
+            refusal ??
+            runWorktree(
+              { sub, arg, ...rest },
+              trusted === null
+                ? realDeps
+                : { ...realDeps, charterRoot: trusted },
+            );
         }
         if (result.stdout.length > 0) {
           process.stdout.write(result.stdout);
@@ -191,7 +206,13 @@ async function main(): Promise<void> {
     .requiredOption("--event <event>", "hook event name")
     .action(async (opts: { tool: string; event: string }) => {
       const stdin = await readStdin();
-      process.exitCode = emit(runHook(opts.tool, opts.event, stdin));
+      // The primary comes from where this bundle sits (the launcher exec'd it
+      // from the trusted primary), never from the environment or the worktree.
+      // `null` makes the engine fail closed.
+      const primary = bundlePrimary(import.meta.url, trustedHome(process.env));
+      process.exitCode = emit(
+        runHook(opts.tool, opts.event, stdin, { primary }),
+      );
     });
 
   await program.parseAsync(process.argv);

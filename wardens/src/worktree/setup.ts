@@ -8,7 +8,9 @@ import {
 } from "node:fs";
 import { basename, join, sep } from "node:path";
 import type { WorktreeConfig } from "../charter.ts";
+import { trustedHome } from "../home.ts";
 import { loadTask } from "../task.ts";
+import { recordTaskHash } from "../task-integrity.ts";
 import { listWorktrees } from "./git.ts";
 import { parseBranch } from "./issue.ts";
 import { type Deps, fail, msg, ok, type Result } from "./types.ts";
@@ -99,6 +101,7 @@ function readTemplate(wt: string, template: string): string | null {
  */
 export function setupWorktree(
   wt: string,
+  primary: string,
   cfg: WorktreeConfig,
   task: TaskInfo,
   deps: Deps,
@@ -125,6 +128,25 @@ export function setupWorktree(
       ),
     );
   }
+  const home = trustedHome(deps.env);
+  if (home === null) {
+    return fail(
+      msg(
+        "cannot resolve HOME, so the task.json hash cannot be recorded",
+        "Set HOME to an absolute path of an existing directory and run wardens worktree setup again",
+      ),
+    );
+  }
+  const taskText = `${JSON.stringify(
+    {
+      issue: task.issue,
+      branch: task.branch,
+      slug: task.slug,
+      allowed_paths: task.allowedPaths,
+    },
+    null,
+    2,
+  )}\n`;
   const dir = join(wt, ".panopticon");
   try {
     if (isSymlink(dir)) {
@@ -132,20 +154,7 @@ export function setupWorktree(
     }
     mkdirSync(dir, { recursive: true });
     rmSync(join(dir, "setup.ok"), { force: true });
-    writeFresh(
-      join(dir, "task.json"),
-      `${JSON.stringify(
-        {
-          issue: task.issue,
-          branch: task.branch,
-          slug: task.slug,
-          allowed_paths: task.allowedPaths,
-        },
-        null,
-        2,
-      )}\n`,
-      0o644,
-    );
+    writeFresh(join(dir, "task.json"), taskText, 0o644);
   } catch {
     return fail(
       msg(
@@ -159,6 +168,16 @@ export function setupWorktree(
       msg(
         "the issue's Allowed paths do not make a valid task.json",
         "Fix the Allowed paths section of the issue and run wardens worktree setup --refresh",
+      ),
+    );
+  }
+  try {
+    recordTaskHash(home, primary, wt, taskText);
+  } catch {
+    return fail(
+      msg(
+        "the task.json hash could not be recorded under ~/.config/panopticon/tasks",
+        "Fix the permissions of that directory and run wardens worktree setup again",
       ),
     );
   }

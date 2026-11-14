@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeConfig } from "./charter.ts";
 import {
@@ -11,6 +10,7 @@ import {
 import { externalAllows } from "./external.ts";
 import { EngineFailure } from "./failures.ts";
 import { classifyCwd } from "./git.ts";
+import { homeOrUnresolved } from "./home.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -493,7 +493,7 @@ function readOnlyPipeline(
   if (pipeline.comment || pipeline.newline) {
     return false;
   }
-  const home = ctx.home ?? homedir();
+  const home = ctx.home ?? homeOrUnresolved(process.env);
   for (const [position, segment] of pipeline.segments.entries()) {
     if (Object.keys(segment.env).length > 0 || segment.expand.length > 0) {
       return false;

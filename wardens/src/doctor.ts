@@ -1,16 +1,24 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 import { loadCharterAt } from "./charter.ts";
 import {
+  checkCharterDrift,
+  checkIssueRepo,
+  checkPrimaryBehind,
   checkTaskDatabases,
+  checkTaskIntegrity,
   checkWorktreeExclusions,
   checkWorktrees,
   defaultWorktreeDeps,
@@ -18,12 +26,13 @@ import {
 } from "./doctor-worktree.ts";
 import { mapPayload, type ToolName } from "./event.ts";
 import { gitToplevel } from "./git.ts";
+import { trustedHome, UNRESOLVED_HOME } from "./home.ts";
 import { MAPPING_ROWS } from "./mapping.ts";
+import { CHARTER_INVALID_MESSAGE } from "./messages.ts";
 import { embeddedHash, hashSources } from "./source-hash.ts";
 import {
   anchorListsPrimary,
   anchorPath,
-  homeOf,
   parseAnchor,
   readAnchorText,
   writeAnchor,
@@ -52,6 +61,8 @@ export type DoctorDeps = {
   now: () => number;
   /** Output of `claude --version`, or null when `claude` is not on PATH. */
   claudeVersion: () => string | null;
+  /** Enabled glob-related shell options (`setopt` / `shopt -s` output), "" if unknown, null when the shell cannot be run. */
+  shellOptions?: () => string | null;
   /** Override of the primary checkout; defaults to the one derived from the file system, never from git. */
   primary?: string;
   /** Owner the anchor file and its directory must have; defaults to the current user. */
@@ -66,7 +77,7 @@ export const DUPLICATES_WARNING =
   "Cursor is running the Claude Code hooks too. Disable third-party hooks in Cursor settings.";
 export const STALE_BUNDLE_WARNING =
   "Run pnpm --filter wardens build in the primary checkout.";
-export const MIN_CLAUDE_VERSION = [2, 1, 295] as const;
+export const MIN_CLAUDE_VERSION = [2, 1, 321] as const;
 
 const BUNDLE_REL = "wardens/dist/wardens.mjs";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -408,11 +419,24 @@ function breakHookRealBundle(
   if (readText(bundlePath) === null) {
     return ["the real bundle is missing, so (b) and (c) cannot run"];
   }
-  const repo = mkdtempSync(join(tmpdir(), "wardens-doctor-"));
+  // The hook reads the Charter of the primary its bundle sits in (#73), so the
+  // bundle is copied into an anchored throwaway primary that holds the invalid
+  // Charter, under a throwaway HOME. The deny must name that reason.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "wardens-doctor-")));
+  const repo = join(home, "primary");
+  const copy = join(repo, "wardens", "dist", "wardens.mjs");
   const problems: string[] = [];
   try {
+    mkdirSync(repo);
     execFileSync("git", ["init", "-q"], { cwd: repo, stdio: "ignore" });
     writeFileSync(join(repo, "panopticon.charter.yaml"), "invalid: [\n");
+    mkdirSync(dirname(copy), { recursive: true });
+    cpSync(bundlePath, copy);
+    const schema = join(dirname(bundlePath), "..", "schema");
+    if (existsSync(schema)) {
+      cpSync(schema, join(repo, "wardens", "schema"), { recursive: true });
+    }
+    writeAnchor(home, repo);
     for (const tool of ["claude", "cursor"] as const) {
       const args = ["hook", "--tool", tool, "--event", PRE_EVENT[tool]];
       const attempts: [string, string][] = [
@@ -420,20 +444,25 @@ function breakHookRealBundle(
         ["malformed stdin", "not json"],
       ];
       for (const [what, input] of attempts) {
-        const res = spawnSync(process.execPath, [bundlePath, ...args], {
+        const res = spawnSync(process.execPath, [copy, ...args], {
           cwd: repo,
-          env: { ...env, CLAUDE_PROJECT_DIR: repo },
+          env: { ...env, HOME: home, CLAUDE_PROJECT_DIR: repo },
           input,
           encoding: "utf8",
           timeout: CHILD_TIMEOUT_MS,
         });
-        if (!isToolDeny(tool, res.stdout ?? "")) {
+        const stdout = res.stdout ?? "";
+        const reason =
+          what === "an invalid Charter"
+            ? stdout.includes(CHARTER_INVALID_MESSAGE)
+            : true;
+        if (!isToolDeny(tool, stdout) || !reason) {
           problems.push(`${tool} hook does not deny ${what}`);
         }
       }
     }
   } finally {
-    rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
   return problems;
 }
@@ -462,6 +491,13 @@ function checkLauncherAnchor(
   home: string,
   uid: number | undefined,
 ): CheckResult {
+  if (!isAbsolute(home)) {
+    return result(
+      "launcher-anchor",
+      "fail",
+      "cannot resolve HOME, so the launcher anchor was not checked. Set HOME to an absolute path of an existing directory",
+    );
+  }
   const file = anchorPath(home);
   const text = readAnchorText(home);
   if (text === null) {
@@ -624,7 +660,7 @@ function checkDuplicates(toplevel: string, now: number): CheckResult {
 function checkDisableAllHooks(toplevel: string, home: string): CheckResult {
   const files = [
     join(toplevel, ".claude", "settings.local.json"),
-    join(home, ".claude", "settings.json"),
+    ...(isAbsolute(home) ? [join(home, ".claude", "settings.json")] : []),
   ];
   const offenders = files.filter(
     (file) => readJsonFile(file)?.disableAllHooks === true,
@@ -676,11 +712,76 @@ function defaultClaudeVersion(): string | null {
   }
 }
 
+/**
+ * `globdots` (zsh) and `dotglob` (bash) make `*` match dotfiles, so the glob
+ * proof for read candidates (#78) would be wrong; the extended-glob options
+ * add operators (`^`, `#`, `~`) the tokenizer only treats conservatively.
+ */
+function checkShellGlobOptions(read: () => string | null): CheckResult {
+  let options: string | null;
+  try {
+    options = read();
+  } catch {
+    options = null;
+  }
+  if (options === null) {
+    return result(
+      "shell-glob-options",
+      "warn",
+      "could not read the shell's glob options",
+    );
+  }
+  if (/^(globdots|dotglob)\b/m.test(options)) {
+    return result(
+      "shell-glob-options",
+      "fail",
+      "globdots/dotglob is on in your shell, so * matches dotfiles. Turn it off for the shell that runs agent commands.",
+    );
+  }
+  if (/^(extendedglob|extglob)\b/m.test(options)) {
+    return result(
+      "shell-glob-options",
+      "warn",
+      "extendedglob/extglob is on in your shell. Wardens handle ^, # and ~ in a word conservatively, as wildcards, and may deny harmless commands.",
+    );
+  }
+  return result("shell-glob-options", "ok", "no dotfile globbing");
+}
+
+/** The enabled options of the login shell with the user's rc, or null when it cannot be run. "" for a shell this does not know. */
+function defaultShellOptions(env: NodeJS.ProcessEnv): string | null {
+  // The account's login shell, not `$SHELL`: the environment can name any script.
+  let shell = "";
+  try {
+    shell = userInfo().shell ?? "";
+  } catch {
+    return null;
+  }
+  const name = shell.split("/").pop() ?? "";
+  const script =
+    name === "zsh"
+      ? "source ~/.zshrc >/dev/null 2>&1; setopt"
+      : name === "bash"
+        ? "source ~/.bashrc >/dev/null 2>&1; shopt -s"
+        : null;
+  if (script === null) {
+    return "";
+  }
+  const res = spawnSync(shell, ["-l", "-c", script], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5000,
+    env,
+  });
+  return res.status === 0 ? res.stdout : null;
+}
+
 export function defaultDoctorDeps(): DoctorDeps {
   return {
+    shellOptions: () => defaultShellOptions(process.env),
     cwd: process.cwd(),
     env: process.env,
-    home: homeOf(process.env),
+    home: trustedHome(process.env) ?? "",
     now: () => Date.now(),
     claudeVersion: defaultClaudeVersion,
   };
@@ -693,7 +794,10 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
   }
   let primary = deps.primary;
   if (primary === undefined) {
-    const derived = structuralPrimary(toplevel, deps.home);
+    const derived = structuralPrimary(
+      toplevel,
+      isAbsolute(deps.home) ? deps.home : UNRESOLVED_HOME,
+    );
     if (!derived.ok) {
       return [
         result(
@@ -724,8 +828,13 @@ export function runChecks(ci: boolean, deps: DoctorDeps): CheckResult[] {
       checkDuplicates(toplevel, deps.now()),
       checkDisableAllHooks(toplevel, deps.home),
       checkClaudeVersion(deps.claudeVersion()),
-      checkWorktrees(toplevel, primary, worktreeDeps),
-      checkTaskDatabases(toplevel, primary, worktreeDeps),
+      checkShellGlobOptions(deps.shellOptions ?? (() => "")),
+      checkWorktrees(primary, worktreeDeps),
+      checkTaskDatabases(primary, worktreeDeps),
+      checkCharterDrift(toplevel, primary),
+      checkTaskIntegrity(primary, deps.home),
+      checkIssueRepo(primary, deps.home),
+      checkPrimaryBehind(primary),
     );
   }
   return results;

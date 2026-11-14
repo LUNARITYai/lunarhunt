@@ -15,6 +15,13 @@ export const CHARTER_INVALID_MESSAGE = wardenMessage(
   "Label the issue needs:human",
 );
 
+/** A hook run whose bundle is not the one of a primary listed in the launcher anchor (#73). */
+export const NO_PRIMARY_MESSAGE = wardenMessage(
+  "engine",
+  "no trusted primary checkout could be resolved for this hook run, so the Charter cannot be trusted",
+  "Ask Krzysztof to run wardens sync in the primary checkout",
+);
+
 export const TOPLEVEL_UNRESOLVED = "git toplevel could not be resolved";
 
 /** Next action that needs no tool call: tools are blocked without a toplevel. */

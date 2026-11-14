@@ -24,7 +24,7 @@ import {
 } from "../src/doctor.ts";
 import { MAPPING_ROWS } from "../src/mapping.ts";
 import { embeddedHash, hashSources } from "../src/source-hash.ts";
-import { anchorPath, writeAnchor } from "../src/sync/anchor.ts";
+import { anchorPath, writeAnchor, writeRepo } from "../src/sync/anchor.ts";
 import { render } from "../src/sync/index.ts";
 import {
   cliPath,
@@ -97,14 +97,20 @@ function fixture(overrides: Partial<DoctorDeps> = {}): Fixture {
     recursive: true,
   });
   mkdirSync(join(primary, ".git"));
+  cpSync(
+    join(root, "panopticon.charter.yaml"),
+    join(primary, "panopticon.charter.yaml"),
+  );
   const home = realpathSync(scratchDir());
   writeAnchor(home, primary);
+  writeRepo(home, primary, "o/r");
   const deps: DoctorDeps = {
     cwd: root,
     env: { PATH: process.env.PATH ?? "", HOME: home },
     home,
     now: () => NOW,
-    claudeVersion: () => "2.1.295 (Claude Code)",
+    claudeVersion: () => "2.1.321 (Claude Code)",
+    shellOptions: () => "",
     primary,
     bundlePath: bundle,
     ...overrides,
@@ -176,8 +182,14 @@ describe("wardens doctor", () => {
       "ok duplicates",
       "ok disable-all-hooks",
       "ok claude-version",
+      "ok shell-glob-options",
       "ok worktrees",
       "ok task-databases",
+      "ok charter-drift",
+      "ok task-integrity",
+      "ok issue-repo",
+      // The fixture primary has no origin/main, which only warns.
+      "warn primary-behind",
     ]);
   });
 
@@ -398,6 +410,21 @@ describe("break-hook", () => {
     );
     expect(res.message).toContain("cursor hook does not deny malformed stdin");
   });
+
+  it("fails when the real bundle denies an invalid Charter for another reason", () => {
+    const stub = join(scratchDir(), "other.mjs");
+    writeFileSync(
+      stub,
+      'process.stdout.write(JSON.stringify({ permission: "deny", hookSpecificOutput: { permissionDecision: "deny" } }));\n',
+    );
+    const { deps } = fixture({ bundlePath: stub });
+    const res = byId(runChecks(true, deps), "break-hook");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain(
+      "claude hook does not deny an invalid Charter",
+    );
+    expect(res.message).not.toContain("malformed stdin");
+  });
 });
 
 describe("bundle", () => {
@@ -511,15 +538,58 @@ describe("disable-all-hooks", () => {
   });
 });
 
+describe("shell-glob-options (#78)", () => {
+  const run = (options: string | null) =>
+    byId(
+      runChecks(false, fixture({ shellOptions: () => options }).deps),
+      "shell-glob-options",
+    );
+
+  it("fails when globdots (zsh) or dotglob (bash) is on", () => {
+    expect(run("autocd\nglobdots\nnomatch\n").status).toBe("fail");
+    expect(run("dotglob\ton\nnullglob\toff\n").status).toBe("fail");
+  });
+
+  it("warns when extendedglob or extglob is on", () => {
+    expect(run("extendedglob\nnomatch\n").status).toBe("warn");
+    expect(run("extendedglob\n").message).toContain("conservatively");
+    expect(run("extglob\ton\n").status).toBe("warn");
+  });
+
+  it("is ok without those options and warns when the shell cannot be run", () => {
+    expect(run("nomatch\nnotify\n").status).toBe("ok");
+    expect(run("").status).toBe("ok");
+    expect(run(null).status).toBe("warn");
+  });
+
+  it("does not throw when the probe does", () => {
+    const deps = fixture({
+      shellOptions: () => {
+        throw new Error("boom");
+      },
+    }).deps;
+    expect(byId(runChecks(false, deps), "shell-glob-options").status).toBe(
+      "warn",
+    );
+  });
+
+  it("is machine-only", () => {
+    const { deps } = fixture({ shellOptions: () => "globdots\n" });
+    expect(runChecks(true, deps).map((r) => r.id)).not.toContain(
+      "shell-glob-options",
+    );
+  });
+});
+
 describe("claude-version", () => {
-  it("warns below 2.1.295, is ok at or above it and ok without claude", () => {
+  it("warns below 2.1.321, is ok at or above it and ok without claude", () => {
     const status = (v: string | null) =>
       byId(
         runChecks(false, fixture({ claudeVersion: () => v }).deps),
         "claude-version",
       ).status;
-    expect(status("2.1.294 (Claude Code)")).toBe("warn");
-    expect(status("2.1.295 (Claude Code)")).toBe("ok");
+    expect(status("2.1.320 (Claude Code)")).toBe("warn");
+    expect(status("2.1.321 (Claude Code)")).toBe("ok");
     expect(status("2.2.0")).toBe("ok");
     expect(status("3.0.0")).toBe("ok");
     expect(status("garbage")).toBe("warn");
@@ -541,6 +611,15 @@ describe("launcher-anchor", () => {
     expect(runChecks(true, deps).map((r) => r.id)).not.toContain(
       "launcher-anchor",
     );
+  });
+
+  it("fails for a home that is not absolute, without reading a relative anchor (#73)", () => {
+    for (const home of ["", "relative/home"]) {
+      const { deps } = fixture();
+      const res = check({ ...deps, home });
+      expect(res.status).toBe("fail");
+      expect(res.message).toContain("cannot resolve HOME");
+    }
   });
 
   it("fails when the anchor is missing", () => {

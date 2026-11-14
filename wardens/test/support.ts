@@ -28,12 +28,27 @@ export function charterWithoutWorktree(): string {
   return text;
 }
 
-export function tempRepo(options: { worktree?: boolean } = {}): string {
+/**
+ * `open` lets every path through `allowed_paths`, for tests of the tokenizer and
+ * of the other rules that write to a bare `out.txt`: shell writes are in scope
+ * for `scope-guard` since #83, and the Charter's own scope is the repository's.
+ */
+export function tempRepo(
+  options: { worktree?: boolean; open?: boolean } = {},
+): string {
   const dir = mkdtempSync(join(tmpdir(), "wardens-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  const charter = options.worktree
+    ? normativeCharter()
+    : charterWithoutWorktree();
   writeFileSync(
     join(dir, "panopticon.charter.yaml"),
-    options.worktree ? normativeCharter() : charterWithoutWorktree(),
+    options.open
+      ? charter.replace(
+          /^ {2}allowed_paths:\n/m,
+          '  allowed_paths:\n    - "**"\n',
+        )
+      : charter,
   );
   return dir;
 }
