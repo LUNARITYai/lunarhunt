@@ -662,7 +662,7 @@ Once Feature 1 merges, the code of Features 2–5 can be built in parallel, and 
 
 ## Prerequisites for Krzysztof (before Task 2)
 
-These are human-only paths (`.github/**`, `.env.example`, `.devcontainer/**` are `ask`), so no agent task can do them.
+`.github/workflows/**`, `.env.example` and `.devcontainer/**` are `ask` paths ([ADR-0019](../decisions/0019-ask-paths-that-agents-can-reach.md)): an agent can edit them only in an interactive session with Krzysztof's approval; a background session is denied. The Charter is `deny` for agents, so item 3 is Krzysztof's.
 
 1. **Postgres 18 in CI `check`:** add a `postgres:18.6-alpine` service (or compose) to the `check` job in `.github/workflows/check.yml`, and pass `DATABASE_URL` and `DATABASE_URL_MIGRATE` into the `docker run`. Without it the Task 2 tests cannot run in CI.
 2. **Two database roles:** a migration role that owns schema `lunarhunt`, and a runtime role with DML only, no `TRUNCATE`, no `ALTER`, not a table owner. Add `DATABASE_URL_MIGRATE` beside `DATABASE_URL` in `.env.example` and the Dev Container. Without it the immutability triggers can be dropped by the app's own role.
