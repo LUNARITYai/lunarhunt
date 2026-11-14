@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-13
 decision-makers: Krzysztof Oszczapiński
 consulted: spec-writer (AI)
@@ -13,7 +13,7 @@ ADR-0016 D8 (proposed) requires an agreed data model and API contract before par
 
 LunarHunt also holds two kinds of risky data: the user's CV and other personal data (C-19), and job-offer content from outside sources that may carry prompt injection (C-20). The model must make both visible per field, and the user must be able to delete personal data.
 
-The full model, API resource list and open questions are in the spec [`docs/specs/2026-11-13-lunarhunt-data-model.md`](../specs/2026-11-13-lunarhunt-data-model.md) (issue #105). This ADR records the decisions that later specs must not reopen.
+The full model, API resource list and the questions Krzysztof decided are in the spec [`docs/specs/2026-11-13-lunarhunt-data-model.md`](../specs/2026-11-13-lunarhunt-data-model.md) (issue #105). This ADR records the decisions that later specs must not reopen.
 
 ## Decision Drivers
 
@@ -167,11 +167,10 @@ Agents do not edit these files (C-24).
 - `apps/api/AGENTS.md`, after Task 2: replace "No migration tool is configured" with the Alembic commands, the `--rev-id` naming rule and the area package layout. `apps/api/migrations/README.md` likewise.
 - `docs/specs/AGENTS.md`: note the D10 exception for the data model spec.
 - ADR-0011, More Information: add "Amended by ADR-0018 (D10: the LunarHunt data model spec stays in `docs/specs/` as a living baseline)".
-- `docs/decision-log.md`: a row for this ADR after #101 merges.
-
 ## More Information
 
 - Spec: [`docs/specs/2026-11-13-lunarhunt-data-model.md`](../specs/2026-11-13-lunarhunt-data-model.md); issue #105.
 - RFC 9457 Problem Details: <https://www.rfc-editor.org/rfc/rfc9457>; Alembic: <https://alembic.sqlalchemy.org/>. The `oasdiff` `x-stability-level` behaviour is taken from its documentation and verified in Task 3.
 - Related: ADR-0007 (contract generation, `oasdiff`), ADR-0010 (The Ledger, log redaction), ADR-0011 (spec process), ADR-0016 D3 and D8 (proposed; serialization and contracts first).
+- Krzysztof accepted the recommended answer to all 18 spec questions on 2026-11-14 ("Q all ok", decision queue on #7) and the pull request size ("111 size ok").
 - Revisit when the auth ADR is accepted or when LunarHunt becomes multi-user.
