@@ -111,12 +111,35 @@ const ALLOWED = [
 // Out of reach by design (best effort): interpreters, xargs, scripts, aliases
 // used apart from their definition. Safety comes from the entrypoint itself.
 
+// Since #92/#95 the command-guard also refuses these before the entrypoint
+// rule runs (groups, compound commands, dynamic words), with its own message.
+// They stay denied; only the wording differs.
+const DENIED_EARLIER = new Set([
+  "{node,wardens/dist/wardens.mjs} worktree create --tool claude",
+  '$bundle worktree create "$@"',
+  "wardens worktree $'cr\\x65ate' --tool claude",
+  "wardens worktree {create,remove} --tool claude",
+  "v=create; wardens worktree $v --tool claude",
+  'wardens worktree create --tool "$t"',
+  'wardens worktree "$verb" "$flag" claude',
+  "(wardens worktree create --tool claude)",
+  "if true; then wardens worktree create --tool claude; fi",
+  "! wardens worktree remove --tool claude",
+  "{ wardens worktree create --tool claude; }",
+  "while true; do wardens worktree create --tool claude; done",
+  "time wardens worktree remove --tool claude",
+  `bash -c 'node ${BUNDLE} worktree create --tool claude'`,
+  `sh -c "wardens worktree remove --tool claude"`,
+]);
+
 describe("agents cannot invoke the worktree hook entrypoints from a shell", () => {
   it.each(DENIED)("denies: %s", (command) => {
     const out = bash(command);
     expect(out).toContain('"deny"');
     expect(out).toContain("Blocked by Warden command-guard");
-    expect(out).toContain("worktree hook entrypoints");
+    if (!DENIED_EARLIER.has(command)) {
+      expect(out).toContain("worktree hook entrypoints");
+    }
   });
 
   it.each(ALLOWED)("allows: %s", (command) => {

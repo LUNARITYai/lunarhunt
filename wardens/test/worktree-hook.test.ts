@@ -15,6 +15,7 @@ import { join, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
+import { writeRepo } from "../src/sync/anchor.ts";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
 import type { Deps, Result } from "../src/worktree/index.ts";
 import { normativeCharter, repoRoot } from "./support.ts";
@@ -51,6 +52,8 @@ type Repo = {
   base: string;
   origin: string;
   primary: string;
+  /** The HOME of the hook process: task.json hashes and the sync records live below it. */
+  home: string;
   steps: string[];
   failStep: { command: string | null };
   deps: (cwd?: string) => Deps;
@@ -101,10 +104,22 @@ function repo(options: RepoOptions = {}): Repo {
   sh(primary, "config", "user.email", "t@example.com");
   sh(primary, "config", "user.name", "t");
   sh(primary, "config", "commit.gpgsign", "false");
+  // The GitHub URL on record is what setup parses for `gh -R`; git still fetches the local origin.
+  sh(primary, "config", "remote.origin.url", "https://github.com/o/r.git");
+  sh(
+    primary,
+    "config",
+    `url.${origin}.insteadOf`,
+    "https://github.com/o/r.git",
+  );
+  const home = join(base, "home");
+  mkdirSync(home);
+  // What `wardens sync` records for the primary; the issue repository is read only from here.
+  writeRepo(home, primary, "o/r");
   const steps: string[] = [];
   const failStep: { command: string | null } = { command: null };
   const deps = (cwd = primary): Deps => ({
-    env: { CLAUDECODE: "1" },
+    env: { CLAUDECODE: "1", HOME: home },
     cwd,
     gh: (args) =>
       args[0] === "issue"
@@ -119,6 +134,7 @@ function repo(options: RepoOptions = {}): Repo {
     base,
     origin,
     primary,
+    home,
     steps,
     failStep,
     deps,
@@ -952,7 +968,12 @@ describe("CLI entrypoint", () => {
         cwd: r.primary,
         input,
         encoding: "utf8",
-        env: { ...process.env, CLAUDECODE: "1", PANOPTICON_AGENT: "claude" },
+        env: {
+          ...process.env,
+          CLAUDECODE: "1",
+          PANOPTICON_AGENT: "claude",
+          HOME: r.home,
+        },
       },
     );
   }
@@ -1017,6 +1038,7 @@ describe("CLI entrypoint", () => {
         "--experimental-strip-types",
         join(import.meta.dirname, "noisy-runner.ts"),
         r.primary,
+        r.home,
       ],
       {
         cwd: r.primary,

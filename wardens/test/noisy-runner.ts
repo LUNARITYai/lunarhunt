@@ -1,5 +1,5 @@
 // Test helper, run in a child process: WorktreeCreate with the real setup-step
-// runner (its output goes to fd 2) and a stub `gh`. argv[2] is the anchor.
+// runner (its output goes to fd 2) and a stub `gh`. argv[2] is the anchor, argv[3] the HOME.
 import { readFileSync } from "node:fs";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
 import { hookDeps } from "../src/worktree/types.ts";
@@ -12,7 +12,7 @@ const res = runWorktreeHook(
   readFileSync(0, "utf8"),
   {
     ...hookDeps,
-    env: { CLAUDECODE: "1" },
+    env: { CLAUDECODE: "1", HOME: process.argv[3] ?? "" },
     gh: (args) => ({
       status: 0,
       stdout: JSON.stringify({
