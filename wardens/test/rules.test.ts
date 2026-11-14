@@ -101,8 +101,15 @@ describe("scope-guard", () => {
       ".github/CODEOWNERS",
       ".github/pull_request_template.md",
       ".github/renovate.json5",
+      ".github/labels.yml",
+      ".github/ISSUE_TEMPLATE/bug.yml",
+      ".github/workflows.yml",
+      ".github/workflows-x/a.yml",
+      ".github/actions/setup/action.yml",
       ".claude/settings.json",
+      ".claude/skills/x/SKILL.md",
       ".cursor/hooks.json",
+      ".cursor/rules/x.mdc",
       "lefthook.yml",
       ".gitignore",
     ];
@@ -119,6 +126,7 @@ describe("scope-guard", () => {
     const root = tempRepo();
     const paths = [
       ".github/workflows/check.yml",
+      ".github/workflows/sub/x.yml",
       ".devcontainer/devcontainer.json",
       "deploy/app.yaml",
       ".env.example",
