@@ -30,6 +30,10 @@ paths:
     - "pnpm-lock.yaml"
     - "pnpm-workspace.yaml"
     - "turbo.json"
+    - ".github/workflows/**"
+    - ".devcontainer/**"
+    - "deploy/**"
+    - ".env.example"
   protected:
     deny:
       - "panopticon.charter.yaml"
@@ -44,6 +48,9 @@ paths:
       - "CLAUDE.md"
       - "apps/api/migrations/**"
       - ".env.example"
+      - ".github/workflows/**"
+      - ".devcontainer/**"
+      - "deploy/**"
     non_interactive_ask: deny
   generated:
     - "packages/api-client/src/**"
@@ -191,6 +198,7 @@ risk:
       - ".cursor/**"
       - "lefthook.yml"
       - "deploy/**"
+      - ".devcontainer/**"
       - "apps/api/migrations/**"
       - "wardens/**"
       - "docs/decisions/**"

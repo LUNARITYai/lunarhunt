@@ -213,3 +213,4 @@ Negated globs (`!`) are allowed only in `paths.protected.deny` and `paths.secret
 - Decisions made by Krzysztof on 2026-11-04 (design session), including A1–A5; ADR accepted on 2026-11-04. Recorded in `docs/decision-log.md`.
 - Related: ADR-0002 (amendment rules), ADR-0003, ADR-0004, ADR-0006, ADR-0007, ADR-0008, ADR-0009, ADR-0011 (amended), ADR-0010 (log access), ADR-0012 (worktree setup reads `.env.example`), ADR-0014 (Renovate).
 - Constitution principles updated under this ADR: C-12, C-13, C-18, C-21, C-22, C-24, C-26.
+- Amended by ADR-0019: in the D1 `ask` list, `.claude/**`, `.cursor/**` and `.github/**` outside `workflows/` are human-only, not `ask`; `.devcontainer/**` is a new `ask` path; the root `AGENTS.md` and the root `CLAUDE.md` are human-only. The schema example is superseded on these lines.

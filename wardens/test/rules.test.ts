@@ -94,20 +94,50 @@ describe("scope-guard", () => {
 
   it("denies root paths that sit outside scope instead of asking", () => {
     const root = tempRepo();
+    // Human-only paths (ADR-0019 D3): outside allowed_paths, so never asked.
     const paths = [
       "AGENTS.md",
       "CLAUDE.md",
-      ".github/workflows/check.yml",
+      ".github/CODEOWNERS",
+      ".github/pull_request_template.md",
+      ".github/renovate.json5",
+      ".github/labels.yml",
+      ".github/ISSUE_TEMPLATE/bug.yml",
+      ".github/workflows.yml",
+      ".github/workflows-x/a.yml",
+      ".github/actions/setup/action.yml",
       ".claude/settings.json",
+      ".claude/skills/x/SKILL.md",
       ".cursor/hooks.json",
-      "deploy/app.yaml",
+      ".cursor/rules/x.mdc",
+      "lefthook.yml",
       ".gitignore",
+    ];
+    for (const path of paths) {
+      for (const interactive of [true, false]) {
+        const verdict = decide(root, { path, interactive });
+        expect(verdict.rule, path).toBe("scope-guard");
+        expect(verdict.decision, path).toBe("deny");
+      }
+    }
+  });
+
+  it("asks for the reachable ask paths of ADR-0019 and denies them when the session cannot ask", () => {
+    const root = tempRepo();
+    const paths = [
+      ".github/workflows/check.yml",
+      ".github/workflows/sub/x.yml",
+      ".devcontainer/devcontainer.json",
+      "deploy/app.yaml",
       ".env.example",
     ];
     for (const path of paths) {
-      const verdict = decide(root, { path });
-      expect(verdict.rule, path).toBe("scope-guard");
-      expect(verdict.decision, path).toBe("deny");
+      const ask = decide(root, { path, interactive: true });
+      expect(ask.rule, path).toBe("protected-paths");
+      expect(ask.decision, path).toBe("ask");
+      const headless = decide(root, { path, interactive: false });
+      expect(headless.rule, path).toBe("protected-paths");
+      expect(headless.decision, path).toBe("deny");
     }
   });
 });

@@ -13,12 +13,16 @@ writeRepoFile(root, "stash/panopticon.charter.yaml", "x");
 
 type Outcome = { decision: "allow" | "ask" | "deny"; rule: string };
 
-function hook(tool: string, input: Record<string, unknown>): Outcome {
+function hook(
+  tool: string,
+  input: Record<string, unknown>,
+  env: Record<string, string> = {},
+): Outcome {
   const result = runHook(
     "claude",
     "PreToolUse",
     JSON.stringify({ cwd: root, tool_name: tool, tool_input: input }),
-    { cwd: () => root, env: {}, home: root },
+    { cwd: () => root, env, home: root },
   );
   if (result.stdout === "") {
     return { decision: "allow", rule: "none" };
@@ -244,6 +248,34 @@ describe("scope-guard judges shell writes like the edit tools (#83)", () => {
       expect(bash(command).decision, command).toBe(edit.decision);
     }
   });
+
+  const ASK_PATHS = [
+    ".github/workflows/check.yml",
+    ".devcontainer/devcontainer.json",
+    "deploy/app.yaml",
+    ".env.example",
+  ];
+
+  it.each(ASK_PATHS)(
+    "%s: a shell write asks when the session is interactive and is denied when it is not (ADR-0019)",
+    (path) => {
+      const interactive = { PANOPTICON_INTERACTIVE: "1" };
+      for (const command of [
+        `echo x > ${path}`,
+        `cp x ${path}`,
+        `sed -i s/a/b/ ${path}`,
+      ]) {
+        expect(bash(command), command).toMatchObject({
+          decision: "deny",
+          rule: "protected-paths",
+        });
+        expect(hook("Bash", { command }, interactive), command).toMatchObject({
+          decision: "ask",
+          rule: "protected-paths",
+        });
+      }
+    },
+  );
 
   it("names scope-guard for a path outside allowed_paths", () => {
     expect(bash("echo x > infra/main.tf").rule).toBe("scope-guard");
