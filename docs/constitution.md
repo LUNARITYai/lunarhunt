@@ -119,5 +119,5 @@ The non-negotiable principles for every agent and human working in this reposito
 
 ## VIII. Amendments
 
-**C-32 Amending this constitution.** This file changes only through an ADR (new or superseding) plus a PR that edits this file, approved by Krzysztof as CODEOWNER. Agents MAY draft such an ADR with status `proposed` and MUST NOT mark it `accepted`. Principle IDs are never reused; a removed principle is marked *Retired (ADR-NNNN)*.
+**C-32 Amending this constitution.** This file changes only through an ADR (new or superseding) plus a PR that edits this file, approved by Krzysztof as CODEOWNER. Agents MAY draft such an ADR. Its pull request carries the status the ADR will have on `main`, and only Krzysztof's merge of that pull request accepts it. Agents MUST NOT merge it and MUST NOT change the status of an ADR that is already on `main`. Principle IDs are never reused; a removed principle is marked *Retired (ADR-NNNN)*.
 *Enforced by:* `protected-paths`, CODEOWNERS, `adr-check`; the "only Krzysztof sets `accepted`" rule: **not yet enforced** beyond CODEOWNERS review.
