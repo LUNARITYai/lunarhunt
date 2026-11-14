@@ -33,7 +33,7 @@ Post it as an issue comment:
 Format:
 
 ```markdown
-<!-- panopticon-handoff role=<role> session=<hc-terminal-name> issue=#<n> branch=<branch> head=<sha> -->
+<!-- panopticon-handoff role=<role> session=<none|hc-terminal-name> issue=#<n> branch=<branch> head=<sha> -->
 ## Handoff (<role>, <YYYY-MM-DD HH:MM Europe/Warsaw>)
 - **State:** what is done (commits, PRs, review round).
 - **Next step:** the single next action.
@@ -44,7 +44,7 @@ Format:
 
 Rules for the fields:
 
-- The HTML comment is machine-readable. `session` is the `hc` terminal name only, or `none` when the session does not run under `hc`. `head` is the short commit sha of the branch tip.
+- The HTML comment is machine-readable. `session` is `none` for a subagent and for any session that does not run under `hc`; otherwise the `hc` terminal name only. `head` is the short commit sha of the branch tip.
 - **State:** commit shas, PR numbers, review round, check results.
 - **Next step:** exactly one action, written so a fresh session can do it without asking.
 - **Open decisions / blockers:** one per line, each with an owner (Krzysztof, OVERSEER, the Architect).
@@ -56,7 +56,7 @@ Rules for the fields:
 
 - A 5-hour or weekly usage-limit stop also needs a handoff note.
 - Write it before the limit if the session sees a warning.
-- When a limit is hit, the session stops. Work resumes after the reset, in a fresh session ([ADR-0017](../decisions/0017-claude-code-as-the-single-agent-harness.md) D6, proposed).
+- When a limit is hit, the session stops. Work resumes after the reset, in a fresh session ([ADR-0017](../decisions/0017-claude-code-as-the-single-agent-harness.md) D6).
 - A limit never waives the review gate ([ADR-0016](../decisions/0016-parallel-work-and-a-single-overseer.md) D6).
 
 ## Resume procedure
@@ -71,6 +71,6 @@ A fresh session, in this order:
 3. Read the issue labels (`agent:in-progress`, `needs:human`, `risk:*`). A `needs:human` label means stop and report.
 4. Read the files in **Read first**. Nothing else is needed yet.
 5. Do the **Next step**. Do not redo anything under **Do not redo**.
-6. Post a one-line comment that the new session took over, with its `hc` terminal name.
+6. Post a one-line comment that the new session took over, with its role (and its `hc` terminal name, if it has one).
 
-Work in the existing worktree and on the existing branch of the issue. Do not create a second worktree for the same issue (see [Herdr operating model](herdr.md)).
+Work on the existing branch of the issue. A session that Krzysztof starts works in the existing worktree. A fresh subagent gets a new worktree and continues from the pushed branch, after the old worktree is removed (see [Herdr operating model](herdr.md#shutdown-and-resume)).
