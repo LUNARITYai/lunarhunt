@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { type LedgerRecord, ledgerRecordSchema } from "./record.ts";
-import { DEFAULT_LIMITS } from "./writer.ts";
+import { DEFAULT_LIMITS, MAX_ENTRIES, ROTATED_NAME } from "./writer.ts";
 
 /**
  * Ledger v0 reader (spec "Concurrent appends, partial lines, rotation and cap"). Regular files only,
@@ -22,18 +22,34 @@ export type ReadStats = {
   malformed: number;
   /** Files whose last line has no `\n`; that line is not parsed. */
   partial: number;
-  /** Entries named like Ledger files that are not regular files (symlink, FIFO, directory). */
+  /** Lines that start with `{"v":` and another version than 1: a future format, not damage. */
+  unsupported: number;
+  /**
+   * Entries named `events*.jsonl` that are not read: not regular files (symlink, FIFO, directory)
+   * or not named like `events.jsonl` or a rotated file of the writer.
+   */
   skipped: number;
-  /** True when the total cap stopped the read with bytes left, in a file or in later files. */
+  /** True when a cap stopped the read with data left: the byte cap, or more rotated files than the window. */
   truncated: boolean;
 };
 
 const CHUNK_BYTES = 64 * 1024;
 /** A line longer than this many bytes (without its newline) is `malformed`, never parsed or buffered. */
 export const LINE_LIMIT = 4 * 4096;
-const NAME = /^events.*\.jsonl$/;
+/** Case-insensitive on purpose: a case variant of a Ledger name is counted as `skipped`, never silent. */
+const NAME = /^events.*\.jsonl$/i;
+/** At most this many files are opened: `events.jsonl` and the newest `MAX_ENTRIES - 1` rotated ones. */
+export const MAX_FILES = MAX_ENTRIES;
+/**
+ * The default byte cap: the writer's total cap plus two rotation sizes, so the legitimate overshoot
+ * of a full Ledger (a rotation by the last scan below the cap, a new file past the rotation size)
+ * does not cut the newest file.
+ */
+export const READ_BYTE_CAP =
+  DEFAULT_LIMITS.project.totalBytes + 2 * DEFAULT_LIMITS.project.rotateBytes;
 /** Every record the writer produces starts like this (key order of the schema). */
 const RECORD_START = Buffer.from('{"v":1,"record":"');
+const OTHER_VERSION = /^\{"v":(\d+)[,}]/;
 /** A floor below the smallest valid record (367 bytes): a shorter line is `malformed` without a parse. */
 export const MIN_RECORD_BYTES = 300;
 
@@ -45,9 +61,10 @@ function sizeOf(path: string): number {
   }
 }
 
-function parse(line: Buffer): LedgerRecord | null {
+function parse(line: Buffer): LedgerRecord | "unsupported" | null {
   if (!line.subarray(0, RECORD_START.length).equals(RECORD_START)) {
-    return null;
+    const version = OTHER_VERSION.exec(line.toString("latin1", 0, 32))?.[1];
+    return version !== undefined && version !== "1" ? "unsupported" : null;
   }
   try {
     const parsed = ledgerRecordSchema.safeParse(
@@ -104,7 +121,9 @@ export function readLedgerFile(
         stats.malformed += 1;
       } else if (length > 0) {
         const record = line === null ? null : parse(line);
-        if (record === null) {
+        if (record === "unsupported") {
+          stats.unsupported += 1;
+        } else if (record === null) {
           stats.malformed += 1;
         } else {
           onRecord(record);
@@ -166,38 +185,42 @@ export function readLedgerFile(
 }
 
 /**
- * Stream every `events*.jsonl` file of a project directory: rotated files in name (time) order, then
- * `events.jsonl`. A missing directory reads as empty. Stops once `maxBytes` (the total cap) is read.
+ * Stream the Ledger files of a project directory: the newest `MAX_FILES - 1` rotated files in name
+ * (time) order, then `events.jsonl`. Only `events.jsonl` and names that match the writer's rotated
+ * pattern are read; any other `events*.jsonl` entry is `skipped`. More rotated files than the window
+ * set `truncated`. A missing directory reads as empty. Stops once `maxBytes` (the byte cap, default
+ * the total cap plus two rotation sizes) is read.
  */
 export function readLedgerDirectory(
   dir: string,
   onRecord: (record: LedgerRecord) => void,
-  maxBytes: number = DEFAULT_LIMITS.project.totalBytes,
+  maxBytes: number = READ_BYTE_CAP,
 ): ReadStats {
   const stats: ReadStats = {
     files: 0,
     malformed: 0,
     partial: 0,
+    unsupported: 0,
     skipped: 0,
     truncated: false,
   };
-  let names: string[];
+  let entries: string[];
   try {
-    names = readdirSync(dir).filter((name) => NAME.test(name));
+    entries = readdirSync(dir).filter((name) => NAME.test(name));
   } catch {
     return stats;
   }
-  names.sort((a, b) =>
-    a === "events.jsonl"
-      ? 1
-      : b === "events.jsonl"
-        ? -1
-        : a < b
-          ? -1
-          : a > b
-            ? 1
-            : 0,
-  );
+  const rotated = entries
+    .filter((name) => ROTATED_NAME.test(name))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const window = rotated.slice(-(MAX_FILES - 1));
+  stats.truncated = rotated.length > window.length;
+  const names = entries.includes("events.jsonl")
+    ? [...window, "events.jsonl"]
+    : window;
+  stats.skipped = entries.filter(
+    (name) => name !== "events.jsonl" && !ROTATED_NAME.test(name),
+  ).length;
   let read = 0;
   for (const [index, name] of names.entries()) {
     if (read >= maxBytes) {

@@ -35,11 +35,26 @@ export type WriteResult = { ok: true } | { ok: false; reason: FailureReason };
 
 const MIB = 1024 * 1024;
 
-export type Limits = { rotateBytes: number; totalBytes: number };
+/** `maxEntries` is the entry cap: more entries than this in the project directory fail the write with `cap`. */
+export type Limits = {
+  rotateBytes: number;
+  totalBytes: number;
+  maxEntries: number;
+};
+
+export const MAX_ENTRIES = 256;
 
 export const DEFAULT_LIMITS = {
-  project: { rotateBytes: 64 * MIB, totalBytes: 1024 * MIB },
-  unknown: { rotateBytes: 16 * MIB, totalBytes: 64 * MIB },
+  project: {
+    rotateBytes: 64 * MIB,
+    totalBytes: 1024 * MIB,
+    maxEntries: MAX_ENTRIES,
+  },
+  unknown: {
+    rotateBytes: 16 * MIB,
+    totalBytes: 64 * MIB,
+    maxEntries: MAX_ENTRIES,
+  },
 } as const satisfies Record<string, Limits>;
 
 export type LedgerFs = Pick<
@@ -86,6 +101,9 @@ export class LedgerFailure extends Error {
 function code(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | null)?.code;
 }
+
+/** The exact name `rotatedName` produces; the reader reads a rotated file only under this pattern. */
+export const ROTATED_NAME = /^events-\d{8}T\d{6}Z-\d+\.jsonl$/;
 
 function rotatedName(now: Date, pid: number): string {
   const stamp = now.toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -208,12 +226,19 @@ export function closeQuietly(fs: LedgerFs, fd: number): void {
   }
 }
 
-/** The directory's entry names and the sum of their sizes; a vanished entry counts 0. */
+/**
+ * The directory's entry names and the sum of their sizes; a vanished entry counts 0. More than
+ * `maxEntries` names fail with `cap` right after the one listing, before any per-entry `lstat`.
+ */
 function scanDirectory(
   fs: LedgerFs,
   dir: string,
+  maxEntries: number,
 ): { names: string[]; bytes: number } {
   const names = fs.readdirSync(dir);
+  if (names.length > maxEntries) {
+    throw new LedgerFailure("cap");
+  }
   let bytes = 0;
   for (const name of names) {
     try {
@@ -239,7 +264,7 @@ function writeLine(
     if (st.size >= limits.rotateBytes) {
       let rotated: string;
       try {
-        const scan = scanDirectory(fs, dir);
+        const scan = scanDirectory(fs, dir, limits.maxEntries);
         if (scan.bytes >= limits.totalBytes) {
           throw new LedgerFailure("cap");
         }
