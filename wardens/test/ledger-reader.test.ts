@@ -4,11 +4,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   LINE_LIMIT,
+  MAX_FILES,
   MIN_RECORD_BYTES,
+  READ_BYTE_CAP,
   readLedgerDirectory,
   readLedgerFile,
 } from "../src/ledger/reader.ts";
 import { type LedgerRecord, ledgerRecordSchema } from "../src/ledger/record.ts";
+import { DEFAULT_LIMITS, ROTATED_NAME } from "../src/ledger/writer.ts";
 import { sampleRecord, tempHome } from "./fixtures/ledger/sample.ts";
 
 function line(overrides: Partial<LedgerRecord> = {}): string {
@@ -38,6 +41,7 @@ describe("reader", () => {
       files: 1,
       malformed: 0,
       partial: 0,
+      unsupported: 0,
       skipped: 0,
       truncated: false,
     });
@@ -122,6 +126,7 @@ describe("reader", () => {
       files: 0,
       malformed: 0,
       partial: 0,
+      unsupported: 0,
       skipped: 0,
       truncated: false,
     };
@@ -330,6 +335,7 @@ describe("reader", () => {
         files: 0,
         malformed: 0,
         partial: 0,
+        unsupported: 0,
         skipped: 0,
         truncated: false,
       },
@@ -345,5 +351,165 @@ describe("reader", () => {
     for (const record of read(dir).records) {
       expect(ledgerRecordSchema.safeParse(record).success).toBe(true);
     }
+  });
+
+  describe("hardening (questions 14 and 15)", () => {
+    /** The writer's name for the rotation at second `second` of 2026-11-20 UTC. */
+    function rotatedName(second: number, pid = 1): string {
+      const stamp = new Date(Date.UTC(2026, 10, 20, 0, 0, second))
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z")
+        .replace(/[-:]/g, "");
+      return `events-${stamp}-${pid}.jsonl`;
+    }
+
+    it("matches the names the writer produces", () => {
+      expect(ROTATED_NAME.test(rotatedName(5, 4242))).toBe(true);
+    });
+
+    it("reads only exactly named rotated files and counts other events*.jsonl names as skipped", () => {
+      const dir = directory();
+      fs.writeFileSync(join(dir, rotatedName(1)), line({ duration_ms: 1 }));
+      for (const name of [
+        "events-evil.jsonl",
+        "events2.jsonl",
+        "events-20261120T000001Z-1x.jsonl",
+        "events-20261120T000001-1.jsonl",
+        "events-20261120T000001Z-.jsonl",
+        "events-20261120T000001Z-1.jsonl.jsonl",
+        "events-.jsonl",
+      ]) {
+        fs.writeFileSync(join(dir, name), line({ duration_ms: 99 }));
+      }
+      // Not named `events*.jsonl` at all: neither read nor counted.
+      fs.writeFileSync(join(dir, "events-20261120T000001Z-1.bak"), line());
+      fs.writeFileSync(join(dir, "events.jsonl"), line({ duration_ms: 3 }));
+      const { records, stats } = read(dir);
+      expect(records.map((r) => r.duration_ms)).toEqual([1, 3]);
+      expect(stats).toMatchObject({ files: 2, skipped: 7, truncated: false });
+    });
+
+    it("keeps planted names that sort after genuine ones out of the order and the window", () => {
+      const dir = directory();
+      for (let index = 0; index < 5; index += 1) {
+        fs.writeFileSync(
+          join(dir, rotatedName(index)),
+          line({ duration_ms: index }),
+        );
+      }
+      for (let index = 0; index < 300; index += 1) {
+        fs.writeFileSync(join(dir, `events-zzz-${index}.jsonl`), line());
+        fs.writeFileSync(join(dir, `events~${index}.jsonl`), line());
+      }
+      fs.writeFileSync(join(dir, "events.jsonl"), line({ duration_ms: 5 }));
+      const { records, stats } = read(dir);
+      expect(records.map((r) => r.duration_ms)).toEqual([0, 1, 2, 3, 4, 5]);
+      expect(stats).toMatchObject({ files: 6, skipped: 600, truncated: false });
+    });
+
+    it("opens events.jsonl and the newest 255 rotated files and sets truncated above that", () => {
+      const dir = directory();
+      expect(MAX_FILES).toBe(256);
+      // The oldest rotated file carries duration 5, the others 1.
+      for (let index = 0; index < 255; index += 1) {
+        fs.writeFileSync(
+          join(dir, rotatedName(index)),
+          line({ duration_ms: index === 0 ? 5 : 1 }),
+        );
+      }
+      fs.writeFileSync(join(dir, "events.jsonl"), line({ duration_ms: 2 }));
+      const full = read(dir);
+      expect(full.stats).toMatchObject({ files: 256, truncated: false });
+      expect(full.records).toHaveLength(256);
+      expect(full.records[0]?.duration_ms).toBe(5);
+
+      // A 256th rotated file: the oldest is dropped, `events.jsonl` stays.
+      fs.writeFileSync(join(dir, rotatedName(255)), line({ duration_ms: 3 }));
+      const cut = read(dir);
+      expect(cut.stats).toMatchObject({
+        files: 256,
+        truncated: true,
+        skipped: 0,
+      });
+      expect(cut.records).toHaveLength(256);
+      expect(cut.records.map((r) => r.duration_ms)).not.toContain(5);
+      expect(cut.records.at(-1)?.duration_ms).toBe(2);
+      expect(cut.records.at(-2)?.duration_ms).toBe(3);
+    });
+
+    it("uses a byte cap of the total cap plus two rotation sizes", () => {
+      expect(READ_BYTE_CAP).toBe(
+        DEFAULT_LIMITS.project.totalBytes +
+          2 * DEFAULT_LIMITS.project.rotateBytes,
+      );
+      expect(READ_BYTE_CAP).toBe((1024 + 2 * 64) * 1024 * 1024);
+    });
+
+    it("does not cut a full Ledger with the legitimate overshoot, and still cuts past it", () => {
+      const dir = directory();
+      const one = Buffer.byteLength(line());
+      // Scaled down: rotation at 2 lines, total cap 6 lines. The last scan below the cap rotates,
+      // and the new `events.jsonl` then grows past the rotation size.
+      const rotate = one * 2;
+      const total = one * 6;
+      const cap = total + 2 * rotate;
+      for (let index = 0; index < 3; index += 1) {
+        fs.writeFileSync(join(dir, rotatedName(index)), line() + line());
+      }
+      fs.writeFileSync(join(dir, rotatedName(3)), line() + line());
+      fs.writeFileSync(join(dir, "events.jsonl"), line() + line());
+      expect(cap).toBe(one * 10);
+      const whole = read(dir, cap);
+      expect(whole.records).toHaveLength(10);
+      expect(whole.stats.truncated).toBe(false);
+      fs.appendFileSync(join(dir, "events.jsonl"), line());
+      expect(read(dir, cap).stats.truncated).toBe(true);
+      expect(read(dir, total).stats.truncated).toBe(true);
+    });
+
+    it("counts a line of another version in its own counter, not as malformed", () => {
+      const dir = directory();
+      const future = line({ duration_ms: 7 });
+      fs.writeFileSync(
+        join(dir, "events.jsonl"),
+        [
+          future.replace('{"v":1,', '{"v":2,'),
+          future.replace('{"v":1,', '{"v":10,'),
+          future.replace('{"v":1,', '{"v":0,'),
+          // Version 1 but not a record start, a non-numeric version and a non-JSON line stay malformed.
+          future.replace('{"v":1,"record"', '{"v":1,"x":0,"record"'),
+          future.replace('{"v":1,', '{"v":"2",'),
+          future.replace('{"v":1,', '{"v":2.5,'),
+          `${"y".repeat(400)}\n`,
+          line({ duration_ms: 8 }),
+        ].join(""),
+      );
+      const { records, stats } = read(dir);
+      expect(records.map((r) => r.duration_ms)).toEqual([8]);
+      expect(stats).toMatchObject({ unsupported: 3, malformed: 4, partial: 0 });
+    });
+
+    it("counts an unsupported line across a chunk border", () => {
+      const dir = directory();
+      const { text, count } = (() => {
+        let body = "";
+        let lines = 0;
+        while (
+          Buffer.byteLength(body) + 2 * Buffer.byteLength(line()) <
+          64 * 1024 - 1000
+        ) {
+          body += line();
+          lines += 1;
+        }
+        return { text: body, count: lines };
+      })();
+      fs.writeFileSync(
+        join(dir, "events.jsonl"),
+        `${text}${line().replace('{"v":1,', '{"v":3,')}${line()}`,
+      );
+      const { records, stats } = read(dir);
+      expect(records).toHaveLength(count + 1);
+      expect(stats).toMatchObject({ unsupported: 1, malformed: 0 });
+    });
   });
 });

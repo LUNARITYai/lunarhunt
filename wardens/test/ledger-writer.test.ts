@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { readLedgerDirectory } from "../src/ledger/reader.ts";
 import {
   closeQuietly,
+  DEFAULT_LIMITS,
   FAILURE_REASONS,
   LedgerFailure,
   type LedgerFs,
@@ -670,6 +671,114 @@ describe("writer: rotation and caps", () => {
     expect(writeLedgerRecord(sampleRecord(), deps(home, { limits })).ok).toBe(
       true,
     );
+  });
+
+  describe("entry cap (question 14)", () => {
+    function crowded(project: string, others: number) {
+      const prepared = preparedHome(project);
+      fs.writeFileSync(
+        join(prepared.dir, "events.jsonl"),
+        `${"x".repeat(100)}\n`,
+        { mode: 0o600 },
+      );
+      for (let index = 0; index < others; index += 1) {
+        fs.writeFileSync(join(prepared.dir, `planted-${index}`), "");
+      }
+      return prepared;
+    }
+
+    it("defaults to 256 entries for a project and for `_unknown`", () => {
+      expect(DEFAULT_LIMITS.project.maxEntries).toBe(256);
+      expect(DEFAULT_LIMITS.unknown.maxEntries).toBe(256);
+    });
+
+    it("cap: 257 entries fail right after the listing, before any per-entry lstat", () => {
+      const { home, dir } = crowded("lunarhunt", 256);
+      expect(fs.readdirSync(dir)).toHaveLength(257);
+      const inside: string[] = [];
+      let listings = 0;
+      let renames = 0;
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        now: () => new Date("2026-11-20T08:09:10.123Z"),
+        pid: 4242,
+        limits: { project: { rotateBytes: 50 } },
+        fs: {
+          readdirSync: ((path: string) => {
+            listings += 1;
+            return fs.readdirSync(path);
+          }) as LedgerFs["readdirSync"],
+          lstatSync: ((path: string) => {
+            if (path.startsWith(`${dir}/`)) {
+              inside.push(path);
+            }
+            return fs.lstatSync(path);
+          }) as LedgerFs["lstatSync"],
+          renameSync: (() => {
+            renames += 1;
+          }) as LedgerFs["renameSync"],
+        },
+      });
+      expect(fail(result)).toBe("cap");
+      expect(listings).toBe(1);
+      expect(inside).toEqual([]);
+      expect(renames).toBe(0);
+      expect(lines(join(dir, "events.jsonl"))).toEqual(["x".repeat(100), ""]);
+    });
+
+    it("writes with exactly 256 entries and fails with 257", () => {
+      const limits = { project: { rotateBytes: 50 } };
+      const at = crowded("lunarhunt", 255);
+      expect(fs.readdirSync(at.dir)).toHaveLength(256);
+      expect(
+        writeLedgerRecord(sampleRecord(), {
+          home: at.home,
+          limits,
+          pid: 1,
+        }).ok,
+      ).toBe(true);
+      // The rotation added one file: the next scan sees 257 entries.
+      fs.writeFileSync(join(at.dir, "events.jsonl"), `${"x".repeat(100)}\n`);
+      expect(
+        fail(
+          writeLedgerRecord(sampleRecord(), { home: at.home, limits, pid: 2 }),
+        ),
+      ).toBe("cap");
+    });
+
+    it("takes the entry limit from the injected limits and recovers once entries are removed", () => {
+      const { home, dir } = crowded("lunarhunt", 3);
+      const limits = { project: { rotateBytes: 50, maxEntries: 3 } };
+      expect(
+        fail(writeLedgerRecord(sampleRecord(), { home, limits, pid: 1 })),
+      ).toBe("cap");
+      fs.rmSync(join(dir, "planted-0"));
+      expect(
+        writeLedgerRecord(sampleRecord(), { home, limits, pid: 1 }).ok,
+      ).toBe(true);
+    });
+
+    it("does not count entries below the rotation size", () => {
+      const { home } = crowded("lunarhunt", 300);
+      fs.writeFileSync(join(ledgerDirectory(home), "events.jsonl"), "", {
+        mode: 0o600,
+      });
+      expect(writeLedgerRecord(sampleRecord(), { home }).ok).toBe(true);
+    });
+
+    it("applies to `_unknown` as well", () => {
+      const { home } = crowded("_unknown", 5);
+      const unknown = sampleRecord({ project: "_unknown", tool: null });
+      expect(
+        fail(
+          writeLedgerRecord(unknown, {
+            home,
+            limits: { unknown: { rotateBytes: 50, maxEntries: 5 } },
+            pid: 1,
+          }),
+        ),
+      ).toBe("cap");
+    });
   });
 
   it("uses smaller limits for `_unknown`", () => {
