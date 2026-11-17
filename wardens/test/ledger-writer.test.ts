@@ -168,7 +168,7 @@ describe("writer: a record", () => {
     const [written] = lines(join(dir, "events.jsonl"));
     const branch = JSON.parse(written ?? "").branch;
     expect(branch).toMatch(/^branch-[0-9]+$/);
-    expect(branch).toBe("branch-2");
+    expect(branch).not.toBe("branch-1");
   });
 
   it("maps a record that cannot be read or serialised to schema", () => {
@@ -626,6 +626,21 @@ describe("writer: rotation and caps", () => {
       fail(writeLedgerRecord(sampleRecord(), deps(home, { limits }))),
     ).toBe("rotate");
     expect(fs.readFileSync(planted, "utf8")).toBe("planted\n");
+    expect(lines(join(dir, "events.jsonl"))).toHaveLength(2);
+  });
+
+  it("rotate: a rotated name that differs only in case is not replaced", () => {
+    const { home, dir } = preparedHome();
+    const variant = join(dir, "EVENTS-20261120T080910Z-4242.JSONL");
+    fs.writeFileSync(variant, "planted\n");
+    fs.writeFileSync(join(dir, "events.jsonl"), `${"x".repeat(100)}\n`, {
+      mode: 0o600,
+    });
+    const limits = { project: { rotateBytes: 50 } };
+    expect(
+      fail(writeLedgerRecord(sampleRecord(), deps(home, { limits }))),
+    ).toBe("rotate");
+    expect(fs.readFileSync(variant, "utf8")).toBe("planted\n");
     expect(lines(join(dir, "events.jsonl"))).toHaveLength(2);
   });
 

@@ -29,11 +29,11 @@ export const STOP_OUTCOMES = [
 const IDENTIFIER = /^[A-Za-z0-9._:/@-]{1,128}$/;
 const MODEL = /^[A-Za-z0-9._:/@[\]-]{1,64}$/;
 /**
- * A token prefix, then at least 16 more characters. Best effort. `sk-` and `xox` occur inside
- * ordinary words (`task-`, `risk-`), so they must start a word; the underscore prefixes match anywhere.
+ * A token prefix, then at least 16 more characters. Best effort. `sk-`, `xox` and `ghs_` occur inside
+ * ordinary words (`task-`, `risk-`, `highs_`), so they must start a word; the other prefixes match anywhere.
  */
 const TOKEN_SHAPE =
-  /(?:ghp_|gho_|ghs_|ghu_|github_pat_|(?<![A-Za-z0-9])(?:sk-|xox))[\s\S]{16}/i;
+  /(?:ghp_|gho_|ghu_|github_pat_|(?<![A-Za-z0-9])(?:ghs_|sk-|xox))[\s\S]{16}/i;
 const PROJECT = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 

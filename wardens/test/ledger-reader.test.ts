@@ -179,6 +179,50 @@ describe("reader", () => {
     expect(stats).toMatchObject({ malformed: 2, partial: 0 });
   });
 
+  it("counts short lines by length: empty lines are ignored, 1 to 299 bytes are malformed", () => {
+    const dir = directory();
+    const shorts = ["a", "ab", "x".repeat(299)];
+    fs.writeFileSync(
+      join(dir, "events.jsonl"),
+      `\n\n${shorts.join("\n")}\n\n${line()}`,
+    );
+    const { records, stats } = read(dir);
+    expect(records).toHaveLength(1);
+    expect(stats).toMatchObject({ malformed: 3, partial: 0 });
+  });
+
+  it("counts a short line that spans two chunks", () => {
+    const dir = directory();
+    let text = "";
+    let count = 0;
+    while (
+      Buffer.byteLength(text) + Buffer.byteLength(line()) <
+      64 * 1024 - 40
+    ) {
+      text += line();
+      count += 1;
+    }
+    // One filler line brings the file to 8 bytes before the chunk border; the short line crosses it.
+    text += `${"a".repeat(64 * 1024 - 9 - Buffer.byteLength(text))}\n`;
+    text += `abcdefghijklmnop\n${line()}`;
+    fs.writeFileSync(join(dir, "events.jsonl"), text);
+    const { records, stats } = read(dir);
+    expect(records).toHaveLength(count + 1);
+    expect(stats).toMatchObject({ malformed: 2, partial: 0 });
+  });
+
+  it("does not set truncated when only empty files remain after the cap", () => {
+    const dir = directory();
+    const one = Buffer.byteLength(line());
+    fs.writeFileSync(join(dir, "events-20261120T000001Z-1.jsonl"), line());
+    fs.writeFileSync(join(dir, "events.jsonl"), "");
+    const { records, stats } = read(dir, one);
+    expect(records).toHaveLength(1);
+    expect(stats.truncated).toBe(false);
+    fs.writeFileSync(join(dir, "events.jsonl"), line());
+    expect(read(dir, one).stats.truncated).toBe(true);
+  });
+
   it("keeps the shortest record the writer can produce above the parse threshold", () => {
     const smallest = JSON.stringify(
       sampleRecord({

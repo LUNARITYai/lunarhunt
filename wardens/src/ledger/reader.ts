@@ -33,14 +33,19 @@ const LINE_LIMIT = 4 * 4096;
 const NAME = /^events.*\.jsonl$/;
 /** Every record the writer produces starts like this (key order of the schema). */
 const RECORD_START = Buffer.from('{"v":1,"record":"');
-/** Shorter than the smallest valid record (all nullable keys null): not worth a JSON parse. */
+/** A floor below the smallest valid record (367 bytes): a shorter line is `malformed` without a parse. */
 export const MIN_RECORD_BYTES = 300;
 
+function sizeOf(path: string): number {
+  try {
+    return lstatSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
 function parse(line: Buffer): LedgerRecord | null {
-  if (
-    line.length < MIN_RECORD_BYTES ||
-    !line.subarray(0, RECORD_START.length).equals(RECORD_START)
-  ) {
+  if (!line.subarray(0, RECORD_START.length).equals(RECORD_START)) {
     return null;
   }
   try {
@@ -88,15 +93,16 @@ export function readLedgerFile(
     let pending: Buffer[] = [];
     let pendingBytes = 0;
     let oversize = false;
-    const finish = () => {
-      const line = Buffer.concat(pending);
+    // `length` is the line's byte length; a short line is counted without a buffer or a parse.
+    const finish = (length: number) => {
+      const line = length >= MIN_RECORD_BYTES ? Buffer.concat(pending) : null;
       pending = [];
       pendingBytes = 0;
       if (oversize) {
         oversize = false;
         stats.malformed += 1;
-      } else if (line.length > 0) {
-        const record = parse(line);
+      } else if (length > 0) {
+        const record = line === null ? null : parse(line);
         if (record === null) {
           stats.malformed += 1;
         } else {
@@ -121,10 +127,11 @@ export function readLedgerFile(
         if (chunk[index] !== 0x0a) {
           continue;
         }
-        if (!oversize) {
+        const length = pendingBytes + index - start;
+        if (!oversize && length >= MIN_RECORD_BYTES) {
           pending.push(Buffer.from(chunk.subarray(start, index)));
         }
-        finish();
+        finish(length);
         start = index + 1;
       }
       if (start < count && !oversize) {
@@ -185,9 +192,12 @@ export function readLedgerDirectory(
             : 0,
   );
   let read = 0;
-  for (const name of names) {
+  for (const [index, name] of names.entries()) {
     if (read >= maxBytes) {
-      stats.truncated = true;
+      // Truncated only when a remaining file has bytes; empty files cost nothing.
+      if (names.slice(index).some((rest) => sizeOf(join(dir, rest)) > 0)) {
+        stats.truncated = true;
+      }
       break;
     }
     read += readLedgerFile(join(dir, name), stats, onRecord, maxBytes - read);

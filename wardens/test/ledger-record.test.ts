@@ -207,6 +207,10 @@ describe("field rules", () => {
       "feat/42-risk-assessment-module",
       `1sk-${tail}`,
       `fooxox${tail}`,
+      `highs_${tail}`,
+      `laughs_${tail}`,
+      `weighs_${tail}`,
+      `1ghs_${tail}`,
     ]) {
       expect(identifierOrNull(kept)).toBe(kept);
     }
@@ -217,7 +221,7 @@ describe("field rules", () => {
       `a.xox${tail}`,
       `SK-${tail}`,
       `fooghp_${tail}`,
-      `1ghs_${tail}`,
+      `x-ghs_${tail}`,
       `task_github_pat_${tail}`,
     ]) {
       expect(identifierOrNull(filtered)).toBeNull();

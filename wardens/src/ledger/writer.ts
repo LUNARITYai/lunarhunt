@@ -247,7 +247,8 @@ function writeLine(
           (deps.now ?? (() => new Date()))(),
           deps.pid ?? process.pid,
         );
-        if (scan.names.includes(rotated)) {
+        const folded = rotated.toLowerCase();
+        if (scan.names.some((name) => name.toLowerCase() === folded)) {
           // `rename` would replace it and lose a rotated file.
           throw new LedgerFailure("rotate");
         }
