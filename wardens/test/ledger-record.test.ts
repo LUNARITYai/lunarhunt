@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  branchOrNull,
   identifierOrNull,
   issueFromBranch,
   issueOrNull,
@@ -149,11 +150,79 @@ describe("record schema", () => {
 describe("field rules", () => {
   it.each(BAD_VALUES)("maps a value with %s to null", (_name, value) => {
     expect(identifierOrNull(value)).toBeNull();
+    expect(branchOrNull(value)).toBeNull();
     expect(modelOrNull(value)).toBeNull();
     expect(toolNameOrOther(value)).toBe("other");
     expect(
       ledgerRecordSchema.safeParse(sampleRecord({ branch: value })).success,
     ).toBe(false);
+  });
+
+  it("accepts the real fixture values and MCP tool names in the four fields", () => {
+    const sessions = [
+      "d96ef531-3325-449c-9a06-02a71c928841",
+      "b5c59519-3a3c-4b25-90a1-c183f40a22dc",
+      "8b7b08a1-70ad-4a01-88f4-83a745650027",
+      "a6a0bf1a-2ba4-4938-9b45-df9b398e7080",
+    ];
+    const tools = [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Shell",
+      "Delete",
+      "ping",
+      "mcp__fixture__ping",
+      "mcp__claude_ai_Claude_Docs__batch",
+      "MCP:ping",
+    ];
+    const worktrees = ["140-ledger-field-names", "agent-ac844804111c2504d"];
+    for (const value of [...sessions, ...tools, ...worktrees]) {
+      expect(identifierOrNull(value)).toBe(value);
+    }
+    for (const tool of tools) {
+      expect(toolNameOrOther(tool)).toBe(tool);
+    }
+    const record = sampleRecord({
+      session_id: sessions[0] ?? null,
+      agent_type: "general-purpose",
+      tool_name: "MCP:ping",
+      worktree: "140-ledger-field-names",
+    });
+    expect(ledgerRecordSchema.safeParse(record).success).toBe(true);
+  });
+
+  it.each([
+    ["a path", "/Users/jane/project"],
+    ["a relative path", "apps/web"],
+    ["a trailing slash", "name/"],
+    ["an e-mail address", "jane@example.com"],
+    ["a leading @", "@jane"],
+  ])(
+    "rejects %s in the four fields, and tool_name becomes other",
+    (_name, value) => {
+      expect(identifierOrNull(value)).toBeNull();
+      expect(toolNameOrOther(value)).toBe("other");
+      for (const key of [
+        "session_id",
+        "agent_type",
+        "tool_name",
+        "worktree",
+      ] as const) {
+        const record = sampleRecord({ [key]: value });
+        expect(ledgerRecordSchema.safeParse(record).success).toBe(false);
+      }
+    },
+  );
+
+  it("keeps `/` and `@` in branch", () => {
+    for (const value of ["feat/140-ledger-field-names", "release@2026/11"]) {
+      expect(branchOrNull(value)).toBe(value);
+      expect(
+        ledgerRecordSchema.safeParse(sampleRecord({ branch: value })).success,
+      ).toBe(true);
+    }
   });
 
   it("maps non-string payload values to null", () => {
@@ -170,9 +239,10 @@ describe("field rules", () => {
   });
 
   it("keeps names that pass, including a bracketed model id", () => {
-    expect(identifierOrNull("feat/42-task-scheduler-refactor@v1")).toBe(
+    expect(branchOrNull("feat/42-task-scheduler-refactor@v1")).toBe(
       "feat/42-task-scheduler-refactor@v1",
     );
+    expect(identifierOrNull("feat/42-task-scheduler-refactor@v1")).toBeNull();
     expect(identifierOrNull("a".repeat(128))).toBe("a".repeat(128));
     expect(modelOrNull("example-model[1m]")).toBe("example-model[1m]");
     expect(modelOrNull("m".repeat(65))).toBeNull();
@@ -204,7 +274,6 @@ describe("field rules", () => {
       `task-${tail}`,
       `Task-${tail}`,
       "risk-assessment-module",
-      "feat/42-risk-assessment-module",
       `1sk-${tail}`,
       `fooxox${tail}`,
       `highs_${tail}`,
@@ -225,7 +294,11 @@ describe("field rules", () => {
       `task_github_pat_${tail}`,
     ]) {
       expect(identifierOrNull(filtered)).toBeNull();
+      expect(branchOrNull(filtered)).toBeNull();
     }
+    expect(branchOrNull("feat/42-risk-assessment-module")).toBe(
+      "feat/42-risk-assessment-module",
+    );
   });
 
   it("parses the issue number", () => {
