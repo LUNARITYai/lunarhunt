@@ -36,7 +36,8 @@ export type ReadStats = {
 const CHUNK_BYTES = 64 * 1024;
 /** A line longer than this many bytes (without its newline) is `malformed`, never parsed or buffered. */
 export const LINE_LIMIT = 4 * 4096;
-const NAME = /^events.*\.jsonl$/;
+/** Case-insensitive on purpose: a case variant of a Ledger name is counted as `skipped`, never silent. */
+const NAME = /^events.*\.jsonl$/i;
 /** At most this many files are opened: `events.jsonl` and the newest `MAX_ENTRIES - 1` rotated ones. */
 export const MAX_FILES = MAX_ENTRIES;
 /**

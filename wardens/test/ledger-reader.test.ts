@@ -11,8 +11,16 @@ import {
   readLedgerFile,
 } from "../src/ledger/reader.ts";
 import { type LedgerRecord, ledgerRecordSchema } from "../src/ledger/record.ts";
-import { DEFAULT_LIMITS, ROTATED_NAME } from "../src/ledger/writer.ts";
-import { sampleRecord, tempHome } from "./fixtures/ledger/sample.ts";
+import {
+  DEFAULT_LIMITS,
+  ROTATED_NAME,
+  writeLedgerRecord,
+} from "../src/ledger/writer.ts";
+import {
+  ledgerDirectory,
+  sampleRecord,
+  tempHome,
+} from "./fixtures/ledger/sample.ts";
 
 function line(overrides: Partial<LedgerRecord> = {}): string {
   return `${JSON.stringify(sampleRecord(overrides))}\n`;
@@ -363,8 +371,69 @@ describe("reader", () => {
       return `events-${stamp}-${pid}.jsonl`;
     }
 
-    it("matches the names the writer produces", () => {
-      expect(ROTATED_NAME.test(rotatedName(5, 4242))).toBe(true);
+    it("matches the name of a file the real writer rotated, and reads it", () => {
+      const home = tempHome();
+      const limits = { project: { rotateBytes: 600 } };
+      for (let index = 0; index < 3; index += 1) {
+        expect(
+          writeLedgerRecord(sampleRecord(), {
+            home,
+            limits,
+            pid: 4242,
+            now: () => new Date("2026-11-20T08:09:10.123Z"),
+          }).ok,
+        ).toBe(true);
+      }
+      const dir = ledgerDirectory(home);
+      const rotated = fs.readdirSync(dir).filter((n) => n !== "events.jsonl");
+      expect(rotated).toHaveLength(1);
+      expect(ROTATED_NAME.test(rotated[0] ?? "")).toBe(true);
+      const { records, stats } = read(dir);
+      expect(records).toHaveLength(3);
+      expect(stats).toMatchObject({ files: 2, skipped: 0 });
+    });
+
+    it("counts a case variant of a Ledger name as skipped, on any filesystem", () => {
+      const dir = directory();
+      fs.writeFileSync(join(dir, rotatedName(1)), line({ duration_ms: 1 }));
+      // Neither lowercase name exists in the folder, so the variants are distinct entries everywhere.
+      fs.writeFileSync(join(dir, "EVENTS.JSONL"), line({ duration_ms: 99 }));
+      fs.writeFileSync(
+        join(dir, rotatedName(2).toUpperCase()),
+        line({ duration_ms: 99 }),
+      );
+      fs.writeFileSync(
+        join(dir, `E${rotatedName(3).slice(1)}`),
+        line({ duration_ms: 99 }),
+      );
+      const { records, stats } = read(dir);
+      expect(records.map((r) => r.duration_ms)).toEqual([1]);
+      expect(stats).toMatchObject({ files: 1, skipped: 3, truncated: false });
+    });
+
+    it("lets exact-named non-regular entries take window slots and counts them as skipped", () => {
+      const dir = directory();
+      const target = join(tempHome(), "target.jsonl");
+      fs.writeFileSync(target, line());
+      for (let index = 0; index < 3; index += 1) {
+        fs.writeFileSync(
+          join(dir, rotatedName(index)),
+          line({ duration_ms: 99 }),
+        );
+      }
+      // 255 exact-named entries that sort after the genuine files: directories and symlinks.
+      for (let index = 0; index < 255; index += 1) {
+        const path = join(dir, rotatedName(100 + index));
+        if (index < 2) {
+          fs.symlinkSync(target, path);
+        } else {
+          fs.mkdirSync(path);
+        }
+      }
+      fs.writeFileSync(join(dir, "events.jsonl"), line({ duration_ms: 3 }));
+      const { records, stats } = read(dir);
+      expect(records.map((r) => r.duration_ms)).toEqual([3]);
+      expect(stats).toMatchObject({ files: 1, skipped: 255, truncated: true });
     });
 
     it("reads only exactly named rotated files and counts other events*.jsonl names as skipped", () => {
