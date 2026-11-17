@@ -26,7 +26,10 @@ export const STOP_OUTCOMES = [
   "engine",
 ] as const;
 
-const IDENTIFIER = /^[A-Za-z0-9._:/@-]{1,128}$/;
+/** `session_id`, `agent_type`, `tool_name`, `worktree`: no `/` and no `@`, so a path or an e-mail address cannot pass. */
+const IDENTIFIER = /^[A-Za-z0-9._:-]{1,128}$/;
+/** `branch` keeps `/` (`<type>/<issue>-<slug>`) and `@` (git allows it). */
+const BRANCH = /^[A-Za-z0-9._:/@-]{1,128}$/;
 const MODEL = /^[A-Za-z0-9._:/@[\]-]{1,64}$/;
 /**
  * A token prefix, then at least 16 more characters. Best effort. `sk-`, `xox` and `ghs_` occur inside
@@ -45,9 +48,14 @@ function matching(value: unknown, rule: RegExp): string | null {
     : null;
 }
 
-/** `session_id`, `agent_type`, `branch`, `worktree`: the value, or null when it fails the field rule. */
+/** `session_id`, `agent_type`, `worktree`: the value, or null when it fails the field rule. */
 export function identifierOrNull(value: unknown): string | null {
   return matching(value, IDENTIFIER);
+}
+
+/** `branch`: the value, or null when it fails the field rule. */
+export function branchOrNull(value: unknown): string | null {
+  return matching(value, BRANCH);
 }
 
 export function modelOrNull(value: unknown): string | null {
@@ -100,6 +108,7 @@ export function runIdOf(
 }
 
 const identifier = z.string().refine((v) => identifierOrNull(v) === v);
+const branch = z.string().refine((v) => branchOrNull(v) === v);
 const decision = z.enum(["allow", "deny", "ask", "rewrite"]);
 
 export const ledgerRecordSchema = z
@@ -150,7 +159,7 @@ export const ledgerRecordSchema = z
     interactive: z.boolean(),
     worktree: identifier.nullable(),
     primary: z.boolean(),
-    branch: identifier.nullable(),
+    branch: branch.nullable(),
     issue: z.number().int().min(1).max(MAX_ISSUE).nullable(),
     duration_ms: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   })
