@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  LINE_LIMIT,
   MIN_RECORD_BYTES,
   readLedgerDirectory,
   readLedgerFile,
@@ -189,6 +190,76 @@ describe("reader", () => {
     const { records, stats } = read(dir);
     expect(records).toHaveLength(1);
     expect(stats).toMatchObject({ malformed: 3, partial: 0 });
+  });
+
+  describe("line limit", () => {
+    /** A valid record padded with trailing whitespace to exactly `bytes` bytes. */
+    function padded(bytes: number): string {
+      const json = JSON.stringify(sampleRecord({ duration_ms: 77 }));
+      return json + " ".repeat(bytes - Buffer.byteLength(json));
+    }
+
+    /** Whole records up to just before the 64 KiB read border, so the next line crosses it. */
+    function beforeBorder(): { text: string; count: number } {
+      let text = "";
+      let count = 0;
+      while (
+        Buffer.byteLength(text) + 2 * Buffer.byteLength(line()) <
+        64 * 1024 - 1000
+      ) {
+        text += line();
+        count += 1;
+      }
+      return { text, count };
+    }
+
+    it("counts a line over the limit inside one chunk as malformed, unparsed", () => {
+      const dir = directory();
+      fs.writeFileSync(
+        join(dir, "events.jsonl"),
+        `${padded(LINE_LIMIT + 1)}\n${line()}`,
+      );
+      const { records, stats } = read(dir);
+      expect(records).toHaveLength(1);
+      expect(stats).toMatchObject({ malformed: 1, partial: 0 });
+    });
+
+    it("counts a line over the limit that crosses a chunk border as malformed", () => {
+      const dir = directory();
+      const { text, count } = beforeBorder();
+      expect(Buffer.byteLength(text) + LINE_LIMIT + 1).toBeGreaterThan(
+        64 * 1024,
+      );
+      fs.writeFileSync(
+        join(dir, "events.jsonl"),
+        `${text}${padded(LINE_LIMIT + 1)}\n${line()}`,
+      );
+      const { records, stats } = read(dir);
+      expect(records).toHaveLength(count + 1);
+      expect(stats).toMatchObject({ malformed: 1, partial: 0 });
+    });
+
+    it("parses a line of exactly the limit, inside a chunk and across a border", () => {
+      const inside = directory();
+      fs.writeFileSync(join(inside, "events.jsonl"), `${padded(LINE_LIMIT)}\n`);
+      expect(read(inside).records).toHaveLength(1);
+      expect(read(inside).stats.malformed).toBe(0);
+      const across = directory();
+      const { text, count } = beforeBorder();
+      fs.writeFileSync(
+        join(across, "events.jsonl"),
+        `${text}${padded(LINE_LIMIT)}\n`,
+      );
+      const { records, stats } = read(across);
+      expect(records).toHaveLength(count + 1);
+      expect(stats).toMatchObject({ malformed: 0, partial: 0 });
+    });
+
+    it("counts an over-limit last line without a newline as partial", () => {
+      const dir = directory();
+      fs.writeFileSync(join(dir, "events.jsonl"), padded(LINE_LIMIT + 1));
+      expect(read(dir).stats).toMatchObject({ malformed: 0, partial: 1 });
+    });
   });
 
   it("counts a short line that spans two chunks", () => {

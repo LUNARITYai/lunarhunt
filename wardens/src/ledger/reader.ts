@@ -29,7 +29,8 @@ export type ReadStats = {
 };
 
 const CHUNK_BYTES = 64 * 1024;
-const LINE_LIMIT = 4 * 4096;
+/** A line longer than this many bytes (without its newline) is `malformed`, never parsed or buffered. */
+export const LINE_LIMIT = 4 * 4096;
 const NAME = /^events.*\.jsonl$/;
 /** Every record the writer produces starts like this (key order of the schema). */
 const RECORD_START = Buffer.from('{"v":1,"record":"');
@@ -128,6 +129,11 @@ export function readLedgerFile(
           continue;
         }
         const length = pendingBytes + index - start;
+        if (length > LINE_LIMIT) {
+          // Wherever the line sits relative to the chunk borders: never buffered, never parsed.
+          oversize = true;
+          pending = [];
+        }
         if (!oversize && length >= MIN_RECORD_BYTES) {
           pending.push(Buffer.from(chunk.subarray(start, index)));
         }
@@ -135,11 +141,12 @@ export function readLedgerFile(
         start = index + 1;
       }
       if (start < count && !oversize) {
-        pending.push(Buffer.from(chunk.subarray(start, count)));
         pendingBytes += count - start;
         if (pendingBytes > LINE_LIMIT) {
           oversize = true;
           pending = [];
+        } else {
+          pending.push(Buffer.from(chunk.subarray(start, count)));
         }
       }
     }
