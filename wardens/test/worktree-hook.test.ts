@@ -710,215 +710,241 @@ describe("WorktreeCreate: validation", () => {
   });
 });
 
-describe("WorktreeRemove (provisional payload)", () => {
-  const body = (r: Repo, wt: string) =>
-    payload("worktree-remove-provisional.json", {
-      __PRIMARY__: r.primary,
-      __WORKTREE__: wt,
+/**
+ * The two shapes of the `cwd` field. Recorded 2026-11-18 (`claude --worktree`, exit and remove): the removed worktree itself.
+ * Documented, not recorded: the parent session's directory (the subagent flow). Every remove case runs for both.
+ */
+const CWD_SHAPES = ["recorded", "documented"] as const;
+
+describe.each(CWD_SHAPES)(
+  "WorktreeRemove (recorded payload, cwd %s)",
+  (shape) => {
+    /** `cwdIsWorktree` is false for a bad `worktree_path`: `cwd` then stays a valid directory, the primary checkout. */
+    const body = (
+      r: Repo,
+      wt: string,
+      cwdIsWorktree = true,
+    ): Record<string, unknown> => ({
+      ...payload("worktree-remove.json", { __WORKTREE__: wt }),
+      cwd: shape === "recorded" && cwdIsWorktree ? wt : r.primary,
     });
 
-  it("removes a clean subagent worktree and its branch, exit 0, empty stdout", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-r1");
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toBe("");
-    expect(existsSync(wt)).toBe(false);
-    expect(branches(r)).not.toContain("worktree-agent-r1");
-  });
+    it("sends the payload cwd that its shape names", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-shape");
+      const sent = body(r, wt);
+      expect(sent.cwd).toBe(shape === "recorded" ? wt : r.primary);
+      expect(sent.worktree_path).toBe(wt);
+    });
 
-  it("removes a subagent worktree whose only extra commits live on the parent branch", () => {
-    const r = repo();
-    const parent = taskWorktree(r);
-    commit(parent, "unpushed.txt");
-    run("create", r, createBody(parent, "agent-r2"));
-    const wt = r.path("agent-r2");
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(existsSync(wt)).toBe(false);
-    expect(
-      sh(r.primary, "log", "--oneline", "-1", "feat/66-rec-test"),
-    ).toContain("unpushed.txt");
-  });
+    it("removes a clean subagent worktree and its branch, exit 0, empty stdout", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-r1");
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stdout).toBe("");
+      expect(existsSync(wt)).toBe(false);
+      expect(branches(r)).not.toContain("worktree-agent-r1");
+    });
 
-  it("keeps a task worktree: only a human removes those", () => {
-    const r = repo();
-    const wt = taskWorktree(r);
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("task worktree");
-    expect(out.stderr).toContain("wardens worktree remove 66-rec-test");
-    expect(existsSync(wt)).toBe(true);
-  });
+    it("removes a subagent worktree whose only extra commits live on the parent branch", () => {
+      const r = repo();
+      const parent = taskWorktree(r);
+      commit(parent, "unpushed.txt");
+      run("create", r, createBody(parent, "agent-r2"));
+      const wt = r.path("agent-r2");
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(existsSync(wt)).toBe(false);
+      expect(
+        sh(r.primary, "log", "--oneline", "-1", "feat/66-rec-test"),
+      ).toContain("unpushed.txt");
+    });
 
-  it("keeps a subagent worktree with uncommitted changes and names git worktree remove", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-k0");
-    writeFileSync(join(wt, "dirty.txt"), "x");
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("uncommitted");
-    expect(out.stderr).toContain(`git worktree remove ${wt}`);
-    expect(existsSync(join(wt, "dirty.txt"))).toBe(true);
-  });
+    it("keeps a task worktree: only a human removes those", () => {
+      const r = repo();
+      const wt = taskWorktree(r);
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("task worktree");
+      expect(out.stderr).toContain("wardens worktree remove 66-rec-test");
+      expect(existsSync(wt)).toBe(true);
+    });
 
-  it("keeps a subagent with its own commit and branch", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-k1");
-    commit(wt, "mine.txt");
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("unpushed");
-    expect(existsSync(wt)).toBe(true);
-    expect(branches(r)).toContain("worktree-agent-k1");
-    expect(sh(wt, "log", "--oneline", "-1")).toContain("mine.txt");
-  });
+    it("keeps a subagent worktree with uncommitted changes and names git worktree remove", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-k0");
+      writeFileSync(join(wt, "dirty.txt"), "x");
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("uncommitted");
+      expect(out.stderr).toContain(`git worktree remove ${wt}`);
+      expect(existsSync(join(wt, "dirty.txt"))).toBe(true);
+    });
 
-  it("keeps a detached subagent worktree with a commit no branch holds", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-k2");
-    sh(wt, "checkout", "-q", "--detach");
-    commit(wt, "lost.txt");
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("kept the worktree");
-    expect(existsSync(wt)).toBe(true);
-    expect(sh(wt, "log", "--oneline", "-1")).toContain("lost.txt");
-  });
+    it("keeps a subagent with its own commit and branch", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-k1");
+      commit(wt, "mine.txt");
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("unpushed");
+      expect(existsSync(wt)).toBe(true);
+      expect(branches(r)).toContain("worktree-agent-k1");
+      expect(sh(wt, "log", "--oneline", "-1")).toContain("mine.txt");
+    });
 
-  it("keeps a clean worktree on another branch (N1)", () => {
-    const r = repo();
-    const wt = r.path("scratch");
-    sh(
-      r.primary,
-      "worktree",
-      "add",
-      "-q",
-      "-b",
-      "my-feature",
-      wt,
-      "origin/main",
-    );
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toBe("");
-    expect(out.stderr).toContain("not worktree-scratch");
-    expect(existsSync(wt)).toBe(true);
-    expect(branches(r)).toContain("my-feature");
-    const log = readFileSync(
-      join(r.primary, ".panopticon", "wardens.log.jsonl"),
-      "utf8",
-    );
-    expect(log).toContain("worktree-remove");
-    expect(log).toContain("did not make it");
-  });
-
-  it("keeps a clean detached worktree (N1)", () => {
-    const r = repo();
-    const wt = detachedParent(r, r.path("detached-clean"));
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("not worktree-detached-clean");
-    expect(existsSync(wt)).toBe(true);
-    expect(
-      readFileSync(join(r.primary, ".panopticon", "wardens.log.jsonl"), "utf8"),
-    ).toContain("did not make it");
-  });
-
-  it("never runs a program or hooks named in the repository configuration (N2)", () => {
-    const r = repo();
-    const parent = detachedParent(r);
-    const wt = subagent(r, "agent-g1");
-    const marker = join(r.base, "marker");
-    const hookMarker = join(r.base, "hook-marker");
-    const script = join(r.base, "fsmonitor.sh");
-    writeFileSync(script, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
-    const hooks = join(r.base, "hooks");
-    mkdirSync(hooks);
-    writeFileSync(
-      join(hooks, "post-checkout"),
-      `#!/bin/sh\ntouch ${hookMarker}\n`,
-      { mode: 0o755 },
-    );
-    sh(r.primary, "config", "core.fsmonitor", script);
-    sh(r.primary, "config", "core.hooksPath", hooks);
-    const created = run("create", r, createBody(parent, "agent-g2"));
-    const removed = run("remove", r, body(r, wt));
-    expect(created.exitCode).toBe(0);
-    expect(removed.exitCode).toBe(0);
-    expect(existsSync(r.path("agent-g2"))).toBe(true);
-    expect(existsSync(wt)).toBe(false);
-    expect(existsSync(marker)).toBe(false);
-    expect(existsSync(hookMarker)).toBe(false);
-    // Control: plain git does run both.
-    sh(
-      r.primary,
-      "worktree",
-      "add",
-      "-q",
-      "--detach",
-      r.path("control"),
-      "origin/main",
-    );
-    sh(r.path("control"), "status");
-    expect(existsSync(hookMarker)).toBe(true);
-    expect(existsSync(marker)).toBe(true);
-  });
-
-  it("keeps a locked worktree", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-k3");
-    sh(r.primary, "worktree", "lock", wt);
-    const out = run("remove", r, body(r, wt));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("kept the worktree");
-    expect(existsSync(wt)).toBe(true);
-  });
-
-  it("logs a kept worktree to the primary Ledger log", () => {
-    const r = repo();
-    const wt = subagent(r, "agent-k4");
-    writeFileSync(join(wt, "dirty.txt"), "x");
-    run("remove", r, body(r, wt));
-    const log = readFileSync(
-      join(r.primary, ".panopticon", "wardens.log.jsonl"),
-      "utf8",
-    );
-    expect(log).toContain("worktree-remove");
-    expect(log).toContain("uncommitted");
-  });
-
-  it("keeps a linked worktree outside the Charter location", () => {
-    const r = repo();
-    const outside = join(r.primary, "..", "elsewhere");
-    sh(r.primary, "worktree", "add", "-q", "--detach", outside, "main");
-    const out = run("remove", r, body(r, realpathSync(outside)));
-    expect(out.exitCode).toBe(0);
-    expect(out.stderr).toContain("not under the Charter location");
-    expect(existsSync(outside)).toBe(true);
-  });
-
-  it("keeps the primary checkout, a plain directory and a missing path", () => {
-    const r = repo();
-    taskWorktree(r);
-    const plain = r.path("plain");
-    mkdirSync(plain, { recursive: true });
-    for (const target of [
-      r.primary,
-      plain,
-      r.path("missing"),
-      "relative/path",
-      join(r.path("66-rec-test"), ".."),
-    ]) {
-      const out = run("remove", r, body(r, target));
+    it("keeps a detached subagent worktree with a commit no branch holds", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-k2");
+      sh(wt, "checkout", "-q", "--detach");
+      commit(wt, "lost.txt");
+      const out = run("remove", r, body(r, wt));
       expect(out.exitCode).toBe(0);
       expect(out.stderr).toContain("kept the worktree");
-    }
-    expect(existsSync(r.primary)).toBe(true);
-    expect(existsSync(plain)).toBe(true);
-    expect(existsSync(r.path("66-rec-test"))).toBe(true);
-  });
+      expect(existsSync(wt)).toBe(true);
+      expect(sh(wt, "log", "--oneline", "-1")).toContain("lost.txt");
+    });
 
+    it("keeps a clean worktree on another branch (N1)", () => {
+      const r = repo();
+      const wt = r.path("scratch");
+      sh(
+        r.primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "my-feature",
+        wt,
+        "origin/main",
+      );
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stdout).toBe("");
+      expect(out.stderr).toContain("not worktree-scratch");
+      expect(existsSync(wt)).toBe(true);
+      expect(branches(r)).toContain("my-feature");
+      const log = readFileSync(
+        join(r.primary, ".panopticon", "wardens.log.jsonl"),
+        "utf8",
+      );
+      expect(log).toContain("worktree-remove");
+      expect(log).toContain("did not make it");
+    });
+
+    it("keeps a clean detached worktree (N1)", () => {
+      const r = repo();
+      const wt = detachedParent(r, r.path("detached-clean"));
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("not worktree-detached-clean");
+      expect(existsSync(wt)).toBe(true);
+      expect(
+        readFileSync(
+          join(r.primary, ".panopticon", "wardens.log.jsonl"),
+          "utf8",
+        ),
+      ).toContain("did not make it");
+    });
+
+    it("never runs a program or hooks named in the repository configuration (N2)", () => {
+      const r = repo();
+      const parent = detachedParent(r);
+      const wt = subagent(r, "agent-g1");
+      const marker = join(r.base, "marker");
+      const hookMarker = join(r.base, "hook-marker");
+      const script = join(r.base, "fsmonitor.sh");
+      writeFileSync(script, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+      const hooks = join(r.base, "hooks");
+      mkdirSync(hooks);
+      writeFileSync(
+        join(hooks, "post-checkout"),
+        `#!/bin/sh\ntouch ${hookMarker}\n`,
+        { mode: 0o755 },
+      );
+      sh(r.primary, "config", "core.fsmonitor", script);
+      sh(r.primary, "config", "core.hooksPath", hooks);
+      const created = run("create", r, createBody(parent, "agent-g2"));
+      const removed = run("remove", r, body(r, wt));
+      expect(created.exitCode).toBe(0);
+      expect(removed.exitCode).toBe(0);
+      expect(existsSync(r.path("agent-g2"))).toBe(true);
+      expect(existsSync(wt)).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(existsSync(hookMarker)).toBe(false);
+      // Control: plain git does run both.
+      sh(
+        r.primary,
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        r.path("control"),
+        "origin/main",
+      );
+      sh(r.path("control"), "status");
+      expect(existsSync(hookMarker)).toBe(true);
+      expect(existsSync(marker)).toBe(true);
+    });
+
+    it("keeps a locked worktree", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-k3");
+      sh(r.primary, "worktree", "lock", wt);
+      const out = run("remove", r, body(r, wt));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("kept the worktree");
+      expect(existsSync(wt)).toBe(true);
+    });
+
+    it("logs a kept worktree to the primary Ledger log", () => {
+      const r = repo();
+      const wt = subagent(r, "agent-k4");
+      writeFileSync(join(wt, "dirty.txt"), "x");
+      run("remove", r, body(r, wt));
+      const log = readFileSync(
+        join(r.primary, ".panopticon", "wardens.log.jsonl"),
+        "utf8",
+      );
+      expect(log).toContain("worktree-remove");
+      expect(log).toContain("uncommitted");
+    });
+
+    it("keeps a linked worktree outside the Charter location", () => {
+      const r = repo();
+      const outside = join(r.primary, "..", "elsewhere");
+      sh(r.primary, "worktree", "add", "-q", "--detach", outside, "main");
+      const out = run("remove", r, body(r, realpathSync(outside)));
+      expect(out.exitCode).toBe(0);
+      expect(out.stderr).toContain("not under the Charter location");
+      expect(existsSync(outside)).toBe(true);
+    });
+
+    it("keeps the primary checkout, a plain directory and a missing path", () => {
+      const r = repo();
+      taskWorktree(r);
+      const plain = r.path("plain");
+      mkdirSync(plain, { recursive: true });
+      for (const target of [
+        r.primary,
+        plain,
+        r.path("missing"),
+        "relative/path",
+        join(r.path("66-rec-test"), ".."),
+      ]) {
+        const out = run("remove", r, body(r, target, false));
+        expect(out.exitCode).toBe(0);
+        expect(out.stderr).toContain("kept the worktree");
+      }
+      expect(existsSync(r.primary)).toBe(true);
+      expect(existsSync(plain)).toBe(true);
+      expect(existsSync(r.path("66-rec-test"))).toBe(true);
+    });
+  },
+);
+
+describe("WorktreeRemove payload errors", () => {
   it("works when the session cwd is inside the worktree", () => {
     const r = repo();
     const wt = subagent(r, "agent-k5");
@@ -1141,7 +1167,7 @@ describe("task.json hash records (#96)", () => {
 });
 
 describe("CLI entrypoint", () => {
-  function cli(r: Repo, args: string[], input: string) {
+  function cli(r: Repo, args: string[], input: string, cwd = r.primary) {
     return spawnSync(
       process.execPath,
       [
@@ -1151,7 +1177,7 @@ describe("CLI entrypoint", () => {
         ...args,
       ],
       {
-        cwd: r.primary,
+        cwd,
         input,
         encoding: "utf8",
         env: {
@@ -1184,6 +1210,30 @@ describe("CLI entrypoint", () => {
     expect(removed.status).toBe(0);
     expect(existsSync(r.path("agent-cli1"))).toBe(false);
   });
+
+  it.each(CWD_SHAPES)(
+    "removes a worktree while the hook process itself runs inside it (payload cwd %s)",
+    (shape) => {
+      const r = repo();
+      installSources(r);
+      const wt = subagent(r, "agent-cli3");
+      const sent = {
+        ...payload("worktree-remove.json", { __WORKTREE__: wt }),
+        cwd: shape === "recorded" ? wt : r.primary,
+      };
+      const removed = cli(
+        r,
+        ["remove", "--tool", "claude"],
+        JSON.stringify(sent),
+        wt,
+      );
+      expect(removed.stdout).toBe("");
+      expect(removed.status).toBe(0);
+      expect(removed.stderr).toContain("removed agent-cli3");
+      expect(existsSync(wt)).toBe(false);
+      expect(branches(r)).not.toContain("worktree-agent-cli3");
+    },
+  );
 
   it("refuses a cwd outside the repository of the bundle", () => {
     const r = repo();

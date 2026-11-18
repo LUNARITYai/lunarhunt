@@ -1,0 +1,17 @@
+{
+  "_meta": {
+    "source": "recorded-claude-session",
+    "provisional": false,
+    "event": "WorktreeRemove",
+    "note": "Recorded 2026-11-18 in a throwaway repository (claude --worktree, then /exit and remove; WorktreeCreate and WorktreeRemove hooks configured). The hook ran with its working directory inside the removed worktree, and the payload cwd is that worktree, not the primary checkout. Home paths shortened; __WORKTREE__ stands for the removed worktree. CLAUDE variables present in the hook environment (names only): CLAUDECODE, CLAUDE_PID, CLAUDE_PROJECT_DIR, CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_SESSION_ATTENDED, CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_CHILD_NOTES_DIR, CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_MESSAGING_TOKEN."
+  },
+  "stdin": {
+    "session_id": "178e9eff-0000-0000-0000-000000000000",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__WORKTREE__",
+    "scratchpad_dir": "scratchpad",
+    "prompt_id": "c338a80e-0000-0000-0000-000000000000",
+    "hook_event_name": "WorktreeRemove",
+    "worktree_path": "__WORKTREE__"
+  }
+}

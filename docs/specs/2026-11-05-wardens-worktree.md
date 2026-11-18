@@ -91,7 +91,7 @@ Criteria:
 - WHEN `WorktreeCreate` receives a `name` that matches `<issue>-<slug>`, THE SYSTEM SHALL create the worktree as `new` does. Here the hook, not the agent, grants scope. The scope comes from the human-written issue.
 - For any other name (a subagent), it SHALL create `<location>/<name>` from the parent task branch's `HEAD`. It SHALL copy the parent worktree's `.panopticon/task.json`, so a subagent never has wider scope than its parent. If the hook's `cwd` is the primary checkout or `main`, it SHALL fail with a `worktree-guard` message.
 - THE generated `.cursor/worktrees.json` SHALL run `wardens worktree setup --tool cursor` as `setup-worktree-unix` and `setup-worktree`. Cursor setup SHALL switch the worktree to the convention branch. **Moved to [#68](https://github.com/LUNARITYai/lunarhunt/issues/68)**: the Cursor setup environment is not recorded yet (the recording run stopped at "Workspace Trust Required"), so #51 covers Claude Code only and `worktree create|remove --tool cursor` refuses.
-- The exact `WorktreeCreate` payloads were recorded on 2026-11-06 (Claude Code 2.1.319, macOS). The `WorktreeRemove` payload did not fire in either flow and is **provisional** (see below).
+- The exact `WorktreeCreate` payloads were recorded on 2026-11-06 (Claude Code 2.1.319, macOS). The `WorktreeRemove` payload was recorded on 2026-11-18 for the `claude --worktree` exit flow (see below); the subagent cleanup flow (`isolation: worktree`) is not recorded.
 
 #### Payloads (normative)
 
@@ -100,9 +100,9 @@ THE SYSTEM SHALL parse only the fields it uses, strictly (a wrong type or a miss
 | Event | Fields used | Recorded shape |
 | --- | --- | --- |
 | `WorktreeCreate` | `hook_event_name` (must be `WorktreeCreate`), `cwd` (absolute path of the parent session), `name` | `{"session_id":"…","transcript_path":"…","cwd":"<primary>","hook_event_name":"WorktreeCreate","name":"66-rec-test"}` for `claude --worktree 66-rec-test`; for subagent isolation `cwd` is the parent session's directory (often a linked worktree), `name` is `agent-<hex>` and `prompt_id` is present |
-| `WorktreeRemove` | `hook_event_name` (must be `WorktreeRemove`), `cwd`, `worktree_path` | **Provisional**, from the documented schema: the common fields plus `worktree_path`. Fixture `wardens/test/fixtures/worktree-hook/worktree-remove-provisional.json` is not a real recording |
+| `WorktreeRemove` | `hook_event_name` (must be `WorktreeRemove`), `cwd`, `worktree_path` | Recorded 2026-11-18 (`claude --worktree`, then exit and remove): the common fields plus `worktree_path`, and `scratchpad_dir` and `prompt_id`. In this flow `cwd` is the removed worktree itself, and the hook process runs with its working directory inside it. The subagent flow (`isolation: worktree`) is unrecorded; there `cwd` is assumed to be the parent session's directory, as the documentation says. Fixture `wardens/test/fixtures/worktree-hook/worktree-remove.json`; the tests run every remove case for both `cwd` shapes |
 
-The payload has no base ref, agent type or tool name. The base always comes from the Charter (`worktree.base_ref`) or from the parent worktree. Before merge, Krzysztof records one real `WorktreeRemove` (an interactive `claude --worktree x`, exited with no changes, choosing "remove") and the fixture is replaced.
+The payload has no base ref, agent type or tool name. The base always comes from the Charter (`worktree.base_ref`) or from the parent worktree. The recorded `WorktreeRemove` payload came from an interactive `claude --worktree` session exited with "remove".
 
 #### `WorktreeCreate` (normative)
 
@@ -122,12 +122,12 @@ The payload has no base ref, agent type or tool name. The base always comes from
 - **Clean failure.** IF anything fails after `git worktree add` succeeded for this target and branch (setup step, `task.json` copy), THEN THE SYSTEM SHALL remove the worktree, its directory and the branch before it exits, so no half-made worktree or branch is left. Before the add, nothing is removed, so a path or branch that another creator made is never touched.
 - **Timeouts.** Each git call (180 s), `gh` call (60 s) and setup step (240 s) is cut off below the 900 s hook timeout; a timeout fails the step and runs the clean failure. One overall deadline of 540 s covers a whole create: after it no new `gh` call or setup step starts, so the create fails and the clean failure runs, which also drops the hash record.
 
-#### `WorktreeRemove` (normative, provisional payload)
+#### `WorktreeRemove` (normative, payload recorded 2026-11-18)
 
 - THE SYSTEM SHALL use the same trust anchor as `WorktreeCreate`, and act only on a `worktree_path` that is a linked worktree of the repository and lies under the Charter `location`, and only on a **subagent worktree**: one on exactly the branch `worktree-<name>`, where `<name>` is its directory name. A task worktree (`<issue>-<slug>`), a worktree on any other branch and a detached worktree are kept and left to a human (`wardens worktree remove` or `prune` for task worktrees). Any other path is kept. Every git call of both entrypoints runs with `-c core.fsmonitor=false -c core.hooksPath=/dev/null`, so a repository or worktree configuration cannot make git run a program or a hook.
 - IF the worktree has uncommitted changes, or commits that no remote and no other local branch holds, or git cannot verify either, THEN THE SYSTEM SHALL keep it, write the reason to stderr and to `.panopticon/wardens.log.jsonl`, and exit 0. The message names `git worktree remove <path>` for a kept subagent worktree, because `remove` and `prune` refuse non-task worktrees. A commit that another local branch holds does not count as unpushed, so an unmodified subagent worktree based on an unpushed parent commit is removed. A locked worktree is kept. It never deletes work and never fails loudly (a non-zero exit only matters to Claude Code when the directory is still there).
 - Otherwise it removes the worktree (the same `git worktree remove` as `remove`, without `--force`) and deletes the `worktree-<name>` branch when no other ref needs its commits.
-- A malformed payload exits 2 and removes nothing. `prune` and `doctor`'s `worktrees` check stay the real cleanup, because the hook did not fire in the recorded runs.
+- A malformed payload exits 2 and removes nothing. `prune` and `doctor`'s `worktrees` check stay the real cleanup, because the subagent cleanup flow (`isolation: worktree`) is not recorded.
 
 #### Agents cannot invoke the entrypoints (normative)
 
