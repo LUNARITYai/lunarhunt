@@ -1186,6 +1186,57 @@ describe("git's own removal does not re-read worktree-controlled state", () => {
     },
   );
 
+  // The final removal is forced and the status check ignores submodules, so a
+  // worktree with submodules must be kept: it could hold unsaved work in one.
+  // The commit is pushed, so only the submodule rule can keep the worktree.
+  const SUBMODULE_SHAPES: [string, (wt: string) => void][] = [
+    [
+      "a gitlink in the index",
+      (wt) =>
+        sh(
+          wt,
+          "update-index",
+          "--add",
+          "--cacheinfo",
+          `160000,${sh(wt, "rev-parse", "HEAD")},sub`,
+        ),
+    ],
+    [
+      "a .gitmodules file",
+      (wt) => {
+        writeFileSync(
+          join(wt, ".gitmodules"),
+          '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n',
+        );
+        sh(wt, "add", "-f", ".gitmodules");
+      },
+    ],
+  ];
+
+  it.each(
+    REMOVERS.flatMap((remover) =>
+      SUBMODULE_SHAPES.map(([shape, apply]) => ({ remover, shape, apply })),
+    ),
+  )(
+    "$remover.name: a worktree with $shape issues no git worktree remove",
+    ({ remover, apply }) => {
+      const r = repo();
+      const wt = remover.make(r);
+      apply(wt);
+      sh(wt, "commit", "-q", "-m", "submodule");
+      sh(wt, "push", "-q", "origin", "HEAD:refs/heads/pushed");
+      const { result, calls } = spyOnGit(r, () => remover.go(r, wt));
+      const said = `${result.stdout}${result.stderr}`;
+      expect(said).toContain("has submodules");
+      if (remover.name !== "wardens worktree prune") {
+        // prune lists only the reason; the others name the next step.
+        expect(said).toContain(`git worktree remove ${wt}`);
+      }
+      expect(calls.filter(isRemove)).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    },
+  );
+
   it.each(REMOVERS)(
     "$name: a worktree whose .git cannot be trusted issues no git worktree remove",
     ({ make, go }) => {

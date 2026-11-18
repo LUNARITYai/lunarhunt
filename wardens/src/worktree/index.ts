@@ -562,6 +562,16 @@ function realOr(path: string): string {
   }
 }
 
+/** True when something (even a dangling symlink) exists at `path`; never reads it. */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type AdminDir = { ok: true; dir: string } | { ok: false; why: string };
 
 /**
@@ -682,6 +692,25 @@ export function removeOne(
       return {
         refused: `${name} cannot be inspected safely: ${admin.why}`,
         next: "Check the worktree by hand or pass --force",
+      };
+    }
+    // The removal below is forced, and the status check ignores submodules, so
+    // work inside one would be lost silently: a worktree with submodules (a
+    // gitlink in the index, or a .gitmodules file) is left to the human.
+    const staged = gitOnWorktree(entry.path, admin.dir, [
+      "ls-files",
+      "--stage",
+    ]);
+    if (!staged.ok) {
+      return unverified(name);
+    }
+    if (
+      /^160000 /m.test(staged.out) ||
+      lexists(join(entry.path, ".gitmodules"))
+    ) {
+      return {
+        refused: `${name} has submodules, whose uncommitted work Wardens does not check`,
+        next: `Save the work, then run git worktree remove ${entry.path}`,
       };
     }
     const status = gitOnWorktree(entry.path, admin.dir, [
