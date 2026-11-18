@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -20,7 +21,7 @@ import { writeRepo } from "../src/sync/anchor.ts";
 import { loadTask } from "../src/task.ts";
 import { integrityOf, recordTaskHash, taskId } from "../src/task-integrity.ts";
 import { runWorktreeHook } from "../src/worktree/hook.ts";
-import type { Deps, Result } from "../src/worktree/index.ts";
+import { type Deps, type Result, runWorktree } from "../src/worktree/index.ts";
 import { normativeCharter, repoRoot } from "./support.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "worktree-hook");
@@ -977,6 +978,176 @@ describe("WorktreeRemove payload errors", () => {
     ]) {
       expect(run("remove", r, bad).exitCode).toBe(2);
     }
+    expect(existsSync(wt)).toBe(true);
+  });
+});
+
+/**
+ * Class: worktree-controlled git configuration is not used. A worktree's `.git`
+ * can be replaced by whoever works in it, so the inspections before a removal
+ * must never read it. Each shape below is a tampered `.git`; where a repository
+ * of its own is involved it carries a clean filter that would create `marker`.
+ */
+type Tamper = {
+  name: string;
+  /** The payload cwd of the recorded shape is then outside this repository: the cwd gate refuses with exit 2. */
+  foreign: boolean;
+  apply: (r: Repo, wt: string, marker: string) => void;
+};
+
+/** Turns `wt` into a standalone repository whose modified tracked file runs a marker-creating clean filter. */
+function plantFilterRepo(r: Repo, wt: string, marker: string): void {
+  rmSync(join(wt, ".git"), { force: true });
+  sh(wt, "init", "-q", "-b", "main");
+  sh(wt, "config", "user.email", "t@example.com");
+  sh(wt, "config", "user.name", "t");
+  sh(wt, "config", "commit.gpgsign", "false");
+  writeFileSync(join(wt, ".gitattributes"), "tracked.txt filter=x\n");
+  writeFileSync(join(wt, "tracked.txt"), "a\n");
+  sh(wt, "add", ".gitattributes", "tracked.txt");
+  sh(wt, "commit", "-q", "-m", "fake");
+  const script = join(r.base, "filter.sh");
+  writeFileSync(script, `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 });
+  sh(wt, "config", "filter.x.clean", script);
+  // Same size, new content: git then has to run the filter to compare it.
+  writeFileSync(join(wt, "tracked.txt"), "b\n");
+  expect(existsSync(marker)).toBe(false);
+}
+
+/** Moves the standalone repository's `.git` out of `wt`, so `wt/.git` can be rebuilt as a link to it. */
+function moveGitOut(r: Repo, wt: string): string {
+  const moved = join(r.base, `moved-${Math.random().toString(36).slice(2)}`);
+  renameSync(join(wt, ".git"), moved);
+  return moved;
+}
+
+const adminOf = (wt: string) =>
+  /^gitdir: (.+)$/m.exec(readFileSync(join(wt, ".git"), "utf8"))?.[1] ?? "";
+
+const TAMPERED_GIT: Tamper[] = [
+  {
+    name: "a directory repository",
+    foreign: true,
+    apply: (r, wt, marker) => plantFilterRepo(r, wt, marker),
+  },
+  {
+    name: "a symlink to a repository",
+    foreign: true,
+    apply: (r, wt, marker) => {
+      plantFilterRepo(r, wt, marker);
+      symlinkSync(moveGitOut(r, wt), join(wt, ".git"));
+    },
+  },
+  {
+    name: "a pointer to another repository",
+    foreign: true,
+    apply: (r, wt, marker) => {
+      plantFilterRepo(r, wt, marker);
+      writeFileSync(join(wt, ".git"), `gitdir: ${moveGitOut(r, wt)}\n`);
+    },
+  },
+  {
+    name: "a pointer to another worktree's admin directory",
+    foreign: false,
+    apply: (r, wt) => {
+      const other = subagent(r, "agent-other");
+      writeFileSync(join(wt, ".git"), `gitdir: ${adminOf(other)}\n`);
+    },
+  },
+  {
+    name: "a pointer to the primary .git",
+    foreign: false,
+    apply: (r, wt) => {
+      writeFileSync(join(wt, ".git"), `gitdir: ${join(r.primary, ".git")}\n`);
+    },
+  },
+];
+
+describe.each(CWD_SHAPES)(
+  "worktree-controlled git config is not used: hook remove (cwd %s)",
+  (shape) => {
+    it.each(TAMPERED_GIT)("keeps a worktree whose .git is $name", (tamper) => {
+      const r = repo();
+      const wt = subagent(r, "agent-t1");
+      const marker = join(r.base, "MARKER");
+      tamper.apply(r, wt, marker);
+      const out = run("remove", r, {
+        ...payload("worktree-remove.json", { __WORKTREE__: wt }),
+        cwd: shape === "recorded" ? wt : r.primary,
+      });
+      expect(existsSync(marker)).toBe(false);
+      expect(existsSync(wt)).toBe(true);
+      if (shape === "recorded" && tamper.foreign) {
+        expect(out.exitCode).toBe(2);
+        expect(out.stderr).toContain("another repository");
+      } else {
+        expect(out.exitCode).toBe(0);
+        expect(out.stderr).toContain("kept the worktree");
+        expect(out.stderr).toContain("cannot be inspected safely");
+      }
+      expect(branches(r)).toContain("worktree-agent-t1");
+    });
+  },
+);
+
+describe("worktree-controlled git config is not used: remove and prune", () => {
+  const human = (r: Repo, state: string): Deps => ({
+    ...r.deps(),
+    env: { HOME: r.home },
+    charterRoot: r.primary,
+    gh: () => ({ status: 0, stdout: JSON.stringify([{ state }]) }),
+  });
+
+  it.each(TAMPERED_GIT)(
+    "wardens worktree remove and prune keep a worktree whose .git is $name",
+    (tamper) => {
+      const r = repo();
+      const wt = taskWorktree(r);
+      const marker = join(r.base, "MARKER");
+      tamper.apply(r, wt, marker);
+      const removed = runWorktree(
+        { sub: "remove", arg: "66-rec-test" },
+        human(r, "MERGED"),
+      );
+      expect(removed.exitCode).toBe(2);
+      expect(removed.stderr).toContain("cannot be inspected safely");
+      const pruned = runWorktree({ sub: "prune" }, human(r, "MERGED"));
+      expect(pruned.stdout).toContain("kept 66-rec-test");
+      expect(pruned.stdout).toContain("cannot be inspected safely");
+      expect(existsSync(marker)).toBe(false);
+      expect(existsSync(wt)).toBe(true);
+    },
+  );
+});
+
+describe("WorktreeRemove: the recorded cwd leaves the repository (S1)", () => {
+  it("exits 2 and keeps the worktree when its .git is a standalone repository", () => {
+    const r = repo();
+    const wt = subagent(r, "agent-s1a");
+    const marker = join(r.base, "MARKER");
+    plantFilterRepo(r, wt, marker);
+    const out = run("remove", r, {
+      ...payload("worktree-remove.json", { __WORKTREE__: wt }),
+      cwd: wt,
+    });
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("another repository");
+    expect(existsSync(wt)).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("exits 2 and keeps the worktree when the cwd is a repository nested inside it", () => {
+    const r = repo();
+    const wt = subagent(r, "agent-s1b");
+    const nested = join(wt, "nested");
+    mkdirSync(nested);
+    sh(nested, "init", "-q");
+    const out = run("remove", r, {
+      ...payload("worktree-remove.json", { __WORKTREE__: wt }),
+      cwd: nested,
+    });
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("another repository");
     expect(existsSync(wt)).toBe(true);
   });
 });

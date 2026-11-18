@@ -1,7 +1,13 @@
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
-import { gitToplevel, primaryCheckout } from "../git.ts";
+import { gitCommonDir, gitToplevel, primaryCheckout } from "../git.ts";
 import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
 import { githubRepo, readRepo } from "../sync/anchor.ts";
@@ -524,6 +530,86 @@ function unverified(name: string): Refusal {
   };
 }
 
+function realOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+type AdminDir = { ok: true; dir: string } | { ok: false; why: string };
+
+/**
+ * The administrative directory (`<common-dir>/worktrees/<id>`) of a linked
+ * worktree, found from the repository side: the `gitdir` file in it names the
+ * worktree's `.git`. The worktree's own `.git` is then accepted only when it
+ * is a regular file (not a symlink) whose `gitdir:` line resolves to that same
+ * directory. A worktree whose `.git` was replaced (a directory holding its own
+ * repository, a symlink, a pointer elsewhere) is not trusted: whoever wrote it
+ * chose its configuration.
+ */
+export function worktreeAdminDir(common: string, worktree: string): AdminDir {
+  const wanted = realOr(worktree);
+  const base = join(common, "worktrees");
+  let ids: string[];
+  try {
+    ids = readdirSync(base);
+  } catch {
+    return { ok: false, why: "the repository has no record of it" };
+  }
+  const dirs = ids.flatMap((id) => {
+    try {
+      const pointer = readFileSync(join(base, id, "gitdir"), "utf8").trim();
+      return realOr(dirname(pointer)) === wanted ? [join(base, id)] : [];
+    } catch {
+      return [];
+    }
+  });
+  const dir = dirs[0];
+  if (dirs.length !== 1 || dir === undefined) {
+    return { ok: false, why: "the repository has no single record of it" };
+  }
+  const dotGit = join(worktree, ".git");
+  try {
+    if (!lstatSync(dotGit).isFile()) {
+      return { ok: false, why: "its .git is not a plain pointer file" };
+    }
+    const pointer = /^gitdir: (.+?)\r?\n?$/.exec(readFileSync(dotGit, "utf8"));
+    const target = pointer?.[1];
+    if (
+      target === undefined ||
+      realOr(resolve(worktree, target)) !== realOr(dir)
+    ) {
+      return {
+        ok: false,
+        why: "its .git does not point to its administrative directory",
+      };
+    }
+  } catch {
+    return { ok: false, why: "its .git could not be read" };
+  }
+  return { ok: true, dir };
+}
+
+/**
+ * Runs git on a worktree against an explicit administrative directory (from
+ * `worktreeAdminDir`), so the worktree's own `.git` is never read, and with
+ * the program-running settings off whatever the caller's mode. Settings in the
+ * common configuration still apply; agents cannot write it under ring 0.
+ */
+function gitOnWorktree(worktree: string, admin: string, args: string[]) {
+  return git(worktree, [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    `--git-dir=${admin}`,
+    `--work-tree=${worktree}`,
+    ...args,
+  ]);
+}
+
 /** `worktree-<name>`: the branch of a worktree the `WorktreeCreate` hook made for a subagent. */
 export const HOOK_BRANCH = /^worktree-[a-z0-9][a-z0-9-]*$/;
 
@@ -557,7 +643,28 @@ export function removeOne(
   }
   const merged = mergedMatch(deps, primary, cfg, entry.branch);
   if (!force) {
-    const status = git(entry.path, ["status", "--porcelain"]);
+    // Every inspection reads a tree an agent may have rewritten: use the
+    // administrative directory the repository records for it, never the
+    // worktree's own `.git`, or refuse.
+    if (!existsSync(entry.path)) {
+      return unverified(name);
+    }
+    const common = gitCommonDir(primary);
+    const admin =
+      common === null
+        ? ({ ok: false, why: "the common git directory is unknown" } as const)
+        : worktreeAdminDir(common, entry.path);
+    if (!admin.ok) {
+      return {
+        refused: `${name} cannot be inspected safely: ${admin.why}`,
+        next: "Check the worktree by hand or pass --force",
+      };
+    }
+    const status = gitOnWorktree(entry.path, admin.dir, [
+      "status",
+      "--porcelain",
+      "--ignore-submodules=all",
+    ]);
     if (!status.ok) {
       return unverified(name);
     }
@@ -565,7 +672,7 @@ export function removeOne(
       return { refused: `${name} has uncommitted changes`, next: FORCE_NEXT };
     }
     if (!merged) {
-      const count = git(entry.path, [
+      const count = gitOnWorktree(entry.path, admin.dir, [
         "rev-list",
         "--count",
         "HEAD",
