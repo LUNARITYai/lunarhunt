@@ -31,7 +31,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 11. **Reject `to-spec`** (spec as an issue with a `ready-for-agent` label, no EARS, no human `ready` step) and **`pr`** (competes with `github-writing` and the PR template).
 12. **Reject `implement-spec`** (the orchestrator flow): integration branch, merger subagent, end-only review and unbounded parallelism conflict with C-11, ADR-0016 D4/D6 and the 2-subagent cap.
 
-**Orchestrator in a new tab vs our OVERSEER:** keep the native-subagent OVERSEER. The implementers are native subagents in both models; the differences are the integration branch, end-only review and frontier-wide parallelism, which our rules forbid for good reasons. Two cheap borrowings are worth taking: a fresh OVERSEER session per spec (we already have the restart hint), and "rebase on the target tip before reporting done".
+**Orchestrator in a new tab vs our OVERSEER:** keep the native-subagent OVERSEER. The implementers are native subagents in both models; the differences are the integration branch, end-only review and frontier-wide parallelism, which our rules forbid for good reasons. Two cheap borrowings are worth taking: a fresh OVERSEER session per spec (`docs/operations/context-handoff.md` already restarts OVERSEER at about half context), and "rebase on the target tip before reporting done".
 
 **Action needed before any adoption:** several of these skills are **already active** in this repo's sessions as user-level, model-invoked skills (`pr`, `code-review`, `domain-modeling`, `tdd`, and others appear in this session's skill list, both unprefixed and as `mattpocock-skills:*`). `domain-modeling` triggers on "recording or editing an ADR" and `pr` on "writing a PR body" [S5, S10], so they can steer agents away from MADR 4 (ADR-0002) and `github-writing` today. See open question 1.
 
@@ -56,7 +56,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 | to-tickets | Spec "Tasks" section → `agent:ready` issues with allowed paths | OVERSEER |
 | implement | Implementer subagent, one issue, one worktree, one PR (C-11, C-33) | implementer |
 | code-review | Independent Reviewer + Sentinel (ADR-0016 D6) | reviewer, sentinel |
-| retro | No equivalent yet; The Ledger is planned (ADR-0010) | — |
+| retro | No equivalent yet; Ledger v0 is being built (ADR-0010, `docs/specs/2026-11-14-ledger-v0.md`), no report yet | — |
 
 **Verdict: adapt.** Keep the interview (via `grilling`). Drop the file writes:
 - A root `GLOSSARY.md` is outside the Charter's `allowed_paths` (`panopticon.charter.yaml`, `paths.allowed_paths`), so `scope-guard` would block it; the source itself warns that such a block may be silent [S1].
@@ -82,7 +82,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 - **Overlap:** our root `AGENTS.md` glossary ("One name per concept") and ADR-0002.
 - **Conflicts:** model-invoked on "recording or editing an ADR" [S5]; it would steer a spec-writer drafting an ADR towards `docs/adr/` and its own format instead of MADR 4. Root `GLOSSARY.md` is out of scope (see section 1).
 - **Worth keeping:** the three ADR gates are a useful filter; `docs/decisions/` holds 19 ADRs written between 2026-11-03 and 2026-11-14, several of which are policy refinements.
-- **Change needed:** decide whether to disable the user-level skill in this repo (open question 1). If kept, a project skill or `docs/decisions/README.md` note that ADRs are MADR 4 in `docs/decisions/` and the glossary is in `AGENTS.md`.
+- **Change needed:** parked on 2026-11-18 (see Summary), so the trigger is gone for now. If kept, a project skill or `docs/decisions/README.md` note that ADRs are MADR 4 in `docs/decisions/` and the glossary is in `AGENTS.md`.
 
 ### 2.3 `to-spec` — reject
 
@@ -129,7 +129,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 ### 2.8 `pr` — reject
 
 - **Does** [S12]: PR body with Summary (a visual), Evidence (before/after), Merge Danger (door, blast radius); no rules on closing keywords, length or labels.
-- **Conflicts:** model-invoked on "Use when writing a PR body", the same trigger as our `github-writing` skill, which mandates `.github/pull_request_template.md`, `Closes #N` and one risk box (C-09). Two skills on one trigger make the result non-deterministic.
+- **Conflicts:** model-invoked on "Use when writing a PR body", the same trigger as our `github-writing` skill, which mandates `.github/pull_request_template.md`, `Closes #N` (C-09) and one risk box (PR template). Two skills on one trigger make the result non-deterministic. Parked on 2026-11-18 (see Summary).
 - **Worth borrowing:** "Evidence: before and after" matches our Tests line; "one-way vs two-way door" could inform the risk line. Krzysztof edits `github-writing` and the template himself (human-only paths).
 
 ### 2.9 `diagnosing-bugs` — adopt (split across roles)
@@ -176,7 +176,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 
 - **`implement-spec` — reject.** See section 3.
 - **`wayfinder` — defer.** Plans very large efforts as a `wayfinder:map` issue with labelled decision tickets (HITL or AFK), resolved one ticket per session [S20]. Its labels are outside `.github/labels.yml` (C-09). Its own known issues include agents writing production code during planning and "waterfall drift" on a 27-ticket map [S20]. Our spec-plus-ADR flow covers the current scale.
-- **`retro` — adapt later.** Suggests environment improvements after a session; "Mechanical violations should get deterministic checks" [S3]. This matches C-01. Useful once The Ledger exists (ADR-0010); outputs should be proposals in issues, since Covenant files are `ask` or human-only.
+- **`retro` — adapt later.** Suggests environment improvements after a session; "Mechanical violations should get deterministic checks" [S3]. This matches C-01. Useful once The Ledger's report exists (ADR-0010; Ledger v0 is being built); outputs should be proposals in issues, since Covenant files are `ask` or human-only.
 
 ---
 
@@ -211,7 +211,7 @@ The skills are a coherent, well-documented flow: **grill → spec → tickets �
 
 - Ring 0 applies to both models alike, because both run in Claude Code (ADR-0017 D1) and hooks fire for subagent tool calls. Observed in this run: as a subagent, a `Read` outside the worktree was refused with `Blocked by Warden engine: path escapes the worktree`.
 - Consequences for `implement-spec` as written:
-  - exploration notes "outside the repo" [S22] would be blocked for read-back by other subagents;
+  - exploration notes "outside the repo" [S22] work only in a directory on the Charter's `paths.external` allowlist (the session scratchpad under `/tmp/claude-*/*lunarhunt*/` qualifies); any other directory is blocked for subagents. This is a placement rule, not a reason to reject;
   - the issue's allowed paths are not enforced in subagent worktrees in either model (no `.panopticon/task.json`, ADR-0016 D2, `herdr.md`);
   - "silent test skips" in worktrees that lack gitignored fixtures, local databases or credentials [S21] apply to our subagent worktrees too, until the `WorktreeCreate` hook (#51) provisions `.env` from `.env.example` and the per-task database (ADR-0012).
 - Ring 2 (`panopticon/gate`, C-05) and human merge (ADR-0008) would catch an integration-branch PR, but it would exceed `max_pr_changed_lines: 600` (The Charter) for any non-trivial spec.
