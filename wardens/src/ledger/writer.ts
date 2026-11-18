@@ -61,7 +61,7 @@ export type LedgerFs = Pick<
   typeof nodeFs,
   | "lstatSync"
   | "mkdirSync"
-  | "readdirSync"
+  | "opendirSync"
   | "renameSync"
   | "openSync"
   | "fstatSync"
@@ -227,24 +227,49 @@ export function closeQuietly(fs: LedgerFs, fd: number): void {
 }
 
 /**
+ * The directory's entry names, read one by one and stopping at `maxEntries + 1`: more names than
+ * `maxEntries` fail with `cap` without reading further. The `Dir` is closed on every path, including
+ * a throw from `readSync` (which the caller turns into `rotate`).
+ */
+function listBounded(fs: LedgerFs, dir: string, maxEntries: number): string[] {
+  const handle = fs.opendirSync(dir);
+  try {
+    const names: string[] = [];
+    for (;;) {
+      const entry = handle.readSync();
+      if (entry === null) {
+        return names;
+      }
+      names.push(entry.name);
+      if (names.length > maxEntries) {
+        throw new LedgerFailure("cap");
+      }
+    }
+  } finally {
+    try {
+      handle.closeSync();
+    } catch {
+      // Nothing to do: the listing is finished or its failure is already known.
+    }
+  }
+}
+
+/**
  * The directory's entry names and the sum of their sizes; a vanished entry counts 0. More than
- * `maxEntries` names fail with `cap` right after the one listing, before any per-entry `lstat`.
+ * `maxEntries` names fail with `cap` during the one bounded listing, before any per-entry `lstat`.
  */
 function scanDirectory(
   fs: LedgerFs,
   dir: string,
   maxEntries: number,
 ): { names: string[]; bytes: number } {
-  const names = fs.readdirSync(dir);
-  if (names.length > maxEntries) {
-    throw new LedgerFailure("cap");
-  }
+  const names = listBounded(fs, dir, maxEntries);
   let bytes = 0;
   for (const name of names) {
     try {
       bytes += fs.lstatSync(join(dir, name)).size;
     } catch {
-      // Removed between `readdir` and `lstat`.
+      // Removed between the listing and `lstat`.
     }
   }
   return { names, bytes };
