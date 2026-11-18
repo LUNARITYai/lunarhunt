@@ -77,7 +77,7 @@ describe("writer: a record", () => {
     const names = [
       "lstatSync",
       "mkdirSync",
-      "readdirSync",
+      "opendirSync",
       "renameSync",
       "openSync",
       "fstatSync",
@@ -142,7 +142,7 @@ describe("writer: a record", () => {
     };
     const limits = { project: { rotateBytes: 1 } };
     for (const [name, ok] of [
-      ["readdirSync", false],
+      ["opendirSync", false],
       ["renameSync", false],
       ["closeSync", true],
     ] as const) {
@@ -704,10 +704,10 @@ describe("writer: rotation and caps", () => {
         pid: 4242,
         limits: { project: { rotateBytes: 50 } },
         fs: {
-          readdirSync: ((path: string) => {
+          opendirSync: ((path: string) => {
             listings += 1;
-            return fs.readdirSync(path);
-          }) as LedgerFs["readdirSync"],
+            return fs.opendirSync(path);
+          }) as LedgerFs["opendirSync"],
           lstatSync: ((path: string) => {
             if (path.startsWith(`${dir}/`)) {
               inside.push(path);
@@ -764,6 +764,165 @@ describe("writer: rotation and caps", () => {
         mode: 0o600,
       });
       expect(writeLedgerRecord(sampleRecord(), { home }).ok).toBe(true);
+    });
+
+    /** A fs seam whose `Dir` handles are counted: opened, closed, names read; `onRead` may throw. */
+    function watched(options: {
+      onRead?: (() => void) | undefined;
+      onClose?: (() => void) | undefined;
+    }) {
+      const seen = { opened: 0, closed: 0, reads: 0, names: 0 };
+      const seam: Partial<LedgerFs> = {
+        opendirSync: ((path: string) => {
+          const real = fs.opendirSync(path);
+          seen.opened += 1;
+          return {
+            readSync() {
+              seen.reads += 1;
+              options.onRead?.();
+              const entry = real.readSync();
+              if (entry !== null) {
+                seen.names += 1;
+              }
+              return entry;
+            },
+            closeSync() {
+              seen.closed += 1;
+              real.closeSync();
+              options.onClose?.();
+            },
+          };
+        }) as unknown as LedgerFs["opendirSync"],
+      };
+      return { seen, seam };
+    }
+
+    it("reads at most `maxEntries + 1` names from a directory with far more, fails with `cap` and closes the Dir", () => {
+      const { home, dir } = crowded("lunarhunt", 2000);
+      const { seen, seam } = watched({});
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(fail(result)).toBe("cap");
+      expect(seen.names).toBe(257);
+      expect(seen.opened).toBe(1);
+      expect(seen.closed).toBe(1);
+      expect(lines(join(dir, "events.jsonl"))).toEqual(["x".repeat(100), ""]);
+    });
+
+    it("at the cap the whole listing is read and the rotation proceeds", () => {
+      const { home, dir } = crowded("lunarhunt", 255);
+      const { seen, seam } = watched({});
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(result.ok).toBe(true);
+      expect(seen.names).toBe(256);
+      expect(seen.closed).toBe(1);
+      expect(fs.readdirSync(dir)).toHaveLength(257);
+    });
+
+    it("a throwing `readSync` closes the Dir and is isolated", () => {
+      const { home, dir } = crowded("lunarhunt", 5);
+      const { seen, seam } = watched({
+        onRead: () => {
+          throw new Error("/secret/path EIO");
+        },
+      });
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(fail(result)).toBe("rotate");
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(seen.opened).toBe(1);
+      expect(seen.closed).toBe(1);
+      expect(fs.readdirSync(dir)).toHaveLength(6);
+    });
+
+    it("a throwing `closeSync` does not change the outcome", () => {
+      const { home } = crowded("lunarhunt", 2);
+      const { seen, seam } = watched({
+        onClose: () => {
+          throw new Error("/secret/path EIO");
+        },
+      });
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(result.ok).toBe(true);
+      expect(seen.closed).toBe(1);
+    });
+
+    it("class: every exit path of the bounded listing closes the Dir", () => {
+      const boom = () => {
+        throw new Error("EIO");
+      };
+      const paths: Array<{
+        name: string;
+        others: number;
+        maxEntries: number;
+        onRead?: () => void;
+        extra?: Partial<LedgerFs>;
+        planted?: string;
+        expected: string;
+      }> = [
+        { name: "listing ends", others: 2, maxEntries: 10, expected: "ok" },
+        {
+          name: "listing hits the cap",
+          others: 9,
+          maxEntries: 3,
+          expected: "cap",
+        },
+        {
+          name: "readSync throws",
+          others: 2,
+          maxEntries: 10,
+          onRead: boom,
+          expected: "rotate",
+        },
+        {
+          name: "throw after the listing (rename)",
+          others: 2,
+          maxEntries: 10,
+          extra: { renameSync: boom as LedgerFs["renameSync"] },
+          expected: "rotate",
+        },
+        {
+          name: "rotated name already listed",
+          others: 2,
+          maxEntries: 10,
+          planted: "events-20261120T080910Z-1.jsonl",
+          expected: "rotate",
+        },
+      ];
+      for (const path of paths) {
+        const { home, dir } = crowded("lunarhunt", path.others);
+        if (path.planted !== undefined) {
+          fs.writeFileSync(join(dir, path.planted), "");
+        }
+        const { seen, seam } = watched({ onRead: path.onRead });
+        const result = writeLedgerRecord(sampleRecord(), {
+          home,
+          now: () => new Date("2026-11-20T08:09:10.123Z"),
+          limits: { project: { rotateBytes: 50, maxEntries: path.maxEntries } },
+          pid: 1,
+          fs: { ...seam, ...path.extra },
+        });
+        expect(fail(result), path.name).toBe(path.expected);
+        expect(seen.closed, path.name).toBe(seen.opened);
+      }
     });
 
     it("applies to `_unknown` as well", () => {
