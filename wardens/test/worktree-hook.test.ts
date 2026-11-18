@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { MESSAGE_PATTERN } from "../src/messages.ts";
@@ -1090,14 +1090,142 @@ describe.each(CWD_SHAPES)(
   },
 );
 
-describe("worktree-controlled git config is not used: remove and prune", () => {
-  const human = (r: Repo, state: string): Deps => ({
-    ...r.deps(),
-    env: { HOME: r.home },
-    charterRoot: r.primary,
-    gh: () => ({ status: 0, stdout: JSON.stringify([{ state }]) }),
-  });
+/** Deps of a human running `wardens worktree remove|prune`; `gh` reports every branch's PR in `state`. */
+const human = (r: Repo, state: string): Deps => ({
+  ...r.deps(),
+  env: { HOME: r.home },
+  charterRoot: r.primary,
+  gh: () => ({ status: 0, stdout: JSON.stringify([{ state }]) }),
+});
 
+/** Runs `fn` with a `git` first on PATH that logs every argument vector, then runs the real git. */
+function spyOnGit<T>(r: Repo, fn: () => T): { result: T; calls: string[][] } {
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const bin = join(r.base, "spy-bin");
+  const log = join(r.base, "git-calls.log");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/sh\nfor a in "$@"; do printf '%s\\t' "$a" >> ${log}; done\nprintf '\\n' >> ${log}\nexec ${realGit} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const before = process.env.PATH;
+  process.env.PATH = `${bin}${delimiter}${before ?? ""}`;
+  try {
+    const result = fn();
+    const calls = existsSync(log)
+      ? readFileSync(log, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => line.split("\t").slice(0, -1))
+      : [];
+    return { result, calls };
+  } finally {
+    process.env.PATH = before;
+  }
+}
+
+const isRemove = (argv: string[]) =>
+  argv.includes("worktree") && argv.includes("remove");
+const isInspection = (argv: string[]) =>
+  argv.some((a) => a.startsWith("--git-dir=")) && argv.includes("status");
+
+/** Every way a worktree gets removed on the non-force path. */
+const REMOVERS: {
+  name: string;
+  make: (r: Repo) => string;
+  go: (r: Repo, wt: string) => Result;
+}[] = [
+  {
+    name: "the WorktreeRemove hook",
+    make: (r) => subagent(r, "agent-f1"),
+    go: (r, wt) => run("remove", r, removeBody(r.primary, wt)),
+  },
+  {
+    name: "wardens worktree remove",
+    make: taskWorktree,
+    go: (r) =>
+      runWorktree({ sub: "remove", arg: "66-rec-test" }, human(r, "MERGED")),
+  },
+  {
+    name: "wardens worktree prune",
+    make: taskWorktree,
+    go: (r) => runWorktree({ sub: "prune" }, human(r, "MERGED")),
+  },
+];
+
+describe("git's own removal does not re-read worktree-controlled state", () => {
+  it.each(REMOVERS)(
+    "$name: the one git worktree remove carries --force and follows the inspection",
+    ({ make, go }) => {
+      const r = repo();
+      const wt = make(r);
+      const { result, calls } = spyOnGit(r, () => go(r, wt));
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(wt)).toBe(false);
+      const removes = calls.filter(isRemove);
+      expect(removes).toHaveLength(1);
+      expect(removes[0]).toContain("--force");
+      expect(removes[0]?.filter((a) => a === "--force")).toHaveLength(1);
+      expect(calls.findIndex(isInspection)).toBeGreaterThanOrEqual(0);
+      expect(calls.findIndex(isInspection)).toBeLessThan(
+        calls.findIndex(isRemove),
+      );
+    },
+  );
+
+  it.each(REMOVERS)(
+    "$name: a failed inspection issues no git worktree remove",
+    ({ make, go }) => {
+      const r = repo();
+      const wt = make(r);
+      writeFileSync(join(wt, "dirty.txt"), "x");
+      const { calls } = spyOnGit(r, () => go(r, wt));
+      expect(calls.filter(isRemove)).toEqual([]);
+      expect(existsSync(join(wt, "dirty.txt"))).toBe(true);
+    },
+  );
+
+  it.each(REMOVERS)(
+    "$name: a worktree whose .git cannot be trusted issues no git worktree remove",
+    ({ make, go }) => {
+      const r = repo();
+      const wt = make(r);
+      rmSync(join(wt, ".git"), { force: true });
+      sh(wt, "init", "-q");
+      const { calls } = spyOnGit(r, () => go(r, wt));
+      expect(calls.filter(isRemove)).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    },
+  );
+});
+
+describe("gh state of a worktree's branch is asked from the primary checkout", () => {
+  it.each([
+    ["list", { sub: "list" }],
+    ["prune", { sub: "prune" }],
+  ] as const)("%s runs gh in the primary with -R", (_name, args) => {
+    const r = repo();
+    taskWorktree(r);
+    const calls: { args: string[]; cwd: string }[] = [];
+    const deps: Deps = {
+      ...human(r, "OPEN"),
+      gh: (a, cwd) => {
+        calls.push({ args: a, cwd });
+        return { status: 0, stdout: JSON.stringify([{ state: "OPEN" }]) };
+      },
+    };
+    expect(runWorktree(args, deps).exitCode).toBe(0);
+    const lists = calls.filter((c) => c.args[0] === "pr");
+    expect(lists.length).toBeGreaterThan(0);
+    for (const call of lists) {
+      expect(call.cwd).toBe(r.primary);
+      expect(call.args.slice(-2)).toEqual(["-R", "o/r"]);
+    }
+  });
+});
+
+describe("worktree-controlled git config is not used: remove and prune", () => {
   it.each(TAMPERED_GIT)(
     "wardens worktree remove and prune keep a worktree whose .git is $name",
     (tamper) => {

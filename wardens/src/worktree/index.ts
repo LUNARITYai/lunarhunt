@@ -173,6 +173,7 @@ function prList(
   cwd: string,
   branch: string,
   state: "all" | "merged",
+  repo?: string,
 ): PrItem[] | null {
   const res = deps.gh(
     [
@@ -186,6 +187,7 @@ function prList(
       "state,headRefOid,baseRefName",
       "--limit",
       "1",
+      ...(repo === undefined ? [] : ["-R", repo]),
     ],
     cwd,
   );
@@ -203,20 +205,41 @@ function prList(
 /** What `prState` returns when gh failed. */
 export const GH_FAILED_STATE = "unknown (gh failed)";
 
-/** PR state of a branch: a state, `none`, or `GH_FAILED_STATE` when gh failed. */
+/**
+ * PR state of a branch: a state, `none`, or `GH_FAILED_STATE` when gh failed.
+ * Callers that run on behalf of a worktree pass the primary checkout as `cwd`
+ * and the repository recorded by `wardens sync` as `repo` (`-R`), so gh never
+ * reads a worktree's git configuration.
+ */
 export function prState(
   deps: Pick<Deps, "gh">,
   cwd: string,
+  branch: string | null,
+  repo?: string,
+): string {
+  if (branch === null) {
+    return "none";
+  }
+  const items = prList(deps, cwd, branch, "all", repo);
+  if (items === null) {
+    return GH_FAILED_STATE;
+  }
+  return items[0]?.state ?? "none";
+}
+
+/** `prState` for a worktree's branch, asked from the primary checkout for the repository recorded by `wardens sync`. */
+function primaryPrState(
+  deps: Deps,
+  primary: string,
   branch: string | null,
 ): string {
   if (branch === null) {
     return "none";
   }
-  const items = prList(deps, cwd, branch, "all");
-  if (items === null) {
-    return GH_FAILED_STATE;
-  }
-  return items[0]?.state ?? "none";
+  const repo = issueRepo(deps, primary);
+  return typeof repo === "string"
+    ? prState(deps, primary, branch, repo)
+    : GH_FAILED_STATE;
 }
 
 /**
@@ -229,10 +252,11 @@ function mergedMatch(
   cfg: WorktreeConfig,
   branch: string | null,
 ): boolean {
-  if (branch === null) {
+  const repo = issueRepo(deps, primary);
+  if (branch === null || typeof repo !== "string") {
     return false;
   }
-  const pr = prList(deps, primary, branch, "merged")?.[0];
+  const pr = prList(deps, primary, branch, "merged", repo)?.[0];
   if (
     pr?.state !== "MERGED" ||
     pr.baseRefName !== baseBranchOf(cfg) ||
@@ -485,7 +509,7 @@ function list(primary: string, deps: Deps): Result {
         e.branch ?? "(detached)",
         issue === null ? "-" : `#${issue}`,
         `setup.ok ${setupOk ? "yes" : "no"}`,
-        `PR ${prState(deps, e.path, e.branch)}`,
+        `PR ${primaryPrState(deps, primary, e.branch)}`,
       ].join("\t");
     });
   return ok(lines.map((l) => `${l}\n`).join(""));
@@ -694,12 +718,10 @@ export function removeOne(
     }
   }
   const id = taskId(primary, entry.path);
-  const removed = git(primary, [
-    "worktree",
-    "remove",
-    ...(force ? ["--force"] : []),
-    entry.path,
-  ]);
+  // Always one `--force` (it still honours a lock). Our own inspection above
+  // has passed, or the caller chose --force; without it git would run its own
+  // status through the worktree's `.git`, which a live process can swap.
+  const removed = git(primary, ["worktree", "remove", "--force", entry.path]);
   if (!removed.ok) {
     return {
       refused: `git worktree remove failed: ${firstLine(removed.out)}`,
@@ -777,7 +799,7 @@ function prune(
       out.push(`kept ${name}: not a task worktree`);
       continue;
     }
-    const state = prState(deps, entry.path, entry.branch);
+    const state = primaryPrState(deps, primary, entry.branch);
     if (state !== "MERGED" && state !== "CLOSED") {
       out.push(`kept ${name}: PR ${state}`);
       continue;
