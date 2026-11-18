@@ -140,6 +140,7 @@ Retests R1, R6 and R7 in the spec (`docs/specs/2026-11-06-wardens-sandbox.md`) c
   - ADR-0012 (worktrees, Dev Container Cell in phase 2);
   - ADR-0013 (protected and secret paths).
 - If this ADR is accepted, `AGENTS.md` gets a glossary entry for the floor and a `sandbox-guard` line under "Rules Wardens will enforce". That is a Covenant change, so Krzysztof approves it. The same change updates workflow step 7, because agents no longer push or open PRs from sandboxed Bash.
+- Sandcastle (`@ai-hero/sandcastle`), considered on 2026-11-18 and not adopted here: it launches the agent itself instead of adding a floor beneath a Claude Code session, runs agents with permission checks skipped by default, documents no network allowlist, forwards `.sandcastle/.env` into the sandbox, and has no ring 0. Its `docker()` and `podman()` providers are worth a spike as a runner for the phase-2 Cell (ADR-0012).
 - Follow-ups:
   - #63 (unchanged);
   - #64 (narrowed to network-side operations);
