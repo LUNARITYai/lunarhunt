@@ -692,7 +692,7 @@ describe("writer: rotation and caps", () => {
       expect(DEFAULT_LIMITS.unknown.maxEntries).toBe(256);
     });
 
-    it("cap: 257 entries fail right after the listing, before any per-entry lstat", () => {
+    it("cap: 257 entries fail during the listing, before any per-entry lstat", () => {
       const { home, dir } = crowded("lunarhunt", 256);
       expect(fs.readdirSync(dir)).toHaveLength(257);
       const inside: string[] = [];
@@ -768,7 +768,8 @@ describe("writer: rotation and caps", () => {
 
     /** A fs seam whose `Dir` handles are counted: opened, closed, names read; `onRead` may throw. */
     function watched(options: {
-      onRead?: (() => void) | undefined;
+      /** Called before each `readSync` with its 1-based call number. */
+      onRead?: ((call: number) => void) | undefined;
       onClose?: (() => void) | undefined;
     }) {
       const seen = { opened: 0, closed: 0, reads: 0, names: 0 };
@@ -779,7 +780,7 @@ describe("writer: rotation and caps", () => {
           return {
             readSync() {
               seen.reads += 1;
-              options.onRead?.();
+              options.onRead?.(seen.reads);
               const entry = real.readSync();
               if (entry !== null) {
                 seen.names += 1;
@@ -808,6 +809,8 @@ describe("writer: rotation and caps", () => {
       });
       expect(fail(result)).toBe("cap");
       expect(seen.names).toBe(257);
+      // The 257th `readSync` returns the name that exceeds the cap and the writer stops there.
+      expect(seen.reads).toBe(257);
       expect(seen.opened).toBe(1);
       expect(seen.closed).toBe(1);
       expect(lines(join(dir, "events.jsonl"))).toEqual(["x".repeat(100), ""]);
@@ -862,6 +865,47 @@ describe("writer: rotation and caps", () => {
         fs: seam,
       });
       expect(result.ok).toBe(true);
+      expect(seen.closed).toBe(1);
+    });
+
+    it("a throwing `closeSync` on the cap path leaves the outcome `cap`", () => {
+      const { home } = crowded("lunarhunt", 9);
+      const { seen, seam } = watched({
+        onClose: () => {
+          throw new Error("/secret/path EIO");
+        },
+      });
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50, maxEntries: 3 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(fail(result)).toBe("cap");
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(seen.closed).toBe(1);
+    });
+
+    it("a `readSync` that throws mid-listing closes the Dir and fails `rotate`", () => {
+      const { home } = crowded("lunarhunt", 20);
+      const { seen, seam } = watched({
+        onRead: (call) => {
+          if (call === 5) {
+            throw new Error("/secret/path EIO");
+          }
+        },
+      });
+      const result = writeLedgerRecord(sampleRecord(), {
+        home,
+        limits: { project: { rotateBytes: 50 } },
+        pid: 1,
+        fs: seam,
+      });
+      expect(fail(result)).toBe("rotate");
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(seen.names).toBe(4);
+      expect(seen.reads).toBe(5);
+      expect(seen.opened).toBe(1);
       expect(seen.closed).toBe(1);
     });
 
