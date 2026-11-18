@@ -92,7 +92,7 @@ export const LAUNCHER_BUNDLE_MESSAGE =
  * resolved physically and must equal a primary listed in the anchor file or lie
  * under `<primary>/.claude/worktrees/` (Cursor: also `~/.cursor/worktrees/<name>/`).
  */
-function launcher(tool: "claude" | "cursor", event: string): string {
+function launcher(tool: "claude" | "cursor", bundleArgs: string): string {
   const session =
     tool === "claude"
       ? 's=; case "$CLAUDE_PROJECT_DIR" in /*) s=$(cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P);; esac'
@@ -110,17 +110,32 @@ function launcher(tool: "claude" | "cursor", event: string): string {
     `[ -n "$HOME" ] && [ -n "$s" ] && [ -r "$a" ] && while IFS= read -r p || [ -n "$p" ]; do case "$p" in /*) ;; *) continue;; esac; p=$(cd -P -- "$p" 2>/dev/null && pwd -P) || continue; case "$s" in ${patterns.join("|")}) r=$p; break;; esac; done < "$a"`,
     `[ -n "$r" ] || { echo "${LAUNCHER_BLOCK_MESSAGE}" >&2; exit 2; }`,
     `[ -f "$r/${BUNDLE}" ] || { echo "${LAUNCHER_BUNDLE_MESSAGE}" >&2; exit 2; }`,
-    `exec node "$r/${BUNDLE}" hook --tool ${tool} --event ${event}`,
+    `exec node "$r/${BUNDLE}" ${bundleArgs}`,
   ];
   return parts.join("; ");
 }
 
 function claudeCommand(event: string): string {
-  return `sh -c '${launcher("claude", event)}'`;
+  return `sh -c '${launcher("claude", `hook --tool claude --event ${event}`)}'`;
 }
 
 function cursorCommand(event: string): string {
-  return `sh -c '${launcher("cursor", event)}'`;
+  return `sh -c '${launcher("cursor", `hook --tool cursor --event ${event}`)}'`;
+}
+
+/**
+ * `WorktreeCreate` replaces `git worktree add` and `WorktreeRemove` replaces
+ * removal (spec 2026-11-05-wardens-worktree.md, Tool integration). Same
+ * launcher as the other Claude hooks. A failed create already fails the spawn,
+ * so there is no `onFailure`; the create timeout covers `setup.steps`
+ * (`pnpm install`, `uv sync`).
+ */
+function claudeWorktreeHook(kind: "create" | "remove", timeout: number) {
+  return {
+    type: "command",
+    command: `sh -c '${launcher("claude", `worktree ${kind} --tool claude`)}'`,
+    timeout,
+  };
 }
 
 function claudeHook(event: string, timeout: number) {
@@ -152,7 +167,10 @@ function claudeSettings(charter: Charter): string {
         },
       ],
       Stop: [{ hooks: [claudeHook("Stop", 900)] }],
+      WorktreeCreate: [{ hooks: [claudeWorktreeHook("create", 900)] }],
+      WorktreeRemove: [{ hooks: [claudeWorktreeHook("remove", 120)] }],
     },
+    worktree: { baseRef: "fresh" },
   };
   return `${JSON.stringify(settings, null, 2)}\n`;
 }

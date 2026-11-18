@@ -118,6 +118,40 @@ type Subscription = {
   entry: Json;
 };
 
+/** `WorktreeCreate` and `WorktreeRemove` run the worktree entrypoints, not the rule engine: no mapping row. */
+export function isWorktreeHook(sub: { tool: string; event: string }): boolean {
+  return (
+    sub.tool === "claude" &&
+    (sub.event === "WorktreeCreate" || sub.event === "WorktreeRemove")
+  );
+}
+
+/** Without these hooks Claude Code makes subagent worktrees itself and skips the Wardens rules. */
+export function missingWorktreeHooks(
+  subs: readonly { tool: string; event: string; entry: Json }[],
+): string[] {
+  const problems: string[] = [];
+  for (const [event, kind] of [
+    ["WorktreeCreate", "create"],
+    ["WorktreeRemove", "remove"],
+  ] as const) {
+    const found = subs.filter((s) => isWorktreeHook(s) && s.event === event);
+    const wanted = `worktree ${kind} --tool claude`;
+    if (
+      !found.some(
+        (s) =>
+          typeof s.entry.command === "string" &&
+          s.entry.command.includes(wanted) &&
+          typeof s.entry.timeout === "number" &&
+          s.entry.timeout > 0,
+      )
+    ) {
+      problems.push(`claude ${event} does not run "${wanted}" with a timeout`);
+    }
+  }
+  return problems;
+}
+
 function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -222,8 +256,11 @@ function checkFailClosed(toplevel: string): CheckResult {
   }
   const problems: string[] = [];
   for (const sub of loaded.subs) {
-    const guard =
-      sub.tool === "claude"
+    // The worktree hooks fail closed by exit code (a non-zero `WorktreeCreate`
+    // fails the spawn) and have no `onFailure`; they still need a timeout.
+    const guard = isWorktreeHook(sub)
+      ? true
+      : sub.tool === "claude"
         ? sub.entry.onFailure === "block"
         : sub.entry.failClosed === true;
     const timeout = sub.entry.timeout;
@@ -240,6 +277,7 @@ function checkFailClosed(toplevel: string): CheckResult {
   if (loaded.subs.length === 0) {
     problems.push("no hooks are configured");
   }
+  problems.push(...missingWorktreeHooks(loaded.subs));
   return problems.length > 0
     ? result("fail-closed", "fail", problems.join("; "))
     : result(
@@ -261,7 +299,7 @@ function checkCoverage(toplevel: string): CheckResult {
   );
   const subscribed = new Set<string>();
   const problems: string[] = [];
-  for (const sub of loaded.subs) {
+  for (const sub of loaded.subs.filter((s) => !isWorktreeHook(s))) {
     for (const alt of alternatives(sub.matcher)) {
       const id = key(sub.tool, sub.event, alt);
       subscribed.add(id);

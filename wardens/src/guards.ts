@@ -19,6 +19,7 @@ import { EngineFailure } from "./failures.ts";
 import { segmentsMeet } from "./glob-meet.ts";
 import { anyGlob, basename, denyListMatches, foldCase } from "./globs.ts";
 import { homeOrUnresolved } from "./home.ts";
+import { invokesWorktreeHook } from "./hook-deny.ts";
 import { wardenMessage } from "./messages.ts";
 import { resolveAbsolutePath, resolveRepoPath } from "./paths.ts";
 import type { Objection, RuleContext } from "./rules.ts";
@@ -1291,6 +1292,14 @@ export function commandGuard(ctx: RuleContext): Objection | null {
   const parsed = pipelines.filter((pipeline) => pipeline.ok);
   if (parsed.length !== pipelines.length) {
     return unparseableBlock();
+  }
+  if (invokesWorktreeHook(parsed)) {
+    return block(
+      "command-guard",
+      "deny",
+      "the Claude Code worktree hook entrypoints (worktree create and remove with --tool) are not for shell use",
+      "Ask Krzysztof to run wardens worktree new <issue>, or use claude --worktree",
+    );
   }
   for (const pipeline of parsed) {
     const denied = firstDeny(ctx.charter.commands.deny, pipeline);

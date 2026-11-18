@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "source": "recorded-claude-session",
+    "provisional": false,
+    "event": "WorktreeCreate",
+    "note": "Recorded 2026-11-06 with Claude Code 2.1.319 (claude --worktree 66-rec-test, started in the primary checkout). Home paths shortened; __PRIMARY__ stands for the primary checkout."
+  },
+  "stdin": {
+    "session_id": "425fef0f-0000-0000-0000-000000000000",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__PRIMARY__",
+    "hook_event_name": "WorktreeCreate",
+    "name": "66-rec-test"
+  }
+}

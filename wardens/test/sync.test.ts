@@ -134,19 +134,42 @@ describe("render", () => {
       "PreToolUse",
       "PostToolUse",
       "Stop",
+      "WorktreeCreate",
+      "WorktreeRemove",
     ]);
     expect(settings.hooks.SessionStart[0].hooks[0]).toMatchObject({
       timeout: 10,
       onFailure: "block",
     });
-    for (const groups of Object.values(settings.hooks) as {
-      hooks: { onFailure: string; timeout: number }[];
-    }[][]) {
+    for (const [event, groups] of Object.entries(settings.hooks) as [
+      string,
+      { hooks: { onFailure?: string; timeout: number }[] }[],
+    ][]) {
       for (const hook of groups.flatMap((g) => g.hooks)) {
-        expect(hook.onFailure).toBe("block");
         expect(hook.timeout).toBeGreaterThan(0);
+        if (!event.startsWith("Worktree")) {
+          expect(hook.onFailure).toBe("block");
+        }
       }
     }
+    expect(Object.keys(settings.worktree ?? {})).toEqual(["baseRef"]);
+    expect(settings.worktree.baseRef).toBe("fresh");
+    const create = settings.hooks.WorktreeCreate[0].hooks[0];
+    const remove = settings.hooks.WorktreeRemove[0].hooks[0];
+    expect(create.command).toContain(
+      'wardens/dist/wardens.mjs" worktree create --tool claude',
+    );
+    expect(remove.command).toContain(
+      'wardens/dist/wardens.mjs" worktree remove --tool claude',
+    );
+    // Same launcher as the other hooks: anchor file, no git.
+    expect(create.command).toContain(".config/panopticon/primaries");
+    expect(create.command).not.toContain("git");
+    expect(remove.command).not.toContain("git");
+    // Setup steps (pnpm install, uv sync) need far more than a guard hook.
+    expect(create.timeout).toBeGreaterThanOrEqual(600);
+    expect(create.onFailure).toBeUndefined();
+    expect(remove.onFailure).toBeUndefined();
     expect(settings.permissions.deny).toContain("NotebookEdit");
     expect(settings.permissions.deny).not.toContain("Read(**/.env.*)");
     expect(settings.permissions.deny).not.toContain("Read(**/.env.example)");

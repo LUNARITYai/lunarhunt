@@ -304,10 +304,37 @@ Known `.env` variants: `.env`, `.env.local`, `.env.development`, `.env.developme
           }
         ]
       }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 's=; case \"$CLAUDE_PROJECT_DIR\" in /*) s=$(cd -P -- \"$CLAUDE_PROJECT_DIR\" 2>/dev/null && pwd -P);; esac; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" worktree create --tool claude'",
+            "timeout": 900
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 's=; case \"$CLAUDE_PROJECT_DIR\" in /*) s=$(cd -P -- \"$CLAUDE_PROJECT_DIR\" 2>/dev/null && pwd -P);; esac; a=\"$HOME/.config/panopticon/primaries\"; r=; [ -n \"$HOME\" ] && [ -n \"$s\" ] && [ -r \"$a\" ] && while IFS= read -r p || [ -n \"$p\" ]; do case \"$p\" in /*) ;; *) continue;; esac; p=$(cd -P -- \"$p\" 2>/dev/null && pwd -P) || continue; case \"$s\" in \"$p\"|\"$p\"/.claude/worktrees/*) r=$p; break;; esac; done < \"$a\"; [ -n \"$r\" ] || { echo \"Blocked by Warden launcher: this session directory is not under a trusted primary checkout. Ask Krzysztof to run wardens sync.\" >&2; exit 2; }; [ -f \"$r/wardens/dist/wardens.mjs\" ] || { echo \"Blocked by Warden launcher: the Wardens bundle of the trusted primary checkout is missing. Run pnpm --filter wardens build in the primary checkout.\" >&2; exit 2; }; exec node \"$r/wardens/dist/wardens.mjs\" worktree remove --tool claude'",
+            "timeout": 120
+          }
+        ]
+      }
     ]
+  },
+  "worktree": {
+    "baseRef": "fresh"
   }
 }
 ```
+
+The `WorktreeCreate` and `WorktreeRemove` hooks were added by #51 (see the [worktree spec](2026-11-05-wardens-worktree.md), Tool integration). They have no `onFailure`: a non-zero exit of `WorktreeCreate` already fails the spawn.
 
 The `Bash(...)` permission rules are a second line (Decisions, item 3); unlike hooks, they still apply under `disableAllHooks`. Claude Code's `*` matches any text, including spaces, so these rules can match differently from `command-guard`'s tokenizer (for example, they miss `git commit -nm x` written as a combined flag after other words). `command-guard` stays authoritative. The permission rules only matter when the hook did not run.
 

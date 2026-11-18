@@ -1,7 +1,13 @@
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { loadCharterAt, type WorktreeConfig } from "../charter.ts";
-import { gitToplevel, primaryCheckout } from "../git.ts";
+import { gitCommonDir, gitToplevel, primaryCheckout } from "../git.ts";
 import { trustedHome } from "../home.ts";
 import { wardenMessage } from "../messages.ts";
 import { githubRepo, readRepo } from "../sync/anchor.ts";
@@ -48,12 +54,12 @@ const HUMAN_ONLY = new Set(["new", "setup", "remove", "prune"]);
 
 const ISSUE_NUMBER = /^[1-9][0-9]{0,8}$/;
 
-function fill(template: string, values: Record<string, string>): string {
+export function fill(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m);
 }
 
 /** The branch part of `base_ref` (`origin/main` gives `main`), or null without a remote prefix. */
-function baseBranchOf(cfg: WorktreeConfig): string | null {
+export function baseBranchOf(cfg: WorktreeConfig): string | null {
   const i = cfg.base_ref.indexOf("/");
   return i > 0 && i < cfg.base_ref.length - 1
     ? cfg.base_ref.slice(i + 1)
@@ -167,6 +173,7 @@ function prList(
   cwd: string,
   branch: string,
   state: "all" | "merged",
+  repo?: string,
 ): PrItem[] | null {
   const res = deps.gh(
     [
@@ -180,6 +187,7 @@ function prList(
       "state,headRefOid,baseRefName",
       "--limit",
       "1",
+      ...(repo === undefined ? [] : ["-R", repo]),
     ],
     cwd,
   );
@@ -197,20 +205,41 @@ function prList(
 /** What `prState` returns when gh failed. */
 export const GH_FAILED_STATE = "unknown (gh failed)";
 
-/** PR state of a branch: a state, `none`, or `GH_FAILED_STATE` when gh failed. */
+/**
+ * PR state of a branch: a state, `none`, or `GH_FAILED_STATE` when gh failed.
+ * Callers that run on behalf of a worktree pass the primary checkout as `cwd`
+ * and the repository recorded by `wardens sync` as `repo` (`-R`), so gh never
+ * reads a worktree's git configuration.
+ */
 export function prState(
   deps: Pick<Deps, "gh">,
   cwd: string,
+  branch: string | null,
+  repo?: string,
+): string {
+  if (branch === null) {
+    return "none";
+  }
+  const items = prList(deps, cwd, branch, "all", repo);
+  if (items === null) {
+    return GH_FAILED_STATE;
+  }
+  return items[0]?.state ?? "none";
+}
+
+/** `prState` for a worktree's branch, asked from the primary checkout for the repository recorded by `wardens sync`. */
+function primaryPrState(
+  deps: Deps,
+  primary: string,
   branch: string | null,
 ): string {
   if (branch === null) {
     return "none";
   }
-  const items = prList(deps, cwd, branch, "all");
-  if (items === null) {
-    return GH_FAILED_STATE;
-  }
-  return items[0]?.state ?? "none";
+  const repo = issueRepo(deps, primary);
+  return typeof repo === "string"
+    ? prState(deps, primary, branch, repo)
+    : GH_FAILED_STATE;
 }
 
 /**
@@ -223,10 +252,11 @@ function mergedMatch(
   cfg: WorktreeConfig,
   branch: string | null,
 ): boolean {
-  if (branch === null) {
+  const repo = issueRepo(deps, primary);
+  if (branch === null || typeof repo !== "string") {
     return false;
   }
-  const pr = prList(deps, primary, branch, "merged")?.[0];
+  const pr = prList(deps, primary, branch, "merged", repo)?.[0];
   if (
     pr?.state !== "MERGED" ||
     pr.baseRefName !== baseBranchOf(cfg) ||
@@ -246,13 +276,21 @@ function grantedNote(paths: string[]): string {
   return `granted allowed_paths: ${paths.join(", ")}\n`;
 }
 
-function newWorktree(
+/** What `newWorktree` made, so the hook can clean up after a failed setup. */
+export type Created = { target: string; branch: string };
+
+/**
+ * `expectName` (the hook): the derived worktree name must equal it exactly, so
+ * the name Claude Code asked for is the directory it gets.
+ */
+export function newWorktree(
   cfg: WorktreeConfig,
   cwd: string,
   primary: string,
   args: WorktreeArgs,
   deps: Deps,
-): Result {
+  expectName?: string,
+): Result & { created?: Created } {
   if (!ISSUE_NUMBER.test(args.arg ?? "")) {
     return fail(
       msg(
@@ -302,6 +340,14 @@ function newWorktree(
   const values = { issue: String(issue), slug, type: typed.type };
   const name = fill(cfg.naming.worktree, values);
   const branch = fill(cfg.naming.branch, values);
+  if (expectName !== undefined && name !== expectName) {
+    return fail(
+      msg(
+        `the worktree name ${expectName} is not the canonical ${name} for issue #${issue}`,
+        `Use the name ${name}`,
+      ),
+    );
+  }
   const target = join(primary, fill(cfg.location.default, { name }));
   const collision = portCollision(primary, issue, null, name);
   if (collision !== null) {
@@ -333,6 +379,7 @@ function newWorktree(
       ),
     );
   }
+  const created = { target, branch };
   const setup = setupWorktree(
     target,
     primary,
@@ -344,9 +391,10 @@ function newWorktree(
     return {
       ...setup,
       stderr: `${setup.stderr}The worktree stays at ${target}.\n`,
+      created,
     };
   }
-  return ok(`${target}\n`, grantedNote(paths.paths));
+  return { ...ok(`${target}\n`, grantedNote(paths.paths)), created };
 }
 
 function setupHere(
@@ -461,7 +509,7 @@ function list(primary: string, deps: Deps): Result {
         e.branch ?? "(detached)",
         issue === null ? "-" : `#${issue}`,
         `setup.ok ${setupOk ? "yes" : "no"}`,
-        `PR ${prState(deps, e.path, e.branch)}`,
+        `PR ${primaryPrState(deps, primary, e.branch)}`,
       ].join("\t");
     });
   return ok(lines.map((l) => `${l}\n`).join(""));
@@ -506,22 +554,122 @@ function unverified(name: string): Refusal {
   };
 }
 
-/** Removes one worktree. */
-function removeOne(
+function realOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** True when something (even a dangling symlink) exists at `path`; never reads it. */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type AdminDir = { ok: true; dir: string } | { ok: false; why: string };
+
+/**
+ * The administrative directory (`<common-dir>/worktrees/<id>`) of a linked
+ * worktree, found from the repository side: the `gitdir` file in it names the
+ * worktree's `.git`. The worktree's own `.git` is then accepted only when it
+ * is a regular file (not a symlink) whose `gitdir:` line resolves to that same
+ * directory. A worktree whose `.git` was replaced (a directory holding its own
+ * repository, a symlink, a pointer elsewhere) is not trusted: whoever wrote it
+ * chose its configuration.
+ */
+export function worktreeAdminDir(common: string, worktree: string): AdminDir {
+  const wanted = realOr(worktree);
+  const base = join(common, "worktrees");
+  let ids: string[];
+  try {
+    ids = readdirSync(base);
+  } catch {
+    return { ok: false, why: "the repository has no record of it" };
+  }
+  const dirs = ids.flatMap((id) => {
+    try {
+      const pointer = readFileSync(join(base, id, "gitdir"), "utf8").trim();
+      return realOr(dirname(pointer)) === wanted ? [join(base, id)] : [];
+    } catch {
+      return [];
+    }
+  });
+  const dir = dirs[0];
+  if (dirs.length !== 1 || dir === undefined) {
+    return { ok: false, why: "the repository has no single record of it" };
+  }
+  const dotGit = join(worktree, ".git");
+  try {
+    if (!lstatSync(dotGit).isFile()) {
+      return { ok: false, why: "its .git is not a plain pointer file" };
+    }
+    const pointer = /^gitdir: (.+?)\r?\n?$/.exec(readFileSync(dotGit, "utf8"));
+    const target = pointer?.[1];
+    if (
+      target === undefined ||
+      realOr(resolve(worktree, target)) !== realOr(dir)
+    ) {
+      return {
+        ok: false,
+        why: "its .git does not point to its administrative directory",
+      };
+    }
+  } catch {
+    return { ok: false, why: "its .git could not be read" };
+  }
+  return { ok: true, dir };
+}
+
+/**
+ * Runs git on a worktree against an explicit administrative directory (from
+ * `worktreeAdminDir`), so the worktree's own `.git` is never read, and with
+ * the program-running settings off whatever the caller's mode. Settings in the
+ * common configuration still apply; agents cannot write it under ring 0.
+ */
+function gitOnWorktree(worktree: string, admin: string, args: string[]) {
+  return git(worktree, [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    `--git-dir=${admin}`,
+    `--work-tree=${worktree}`,
+    ...args,
+  ]);
+}
+
+/** `worktree-<name>`: the branch of a worktree the `WorktreeCreate` hook made for a subagent. */
+export const HOOK_BRANCH = /^worktree-[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Removes one worktree. `hook` is the `WorktreeRemove` mode: any linked
+ * worktree under the location root qualifies (subagent worktrees are not
+ * task worktrees), the caller's cwd is not checked (Claude Code's own session
+ * may sit inside it), and commits that another local branch or a remote also
+ * holds do not count as unpushed.
+ */
+export function removeOne(
   entry: WorktreeEntry,
   cfg: WorktreeConfig,
   primary: string,
   force: boolean,
   deps: Deps,
+  hook = false,
 ): { removed: string } | Refusal {
   const name = basename(entry.path);
-  if (!isTaskWorktree(entry, cfg, primary)) {
+  if (!hook && !isTaskWorktree(entry, cfg, primary)) {
     return {
       refused: `${name} is not a task worktree`,
       next: "Remove it with git yourself if it is yours",
     };
   }
-  if (inside(deps.cwd, entry.path)) {
+  if (!hook && inside(deps.cwd, entry.path)) {
     return {
       refused: `the current directory is inside ${name}`,
       next: "Change out of the worktree and run it again",
@@ -529,7 +677,47 @@ function removeOne(
   }
   const merged = mergedMatch(deps, primary, cfg, entry.branch);
   if (!force) {
-    const status = git(entry.path, ["status", "--porcelain"]);
+    // Every inspection reads a tree an agent may have rewritten: use the
+    // administrative directory the repository records for it, never the
+    // worktree's own `.git`, or refuse.
+    if (!existsSync(entry.path)) {
+      return unverified(name);
+    }
+    const common = gitCommonDir(primary);
+    const admin =
+      common === null
+        ? ({ ok: false, why: "the common git directory is unknown" } as const)
+        : worktreeAdminDir(common, entry.path);
+    if (!admin.ok) {
+      return {
+        refused: `${name} cannot be inspected safely: ${admin.why}`,
+        next: "Check the worktree by hand or pass --force",
+      };
+    }
+    // The removal below is forced, and the status check ignores submodules, so
+    // work inside one would be lost silently: a worktree with submodules (a
+    // gitlink in the index, or a .gitmodules file) is left to the human.
+    const staged = gitOnWorktree(entry.path, admin.dir, [
+      "ls-files",
+      "--stage",
+    ]);
+    if (!staged.ok) {
+      return unverified(name);
+    }
+    if (
+      /^160000 /m.test(staged.out) ||
+      lexists(join(entry.path, ".gitmodules"))
+    ) {
+      return {
+        refused: `${name} has submodules, whose uncommitted work Wardens does not check`,
+        next: `Save the work, then run git worktree remove ${entry.path}`,
+      };
+    }
+    const status = gitOnWorktree(entry.path, admin.dir, [
+      "status",
+      "--porcelain",
+      "--ignore-submodules=all",
+    ]);
     if (!status.ok) {
       return unverified(name);
     }
@@ -537,12 +725,15 @@ function removeOne(
       return { refused: `${name} has uncommitted changes`, next: FORCE_NEXT };
     }
     if (!merged) {
-      const count = git(entry.path, [
+      const count = gitOnWorktree(entry.path, admin.dir, [
         "rev-list",
         "--count",
         "HEAD",
         "--not",
         "--remotes",
+        ...(hook && entry.branch !== null
+          ? [`--exclude=${entry.branch}`, "--branches"]
+          : []),
       ]);
       if (!count.ok || !/^\d+$/.test(count.out)) {
         return unverified(name);
@@ -556,12 +747,10 @@ function removeOne(
     }
   }
   const id = taskId(primary, entry.path);
-  const removed = git(primary, [
-    "worktree",
-    "remove",
-    ...(force ? ["--force"] : []),
-    entry.path,
-  ]);
+  // Always one `--force` (it still honours a lock). Our own inspection above
+  // has passed, or the caller chose --force; without it git would run its own
+  // status through the worktree's `.git`, which a live process can swap.
+  const removed = git(primary, ["worktree", "remove", "--force", entry.path]);
   if (!removed.ok) {
     return {
       refused: `git worktree remove failed: ${firstLine(removed.out)}`,
@@ -573,6 +762,23 @@ function removeOne(
   let note = `removed ${name}${forgotten ? "" : " (its task.json record under ~/.config/panopticon/tasks stays: delete it by hand)"}`;
   const branch = entry.branch;
   if (
+    hook &&
+    branch !== null &&
+    HOOK_BRANCH.test(branch) &&
+    !cfg.protected_branches.includes(branch) &&
+    git(primary, [
+      "rev-list",
+      "--count",
+      branch,
+      "--not",
+      "--remotes",
+      `--exclude=${branch}`,
+      "--branches",
+    ]).out === "0" &&
+    git(primary, ["branch", "-D", branch]).ok
+  ) {
+    note += `, deleted branch ${branch}`;
+  } else if (
     branch !== null &&
     parseBranch(branch) !== null &&
     !cfg.protected_branches.includes(branch) &&
@@ -622,7 +828,7 @@ function prune(
       out.push(`kept ${name}: not a task worktree`);
       continue;
     }
-    const state = prState(deps, entry.path, entry.branch);
+    const state = primaryPrState(deps, primary, entry.branch);
     if (state !== "MERGED" && state !== "CLOSED") {
       out.push(`kept ${name}: PR ${state}`);
       continue;

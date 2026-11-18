@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "source": "recorded-claude-session",
+    "provisional": false,
+    "event": "WorktreeCreate",
+    "note": "Recorded 2026-11-06 with Claude Code 2.1.319 (subagent with isolation worktree, session running in the linked worktree wt-a). Home paths shortened; __PARENT__ stands for the parent session's worktree."
+  },
+  "stdin": {
+    "session_id": "fb1eb718-0000-0000-0000-000000000000",
+    "transcript_path": "transcript.jsonl",
+    "cwd": "__PARENT__",
+    "prompt_id": "01ee5e2e-0000-0000-0000-000000000000",
+    "hook_event_name": "WorktreeCreate",
+    "name": "agent-a0baa00347bfbc0ab"
+  }
+}
